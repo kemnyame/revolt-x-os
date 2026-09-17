@@ -1,4 +1,18 @@
-import 'dotenv/config'; import { buildApp } from './app.js'; import { loadConfig } from './config.js'; import { createDb } from './db/index.js';
-const config=loadConfig(),db=createDb(config),app=await buildApp({db,config});
-const shutdown=async(signal:string)=>{app.log.info({signal},'Shutting down');await app.close();await db.end();process.exit(0);};process.on('SIGTERM',()=>void shutdown('SIGTERM'));process.on('SIGINT',()=>void shutdown('SIGINT'));
-await app.listen({port:config.PORT,host:config.HOST});
+import 'dotenv/config';
+import { loadConfig } from './config.js';
+import { createDb, ensureOsSchema } from './db/index.js';
+import { migrate } from './db/migrate.js';
+import { buildApp } from './app.js';
+
+const config=loadConfig();
+const db=createDb(config);
+try {
+  await ensureOsSchema(db);
+  await migrate(db);
+  const app=await buildApp({db,config});
+  await app.listen({host:config.HOST,port:config.PORT});
+} catch(error) {
+  console.error(error);
+  await db.end();
+  process.exit(1);
+}
