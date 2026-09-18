@@ -9,8 +9,7 @@ export function createSchoolDb(config: SchoolConfig) {
   return new pg.Pool({
     connectionString: config.SCHOOL_DATABASE_URL,
     max: config.DB_POOL_MAX,
-    application_name: 'revolt-x-school',
-    options: '-c search_path=revolt_x_school,public'
+    application_name: 'revolt-x-school'
   });
 }
 
