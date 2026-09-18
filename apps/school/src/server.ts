@@ -35,8 +35,8 @@ app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{stat
 app.post('/api/auth/preview',async(_r,p)=>{
   const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/preview-session',{method:'POST',signal:AbortSignal.timeout(10000)}).catch(()=>null);
   if(!res)throw fail(503,'Core Revolt-X OS could not be reached');
-  const body=await res.text();
-  p.code(res.status).header('content-type',res.headers.get('content-type')||'application/json').send(body);
+  const body=await res.json().catch(async()=>({error:{message:await res.text().catch(()=> 'Core OS preview request failed')}}));
+  return p.code(res.status).send(body);
 });
 
 app.get('/api/context',async request=>{
