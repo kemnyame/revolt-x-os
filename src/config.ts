@@ -5,6 +5,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
   DATABASE_URL: z.string().min(1),
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(50).default(5),
   JWT_SECRET: z.string().min(32),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
