@@ -28,6 +28,7 @@ JWT_SECRET=<strong random secret, at least 32 characters>
 ACCESS_TOKEN_TTL_SECONDS=900
 REFRESH_TOKEN_TTL_DAYS=30
 CORS_ORIGINS=<deployed public origin>
+ENABLE_PREVIEW_ACCESS=true
 AI_GATEWAY_URL=
 AI_GATEWAY_TOKEN=
 ```
