@@ -9,45 +9,58 @@ const app = await buildApp({ db, config });
 await app.ready();
 
 export default async function handler(request: any, response: any) {
-  const incoming = new URL(request.url ?? '/api', 'http://revolt-x.local');
-  const originalPath = incoming.searchParams.get('__path') || '/';
+  try {
+    const incoming = new URL(request.url ?? '/api', 'http://revolt-x.local');
+    const originalPath = incoming.searchParams.get('__path') || '/';
 
-  incoming.searchParams.delete('__path');
-  const query = incoming.searchParams.toString();
+    incoming.searchParams.delete('__path');
+    const query = incoming.searchParams.toString();
+    const targetUrl = originalPath + (query ? `?${query}` : '');
 
-  request.url = originalPath + (query ? `?${query}` : '');
-
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-
-    const cleanup = () => {
-      response.off?.('finish', onFinish);
-      response.off?.('close', onFinish);
-      response.off?.('error', onError);
-    };
-
-    const onFinish = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-
-    const onError = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-
-    response.once?.('finish', onFinish);
-    response.once?.('close', onFinish);
-    response.once?.('error', onError);
-
-    try {
-      app.server.emit('request', request, response);
-    } catch (error) {
-      onError(error as Error);
+    let payload: any = request.body;
+    if (
+      payload != null &&
+      typeof payload === 'object' &&
+      !Buffer.isBuffer(payload) &&
+      !(payload instanceof Uint8Array)
+    ) {
+      payload = JSON.stringify(payload);
     }
-  });
+
+    const result = await app.inject({
+      method: request.method ?? 'GET',
+      url: targetUrl,
+      headers: request.headers ?? {},
+      payload
+    });
+
+    response.statusCode = result.statusCode;
+
+    for (const [key, value] of Object.entries(result.headers)) {
+      if (
+        value !== undefined &&
+        key.toLowerCase() !== 'content-length' &&
+        key.toLowerCase() !== 'transfer-encoding' &&
+        key.toLowerCase() !== 'connection'
+      ) {
+        response.setHeader(key, value as any);
+      }
+    }
+
+    response.end(result.rawPayload);
+  } catch (error) {
+    console.error('VERCEL_HANDLER_ERROR', error);
+    if (!response.headersSent) {
+      response.statusCode = 500;
+      response.setHeader('content-type', 'application/json; charset=utf-8');
+    }
+    response.end(
+      JSON.stringify({
+        error: {
+          code: 'VERCEL_HANDLER_ERROR',
+          message: error instanceof Error ? error.message : 'Vercel handler failed'
+        }
+      })
+    );
+  }
 }
