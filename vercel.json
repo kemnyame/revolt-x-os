@@ -5,7 +5,8 @@
   "buildCommand": "npm run build",
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api" }
+    { "source": "/", "destination": "/api?__path=/" },
+    { "source": "/:path*", "destination": "/api?__path=/:path*" }
   ],
   "functions": {
     "api/index.ts": {
