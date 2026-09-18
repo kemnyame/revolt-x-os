@@ -17,5 +17,37 @@ export default async function handler(request: any, response: any) {
 
   request.url = originalPath + (query ? `?${query}` : '');
 
-  app.server.emit('request', request, response);
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      response.off?.('finish', onFinish);
+      response.off?.('close', onFinish);
+      response.off?.('error', onError);
+    };
+
+    const onFinish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const onError = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    response.once?.('finish', onFinish);
+    response.once?.('close', onFinish);
+    response.once?.('error', onError);
+
+    try {
+      app.server.emit('request', request, response);
+    } catch (error) {
+      onError(error as Error);
+    }
+  });
 }
