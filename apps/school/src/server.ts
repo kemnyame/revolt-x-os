@@ -3359,7 +3359,7 @@ app.post('/api/payments/paystack/webhook',async(request,reply)=>{
 
 
 app.get('/api/system/diagnostics',async request=>{
-  const a=await authorize(request,db,config,'school.manage');
+  const a=await authorize(request,db,config,'system.logs.view');
   const org=a.core.organisation_id;
   const checks:any[]=[];
   const add=(key:string,label:string,ok:boolean,details:any,severity:'critical'|'warning'|'info'='critical')=>{
