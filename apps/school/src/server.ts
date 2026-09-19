@@ -9,6 +9,9 @@ import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } 
 import { authorize } from './auth.js';
 import { schoolFrontend } from './ui.js';
 import { parentFrontend } from './parent-ui.js';
+import { teacherFrontend } from './teacher-ui.js';
+import { studentFrontend } from './student-ui.js';
+import { admissionsFrontend } from './admissions-ui.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -58,6 +61,17 @@ async function ensureGuardianStudent(guardianId:string,studentId:string){
   if(!row)throw fail(403,'This student is not linked to the signed-in guardian');
   return row;
 }
+
+async function studentAuth(request:any){
+  const auth=String(request.headers.authorization||'');
+  if(!auth.startsWith('Bearer '))throw fail(401,'Student portal sign-in required');
+  const token=auth.slice(7);
+  const row=await maybeOne<any>(db,`SELECT sps.id session_id,s.id student_id,s.organisation_id,s.admission_no,s.first_name,s.last_name,s.status
+    FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
+    WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
+  if(!row)throw fail(401,'Student portal session has expired');
+  return row;
+}
 async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
   if(a.role!=='teacher')return;
   const row=await maybeOne<any>(db,`SELECT 1 FROM classrooms c
@@ -73,6 +87,9 @@ async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|nul
 
 app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
+app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
+app.get('/student',async(_r,p)=>p.type('text/html; charset=utf-8').send(studentFrontend));
+app.get('/admissions',async(_r,p)=>p.type('text/html; charset=utf-8').send(admissionsFrontend));
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
