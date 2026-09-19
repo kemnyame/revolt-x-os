@@ -680,7 +680,7 @@ async function page(p){
          await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify(payload)});close();toast('Teaching assignment saved');page('staff')
        }catch(err){
          if(err.message&&err.message.toLowerCase().includes('already')){
-           if(confirm(err.message+'\n\nReplace the existing teacher with '+userName(teacher)+'?')){
+           if(confirm(err.message+'\\n\\nReplace the existing teacher with '+userName(teacher)+'?')){
              payload.replaceExisting=true;await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify(payload)});close();toast('Teacher reassigned successfully');page('staff')
            }
          }else toast(err.message,true)
