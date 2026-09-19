@@ -1910,6 +1910,7 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
     academicYearId:z.string().uuid(),
     termId:z.string().uuid().nullable().optional(),
     teacherOsUserId:z.string().uuid().nullable().optional(),
+    classroomId:z.string().uuid().nullable().optional(),
     regenerateAuto:z.boolean().default(true),
     dryRun:z.boolean().default(false)
   }).parse(request.body);
@@ -1957,15 +1958,17 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
     ) ta ON true
     WHERE cs.organisation_id=$1 AND cs.academic_year_id=$2 AND cs.is_active=true
       AND ($4::uuid IS NULL OR ta.teacher_os_user_id=$4)
-    ORDER BY c.name,s.name`,[a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null])).rows;
+      AND ($5::uuid IS NULL OR cs.classroom_id=$5)
+    ORDER BY c.name,s.name`,[a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null,b.classroomId??null])).rows;
 
   if(b.regenerateAuto&&!b.dryRun){
     await db.query(`DELETE FROM timetable_entries
       WHERE organisation_id=$1 AND academic_year_id=$2
         AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
         AND schedule_source='auto' AND is_locked=false
-        AND ($4::uuid IS NULL OR teacher_os_user_id=$4)`,
-      [a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null]);
+        AND ($4::uuid IS NULL OR teacher_os_user_id=$4)
+        AND ($5::uuid IS NULL OR classroom_id=$5)`,
+      [a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null,b.classroomId??null]);
   }
 
   const existing=(await db.query(`SELECT * FROM timetable_entries
@@ -2070,13 +2073,13 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
 
   if(!b.dryRun){
     await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{
-      academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,created:created.length,unscheduled:unscheduled.length
+      academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,classroomId:b.classroomId??null,created:created.length,unscheduled:unscheduled.length
     });
     await changeLog({
       organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.auto_scheduled',
       resourceType:'timetable',performedOn:'Academic year '+b.academicYearId,
       oldValue:{existingPeriods:existing.length},newValue:{createdPeriods:created.length,unscheduled},
-      metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,periodMinutes}
+      metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,classroomId:b.classroomId??null,periodMinutes}
     });
   }
   return reply.code(b.dryRun?200:201).send({
