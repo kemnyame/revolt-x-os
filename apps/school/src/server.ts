@@ -426,10 +426,54 @@ app.get('/admissions',async(_r,p)=>p.type('text/html; charset=utf-8').send(admis
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
+let coreWakeInFlight:Promise<any>|null=null;
+async function probeCoreOS(){
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const started=Date.now();
+  try{
+    const res=await fetch(base+'/',{method:'GET',signal:AbortSignal.timeout(15000)});
+    return{reachable:res.ok,status:res.status,responseMs:Date.now()-started,url:base};
+  }catch(error:any){
+    return{reachable:false,status:0,responseMs:Date.now()-started,url:base,error:String(error?.message||error)};
+  }
+}
+async function wakeCoreOS(){
+  if(coreWakeInFlight)return coreWakeInFlight;
+  coreWakeInFlight=(async()=>{
+    let last:any=null;
+    for(let attempt=0;attempt<8;attempt++){
+      last=await probeCoreOS();
+      if(last.reachable)return{...last,attempts:attempt+1};
+      if(attempt<7)await new Promise(resolve=>setTimeout(resolve,[1000,1500,2200,3200,4500,6000,8000][attempt]||8000));
+    }
+    return{...(last||{}),attempts:8};
+  })();
+  try{return await coreWakeInFlight}finally{coreWakeInFlight=null}
+}
+
+app.get('/api/system/core-status',async()=>{
+  const core=await probeCoreOS();
+  let database='ready';
+  try{await db.query('SELECT 1')}catch{database='unavailable'}
+  return{school:'ready',database,core,checkedAt:new Date().toISOString()};
+});
+app.post('/api/system/core-wake',async(_request,reply)=>{
+  const core=await wakeCoreOS();
+  return reply.code(core.reachable?200:503).send({
+    core,
+    message:core.reachable?'Core Revolt-X OS is awake and responding.':'Core Revolt-X OS is still unavailable. Retry in a few seconds.'
+  });
+});
+
 app.post('/api/auth/preview',async(_r,p)=>{
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const previewUrl=base+'/v1/auth/preview-session';
   const transient=new Set([429,502,503,504]);
+
+  const wake=await wakeCoreOS();
+  if(!wake.reachable){
+    return p.code(503).send({error:{message:'Core Revolt-X OS could not be started. Use Wake Core OS and retry.'}});
+  }
 
   let coreToken:string|null=null;
   let lastStatus=503;
@@ -448,7 +492,7 @@ app.post('/api/auth/preview',async(_r,p)=>{
       lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is starting. Please retry in a moment.':'Core OS preview request failed');
       if(!transient.has(res.status))return p.code(res.status).send({error:{message:lastMessage}});
     }
-    if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[1000,1800,3000,4500,6500][attempt]||6500));
+    if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[1200,2000,3200,4800,6500][attempt]||6500));
   }
 
   if(!coreToken)return p.code(lastStatus).send({error:{message:lastMessage}});
@@ -487,11 +531,15 @@ app.post('/api/auth/preview',async(_r,p)=>{
   await db.query(`DELETE FROM school_sessions
     WHERE expires_at<now()-interval '1 day' OR revoked_at IS NOT NULL`).catch(()=>null);
 
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  p.header('set-cookie','rx_school_session='+encodeURIComponent(localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+
   return p.send({
     accessToken:localToken,
     expiresIn:8*60*60,
     tokenType:'Bearer',
-    localSession:true
+    localSession:true,
+    coreWake:wake
   });
 });
 
