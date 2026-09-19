@@ -463,9 +463,9 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
       const rows=(await db.query(
         "SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,c.name classroom_name,"+
         "sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)) outstanding,"+
-        "min(COALESCE(f.due_date,ay.end_date)) earliest_due_date "+
+        "min(COALESCE(t.end_date,ay.end_date,sf.created_at::date)) earliest_due_date "+
         "FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id "+
-        "LEFT JOIN academic_years ay ON ay.id=f.academic_year_id "+
+        "LEFT JOIN academic_years ay ON ay.id=f.academic_year_id LEFT JOIN terms t ON t.id=f.term_id "+
         "LEFT JOIN enrolments en ON en.student_id=s.id AND en.status='active' LEFT JOIN classrooms c ON c.id=en.classroom_id "+
         "LEFT JOIN (SELECT student_fee_id,sum(amount) FILTER(WHERE voided_at IS NULL) paid FROM payments GROUP BY student_fee_id) p ON p.student_fee_id=sf.id "+
         "WHERE sf.organisation_id=$1 GROUP BY s.id,c.name HAVING sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0))>0 ORDER BY outstanding DESC",
