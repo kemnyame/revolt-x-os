@@ -20,16 +20,24 @@ export type CoreContext={
   preview?:boolean;
 };
 
-export type SchoolRole='school_admin'|'headteacher'|'teacher'|'bursar'|'registrar';
+export type SchoolRole=string;
 
-export async function effectiveCapabilities(db:SchoolDb,role:SchoolRole){
+export async function effectiveCapabilities(db:SchoolDb,organisationId:string,role:SchoolRole){
   if(role==='school_admin'){
     return (await db.query<{key:string}>('SELECT key FROM school_capabilities ORDER BY sort_order,key')).rows.map(x=>x.key);
   }
   return (await db.query<{capability_key:string}>(
-    'SELECT capability_key FROM school_role_capabilities WHERE role=$1 AND allowed=true ORDER BY capability_key',
-    [role]
+    'SELECT capability_key FROM school_role_capabilities WHERE organisation_id=$1 AND role=$2 AND allowed=true ORDER BY capability_key',
+    [organisationId,role]
   )).rows.map(x=>x.capability_key);
+}
+
+export async function schoolRoleProfile(db:SchoolDb,organisationId:string,role:SchoolRole){
+  if(role==='school_admin')return{key:'school_admin',name:'School Administrator',portal_mode:'admin',can_teach:true,is_system:true,is_active:true};
+  return maybeOne<any>(db,
+    'SELECT key,name,description,portal_mode,can_teach,is_system,is_active FROM school_roles WHERE organisation_id=$1 AND key=$2',
+    [organisationId,role]
+  );
 }
 
 const coreContextCache=new Map<string,{value:CoreContext;expiresAt:number}>();
@@ -150,8 +158,8 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
       db,
       `SELECT allowed
        FROM school_role_capabilities
-       WHERE role=$1 AND capability_key=$2`,
-      [membership.role,capability]
+       WHERE organisation_id=$1 AND role=$2 AND capability_key=$3`,
+      [core.organisation_id,membership.role,capability]
     );
     if(!allowed?.allowed){
       throw Object.assign(new Error(`School permission required: ${capability}`),{statusCode:403});
