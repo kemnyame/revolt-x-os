@@ -69,18 +69,33 @@ async function openWorkspace(){
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
+async function startOnboardingAccess(){
+  E('loading').classList.remove('hide');E('app').classList.add('hide');
+  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Opening onboarding access</h1><p class="muted">Preparing the temporary School workspace...</p></div>';
+  var x=await publicJson('/api/auth/preview',{method:'POST',body:'{}'});
+  if(!x.accessToken)throw Error('Onboarding access did not return a School session');
+  token=x.accessToken;
+  sessionStorage.setItem('rx_teacher_token',token);
+  await openWorkspace();
+}
 async function boot(){
   var setup=new URLSearchParams(location.search).get('setup');
   if(setup){history.replaceState({},document.title,'/teacher');showPasswordSetup(setup);return}
   token=sessionStorage.getItem('rx_teacher_token')||'';
   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');token=''}
-  if(!token){showTeacherLogin();return}
-  try{await openWorkspace()}
+  try{
+    if(!token){await startOnboardingAccess();return}
+    await openWorkspace()
+  }
   catch(e){
-    if(e.status===401||e.status===403){sessionStorage.removeItem('rx_teacher_token');token='';showTeacherLogin(e.status===403?e.message:'Your session has expired. Sign in again.');return}
+    if(e.status===401||e.status===403){
+      sessionStorage.removeItem('rx_teacher_token');token='';
+      try{await startOnboardingAccess();return}catch(onboardErr){e=onboardErr}
+    }
     E('loading').classList.remove('hide');E('app').classList.add('hide');
-    E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Teacher workspace unavailable</h1><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">The School service will keep your login separate from temporary Core OS availability.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retryTeacher" class="primary">Retry</button><button id="teacherSignInAgain" class="ghost">Sign in again</button></div></div>';
-    E('retryTeacher').onclick=function(){location.reload()};E('teacherSignInAgain').onclick=function(){sessionStorage.removeItem('rx_teacher_token');token='';showTeacherLogin()}
+    E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Teacher workspace unavailable</h1><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">Onboarding access is temporarily unavailable. Retry to reconnect the School workspace.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retryTeacher" class="primary">Retry onboarding</button><button id="teacherManualSignIn" class="ghost">Use teacher sign in</button></div></div>';
+    E('retryTeacher').onclick=function(){sessionStorage.removeItem('rx_teacher_token');token='';location.reload()};
+    E('teacherManualSignIn').onclick=function(){sessionStorage.removeItem('rx_teacher_token');token='';showTeacherLogin('Temporary onboarding access is bypassed. Sign in with a Teacher account.')}
   }
 }
 async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
