@@ -18,6 +18,8 @@ const schema = z.object({
   RESEND_FROM_EMAIL: z.preprocess(emptyToUndefined,z.string().optional()),
 
   TWILIO_ACCOUNT_SID: z.preprocess(emptyToUndefined,z.string().optional()),
+  TWILIO_API_KEY_SID: z.preprocess(emptyToUndefined,z.string().optional()),
+  TWILIO_API_KEY_SECRET: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_AUTH_TOKEN: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_SMS_FROM: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_WHATSAPP_FROM: z.preprocess(emptyToUndefined,z.string().optional()),
