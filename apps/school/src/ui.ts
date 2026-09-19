@@ -691,6 +691,12 @@ async function page(p){
    var rr=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes'),raw('/api/subjects'),raw('/api/timetable'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/staff/module-memberships').catch(function(){return[]})]);
    var years=rr[0],terms=rr[1],classes=rr[2],subs=rr[3],tt=rr[4],users=rr[5],memberships=rr[6];
    var activeYear=years.find(function(y){return y.status==='active'})||years[0],activeTerm=terms.find(function(t){return t.status==='active'})||null;
+   var timetableYear=sessionStorage.getItem('rx_timetable_year')||(activeYear?activeYear.id:'');
+   if(!years.some(function(y){return y.id===timetableYear}))timetableYear=activeYear?activeYear.id:'';
+   var timetableTerm=sessionStorage.getItem('rx_timetable_term');if(timetableTerm===null)timetableTerm=activeTerm?activeTerm.id:'';
+   if(timetableTerm&&!terms.some(function(t){return t.id===timetableTerm&&t.academic_year_id===timetableYear}))timetableTerm='';
+   var timetableClass=sessionStorage.getItem('rx_timetable_class')||'';
+   if(timetableClass&&!classes.some(function(x){return x.id===timetableClass&&x.academic_year_id===timetableYear}))timetableClass='';
    var teacherIds=memberships.filter(function(m){return m.status==='active'&&(m.role==='teacher'||m.role==='headteacher'||m.role==='school_admin')}).map(function(m){return m.os_user_id});
    var teachers=users.filter(function(u){return teacherIds.indexOf(u.id)>=0});
    function teacherName(id){var u=users.find(function(x){return x.id===id});return u?u.first_name+' '+u.last_name:'—'}
@@ -704,7 +710,7 @@ async function page(p){
      }).join('')+'</div>'
    }
    E('content').innerHTML='<div class="section"><div><h1>Timetable & Scheduling</h1><p class="muted">View the full timetable, a class timetable or an individual teacher timetable. Scheduling checks flag clashes and unscheduled teaching assignments.</p></div><div class="actions"><button id="autoSchedule" class="primary">Auto Schedule</button><button id="scheduleSettings" class="ghost">Scheduling rules</button><button id="analyzeSchedule" class="ghost">Check schedule</button><button id="exportTimetable" class="ghost">Export CSV</button><button id="printTimetable" class="ghost">Print / Save PDF</button><button id="addSlot" class="ghost">Add period manually</button></div></div>'+
-   '<div class="panel"><div class="three"><div><label>Academic year</label><select id="ttYear">'+years.map(function(y){return'<option value="'+y.id+'"'+(activeYear&&y.id===activeYear.id?' selected':'')+'>'+esc(y.name)+'</option>'}).join('')+'</select></div><div><label>Term</label><select id="ttTerm"><option value="">Whole year</option>'+terms.map(function(t){return'<option value="'+t.id+'"'+(activeTerm&&t.id===activeTerm.id?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div><div><label>Class</label><select id="ttClass"><option value="">All classes</option>'+classes.map(function(x){return'<option value="'+x.id+'">'+esc(x.name)+'</option>'}).join('')+'</select></div></div>'+
+   '<div class="panel"><div class="three"><div><label>Academic year</label><select id="ttYear">'+years.map(function(y){return'<option value="'+y.id+'"'+(y.id===timetableYear?' selected':'')+'>'+esc(y.name)+'</option>'}).join('')+'</select></div><div><label>Term</label><select id="ttTerm"><option value="">Whole year</option>'+terms.filter(function(t){return t.academic_year_id===timetableYear}).map(function(t){return'<option value="'+t.id+'"'+(t.id===timetableTerm?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div><div><label>Class</label><select id="ttClass"><option value="">All classes</option>'+classes.filter(function(x){return x.academic_year_id===timetableYear}).map(function(x){return'<option value="'+x.id+'"'+(x.id===timetableClass?' selected':'')+'>'+esc(x.name)+'</option>'}).join('')+'</select></div></div>'+
    '<div class="row"><div><label>Individual teacher</label><select id="ttTeacher"><option value="">All teachers</option>'+teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name)+'</option>'}).join('')+'</select></div><div><label>Search timetable</label><input id="ttSearch" placeholder="Subject, class, teacher or room"></div></div></div>'+
    '<div id="scheduleAnalysis"></div><div id="ttView">'+renderWeek(tt)+'</div>';
    async function refreshTT(){
@@ -717,11 +723,15 @@ async function page(p){
      var rows=needle?tt.filter(function(x){return (x.subject_name+' '+x.classroom_name+' '+teacherName(x.teacher_os_user_id)+' '+(x.room||'')).toLowerCase().includes(needle)}):tt;
      E('ttView').innerHTML=renderWeek(rows)
    }
-   E('ttYear').onchange=refreshTT;E('ttTerm').onchange=refreshTT;E('ttClass').onchange=refreshTT;E('ttTeacher').onchange=refreshTT;E('ttSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(refreshTT,150)};
+   E('ttYear').onchange=function(){sessionStorage.setItem('rx_timetable_year',this.value);sessionStorage.setItem('rx_timetable_term','');sessionStorage.setItem('rx_timetable_class','');return page('timetable')};
+   E('ttTerm').onchange=function(){sessionStorage.setItem('rx_timetable_term',this.value);refreshTT()};
+   E('ttClass').onchange=function(){sessionStorage.setItem('rx_timetable_class',this.value);refreshTT()};
+   E('ttTeacher').onchange=refreshTT;E('ttSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(refreshTT,150)};
+   refreshTT();
    E('autoSchedule').onclick=async function(){
      try{
-       var y=E('ttYear').value,t=E('ttTerm').value||null,teacher=E('ttTeacher').value||null;
-       var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,regenerateAuto:false,dryRun:true})});
+       var y=E('ttYear').value,t=E('ttTerm').value||null,teacher=E('ttTeacher').value||null,classroom=E('ttClass').value||null;
+       var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,classroomId:classroom,regenerateAuto:false,dryRun:true})});
        var previewRows=(plan.suggestions||[]).slice(0,100);
        modal('<h2>Auto Schedule Preview</h2><p class="muted">The scheduler uses credit hours, minimum weekly periods, teacher availability, workload, school-day rules, breaks, class conflicts, teacher conflicts and room conflicts. Manual and locked changes are preserved.</p>'+
          '<div class="grid"><div class="panel stat"><span class="muted">Periods proposed</span><b>'+plan.created+'</b></div><div class="panel stat"><span class="muted">Items needing attention</span><b>'+plan.unscheduled.length+'</b></div><div class="panel stat"><span class="muted">Period length</span><b>'+plan.periodMinutes+' min</b></div><div class="panel stat"><span class="muted">Manual periods preserved</span><b>'+plan.preservedManual+'</b></div></div>'+
@@ -731,7 +741,7 @@ async function page(p){
        var apply=E('applyAutoSchedule');if(apply)apply.onclick=async function(){
          try{
            apply.disabled=true;apply.textContent='Scheduling...';
-           var result=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,regenerateAuto:E('regenerateAuto').checked,dryRun:false})});
+           var result=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,classroomId:classroom,regenerateAuto:E('regenerateAuto').checked,dryRun:false})});
            close();await page('timetable');successDialog('Timetable scheduled',result.created+' periods were created. '+result.unscheduled.length+' item(s) still need attention.')
          }catch(err){apply.disabled=false;apply.textContent='Apply Auto Schedule';toast(err.message,true)}
        }
