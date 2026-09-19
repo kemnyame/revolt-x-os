@@ -85,6 +85,87 @@ async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|nul
   if(!row)throw fail(403,'You are not assigned to this class or subject');
 }
 
+async function provisionDemoTeachers(){
+  if(!config.PROVISION_DEMO_TEACHERS)return;
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  try{
+    const previewRes=await fetch(base+'/v1/auth/preview-session',{method:'POST',signal:AbortSignal.timeout(10000)});
+    if(!previewRes.ok){console.warn('Demo teacher provisioning skipped: Core OS preview access unavailable');return}
+    const preview=await previewRes.json() as any;
+    const token=preview.accessToken as string;
+    const headers={authorization:'Bearer '+token,'content-type':'application/json'};
+    const specs=[
+      {email:'akua.mensah@revoltxacademy.edu.gh',firstName:'Akua',lastName:'Mensah',jobTitle:'Primary Class Teacher',employeeNumber:'RX-T001'},
+      {email:'daniel.osei@revoltxacademy.edu.gh',firstName:'Daniel',lastName:'Osei',jobTitle:'Mathematics Teacher',employeeNumber:'RX-T002'},
+      {email:'mabel.addo@revoltxacademy.edu.gh',firstName:'Mabel',lastName:'Addo',jobTitle:'English Language Teacher',employeeNumber:'RX-T003'},
+      {email:'samuel.boateng@revoltxacademy.edu.gh',firstName:'Samuel',lastName:'Boateng',jobTitle:'Science Teacher',employeeNumber:'RX-T004'},
+      {email:'grace.asante@revoltxacademy.edu.gh',firstName:'Grace',lastName:'Asante',jobTitle:'Social Studies Teacher',employeeNumber:'RX-T005'},
+      {email:'linda.owusu@revoltxacademy.edu.gh',firstName:'Linda',lastName:'Owusu',jobTitle:'Computing Teacher',employeeNumber:'RX-T006'},
+      {email:'josephine.tetteh@revoltxacademy.edu.gh',firstName:'Josephine',lastName:'Tetteh',jobTitle:'French Teacher',employeeNumber:'RX-T007'},
+      {email:'richard.boadu@revoltxacademy.edu.gh',firstName:'Richard',lastName:'Boadu',jobTitle:'Physical Education & Creative Arts Teacher',employeeNumber:'RX-T008'}
+    ];
+    let usersRes=await fetch(base+'/v1/users',{headers,signal:AbortSignal.timeout(10000)});
+    if(!usersRes.ok)throw new Error('Could not read Core OS users');
+    let users=await usersRes.json() as any[];
+    for(const spec of specs){
+      if(!users.some(u=>String(u.email).toLowerCase()===spec.email)){
+        const created=await fetch(base+'/v1/users',{method:'POST',headers,body:JSON.stringify({...spec,roleKey:'member'}),signal:AbortSignal.timeout(10000)});
+        if(!created.ok&&created.status!==409)console.warn('Could not provision demo teacher',spec.email,created.status);
+      }
+    }
+    usersRes=await fetch(base+'/v1/users',{headers,signal:AbortSignal.timeout(10000)});
+    if(!usersRes.ok)throw new Error('Could not refresh Core OS users');
+    users=await usersRes.json() as any[];
+    const orgId=preview.organisationId||preview.organisation_id;
+    const teacherUsers=users.filter(u=>specs.some(s=>s.email===String(u.email).toLowerCase()));
+    for(const u of teacherUsers){
+      if(u.membership_status!=='active'){
+        await fetch(base+'/v1/users/'+u.membership_id+'/status',{method:'PATCH',headers,body:JSON.stringify({status:'active'}),signal:AbortSignal.timeout(10000)});
+      }
+      await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+        VALUES($1,$2,'teacher','active')
+        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()`,[orgId,u.id]);
+    }
+    const year=await activeYear(orgId);if(!year)return;
+    const term=await activeTerm(orgId);
+    const classes=(await db.query(`SELECT c.id,c.name,g.code grade_code,g.stage FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND c.is_active=true ORDER BY g.level_order,c.name`,[orgId,year.id])).rows;
+    const subjects=(await db.query('SELECT id,code,stage FROM subjects WHERE organisation_id=$1 AND is_active=true',[orgId])).rows;
+    const byEmail=(email:string)=>teacherUsers.find(u=>String(u.email).toLowerCase()===email);
+    const subjectTeacher:Record<string,string>={
+      MATH:'daniel.osei@revoltxacademy.edu.gh',ENG:'mabel.addo@revoltxacademy.edu.gh',
+      SCI:'samuel.boateng@revoltxacademy.edu.gh',SOC:'grace.asante@revoltxacademy.edu.gh',
+      ICT:'linda.owusu@revoltxacademy.edu.gh',FREN:'josephine.tetteh@revoltxacademy.edu.gh',
+      CREA:'richard.boadu@revoltxacademy.edu.gh',PE:'richard.boadu@revoltxacademy.edu.gh',
+      RME:'akua.mensah@revoltxacademy.edu.gh',CAREER:'linda.owusu@revoltxacademy.edu.gh'
+    };
+    const classTeacherEmails=['akua.mensah@revoltxacademy.edu.gh','mabel.addo@revoltxacademy.edu.gh','grace.asante@revoltxacademy.edu.gh','daniel.osei@revoltxacademy.edu.gh','samuel.boateng@revoltxacademy.edu.gh','linda.owusu@revoltxacademy.edu.gh','josephine.tetteh@revoltxacademy.edu.gh','richard.boadu@revoltxacademy.edu.gh','samuel.boateng@revoltxacademy.edu.gh'];
+    for(let i=0;i<classes.length;i++){
+      const cls=classes[i];
+      const classTeacher=byEmail(classTeacherEmails[i%classTeacherEmails.length]!);
+      if(classTeacher)await db.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2',[classTeacher.id,cls.id]);
+      const allowed=subjects.filter((s:any)=>s.stage==='both'||s.stage===cls.stage);
+      for(const sub of allowed){
+        await db.query(`INSERT INTO class_subjects(organisation_id,academic_year_id,classroom_id,subject_id,is_active)
+          VALUES($1,$2,$3,$4,true)
+          ON CONFLICT(academic_year_id,classroom_id,subject_id) DO UPDATE SET is_active=true,updated_at=now()`,[orgId,year.id,cls.id,sub.id]);
+        const t=byEmail(subjectTeacher[sub.code]);
+        if(t){
+          await db.query(`INSERT INTO teacher_assignments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active)
+            SELECT $1,$2,$3,$4,$5,$6,true
+            WHERE NOT EXISTS(
+              SELECT 1 FROM teacher_assignments
+              WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$4 AND subject_id=$5 AND teacher_os_user_id=$6
+                AND (($3::uuid IS NULL AND term_id IS NULL) OR term_id=$3)
+            )`,[orgId,year.id,term?.id??null,cls.id,sub.id,t.id]);
+        }
+      }
+    }
+    console.log(`Provisioned ${teacherUsers.length} demo teachers and academic assignments`);
+  }catch(error){
+    console.warn('Demo teacher provisioning failed',error);
+  }
+}
+
 app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
@@ -821,6 +902,8 @@ let shutting=false;
 async function shutdown(){if(shutting)return;shutting=true;await app.close();await db.end()}
 process.once('SIGTERM',()=>void shutdown().finally(()=>process.exit(0)));
 process.once('SIGINT',()=>void shutdown().finally(()=>process.exit(0)));
+
+await provisionDemoTeachers();
 
 await app.listen({host:config.HOST,port:config.PORT});
 console.log(`Revolt-X School listening on ${config.HOST}:${config.PORT}`);
