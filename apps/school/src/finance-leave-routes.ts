@@ -15,11 +15,12 @@ type Deps={
   deliverCommunication:(input:any)=>Promise<any>;
   postFinanceJournal:(client:any,input:any)=>Promise<any>;
   postStudentPaymentLedger:(client:any,paymentId:string,actorOsUserId?:string|null)=>Promise<any>;
+  reverseFinanceJournal:(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string)=>Promise<any>;
   clearCoreUsersCache:(organisationId:string)=>void;
 };
 
 export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
-  const {db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,postFinanceJournal,postStudentPaymentLedger,clearCoreUsersCache}=d;
+  const {db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,postFinanceJournal,postStudentPaymentLedger,reverseFinanceJournal,clearCoreUsersCache}=d;
 
   app.get('/api/staff/users',async request=>{
     const a=await authorize(request,db,config,'staff.view');
@@ -270,6 +271,19 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     return reply.code(201).send(result);
   });
 
+  app.post('/api/finance/expenses/:id/void',async request=>{
+    const a=await authorize(request,db,config,'finance.reverse');
+    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const b=z.object({reason:z.string().trim().min(2).max(1000)}).parse(request.body);
+    const row=await tx(db,async(client:any)=>{
+      const expense=await one(client,"SELECT * FROM finance_expenses WHERE id=$1 AND organisation_id=$2 AND status='posted' FOR UPDATE",[id,a.core.organisation_id]) as any;
+      if(expense.journal_entry_id)await reverseFinanceJournal(client,a.core.organisation_id,expense.journal_entry_id,a.core.id,b.reason,'expense_void',expense.id);
+      return one(client,"UPDATE finance_expenses SET status='voided',updated_at=now() WHERE id=$1 RETURNING *",[id]);
+    });
+    await audit(a.core.organisation_id,a.core.id,'finance.expense_voided','finance_expense',id,{reason:b.reason});
+    return row;
+  });
+
   app.get('/api/finance/taxes',async request=>{
     const a=await authorize(request,db,config,'tax.view');
     const types=(await db.query('SELECT * FROM finance_tax_types WHERE organisation_id=$1 ORDER BY is_active DESC,name',[a.core.organisation_id])).rows;
@@ -281,6 +295,32 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
       'JOIN finance_tax_obligations o ON o.id=p.obligation_id JOIN finance_tax_types t ON t.id=o.tax_type_id '+
       'WHERE p.organisation_id=$1 ORDER BY p.payment_date DESC,p.created_at DESC',[a.core.organisation_id])).rows;
     return{types,obligations,payments};
+  });
+
+  app.post('/api/finance/tax-types',async(request,reply)=>{
+    const a=await authorize(request,db,config,'tax.manage');
+    const b=z.object({code:z.string().trim().min(1).max(40),name:z.string().trim().min(2).max(180),authority:z.string().max(220).optional(),
+      rate:z.number().min(0).max(100).nullable().optional(),filingFrequency:z.enum(['monthly','quarterly','annual','other']).default('monthly')}).parse(request.body);
+    const payable=await one(db,"SELECT id FROM finance_accounts WHERE organisation_id=$1 AND code='2100'",[a.core.organisation_id]) as any;
+    const row=await one(db,
+      'INSERT INTO finance_tax_types(organisation_id,code,name,authority,rate,payable_account_id,filing_frequency) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [a.core.organisation_id,b.code.toUpperCase(),b.name,b.authority??null,b.rate??null,payable.id,b.filingFrequency]) as any;
+    await audit(a.core.organisation_id,a.core.id,'finance.tax_type_created','finance_tax_type',row.id);
+    return reply.code(201).send(row);
+  });
+
+  app.patch('/api/finance/tax-types/:id',async request=>{
+    const a=await authorize(request,db,config,'tax.manage');
+    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const b=z.object({name:z.string().trim().min(2).max(180).optional(),authority:z.string().max(220).nullable().optional(),
+      rate:z.number().min(0).max(100).nullable().optional(),filingFrequency:z.enum(['monthly','quarterly','annual','other']).optional(),isActive:z.boolean().optional()})
+      .refine(v=>Object.keys(v).length>0).parse(request.body);
+    const row=await one(db,
+      'UPDATE finance_tax_types SET name=COALESCE($1,name),authority=CASE WHEN $2 THEN $3 ELSE authority END,rate=CASE WHEN $4 THEN $5 ELSE rate END,'+
+      'filing_frequency=COALESCE($6,filing_frequency),is_active=COALESCE($7,is_active) WHERE id=$8 AND organisation_id=$9 RETURNING *',
+      [b.name??null,Object.hasOwn(b,'authority'),b.authority??null,Object.hasOwn(b,'rate'),b.rate??null,b.filingFrequency??null,b.isActive??null,id,a.core.organisation_id]) as any;
+    await audit(a.core.organisation_id,a.core.id,'finance.tax_type_updated','finance_tax_type',id);
+    return row;
   });
 
   app.post('/api/finance/tax-obligations',async(request,reply)=>{
@@ -361,7 +401,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/finance/reports/:report',async request=>{
     const a=await authorize(request,db,config,'finance.report');
-    const {report}=z.object({report:z.enum(['income-statement','trial-balance','cashflow','tax-summary','expense-analysis'])}).parse(request.params);
+    const {report}=z.object({report:z.enum(['income-statement','trial-balance','cashflow','tax-summary','expense-analysis','balance-sheet','receivables-aging','fee-collections','budget-variance','general-ledger'])}).parse(request.params);
     const q=z.object({start:z.string().date().optional(),end:z.string().date().optional()}).parse(request.query);
     const start=q.start??new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10);
     const end=q.end??new Date().toISOString().slice(0,10);
@@ -399,6 +439,71 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
         "ON o.tax_type_id=t.id AND o.status<>'cancelled' AND o.period_end BETWEEN $2 AND $3 WHERE t.organisation_id=$1 GROUP BY t.id ORDER BY t.code",
         [a.core.organisation_id,start,end])).rows;
       return{report,period:{start,end},rows};
+    }
+    if(report==='balance-sheet'){
+      const rows=(await db.query(
+        "SELECT fa.code,fa.name,fa.account_type,fa.opening_balance,"+
+        "CASE WHEN fa.account_type='asset' THEN fa.opening_balance+COALESCE(sum(jl.debit-jl.credit),0) "+
+        "ELSE fa.opening_balance+COALESCE(sum(jl.credit-jl.debit),0) END balance "+
+        "FROM finance_accounts fa LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id "+
+        "LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2 "+
+        "WHERE fa.organisation_id=$1 AND fa.account_type IN('asset','liability','equity') GROUP BY fa.id ORDER BY fa.account_type,fa.code",
+        [a.core.organisation_id,end])).rows;
+      const assets=rows.filter((x:any)=>x.account_type==='asset').reduce((s:number,x:any)=>s+Number(x.balance),0);
+      const liabilities=rows.filter((x:any)=>x.account_type==='liability').reduce((s:number,x:any)=>s+Number(x.balance),0);
+      const equityBase=rows.filter((x:any)=>x.account_type==='equity').reduce((s:number,x:any)=>s+Number(x.balance),0);
+      const retained=await one(db,
+        "SELECT COALESCE(sum(CASE WHEN fa.account_type='income' THEN jl.credit-jl.debit WHEN fa.account_type='expense' THEN -(jl.debit-jl.credit) ELSE 0 END),0) retained "+
+        "FROM finance_journal_lines jl JOIN finance_journal_entries je ON je.id=jl.journal_entry_id JOIN finance_accounts fa ON fa.id=jl.account_id "+
+        "WHERE je.organisation_id=$1 AND je.status='posted' AND je.entry_date<=$2 AND fa.account_type IN('income','expense')",
+        [a.core.organisation_id,end]) as any;
+      return{report,asOf:end,rows,assets,liabilities,equity:equityBase+Number(retained.retained),retainedSurplus:Number(retained.retained)};
+    }
+    if(report==='receivables-aging'){
+      const rows=(await db.query(
+        "SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,c.name classroom_name,"+
+        "sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)) outstanding,"+
+        "min(COALESCE(f.due_date,ay.end_date)) earliest_due_date "+
+        "FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id "+
+        "LEFT JOIN academic_years ay ON ay.id=f.academic_year_id "+
+        "LEFT JOIN enrolments en ON en.student_id=s.id AND en.status='active' LEFT JOIN classrooms c ON c.id=en.classroom_id "+
+        "LEFT JOIN (SELECT student_fee_id,sum(amount) FILTER(WHERE voided_at IS NULL) paid FROM payments GROUP BY student_fee_id) p ON p.student_fee_id=sf.id "+
+        "WHERE sf.organisation_id=$1 GROUP BY s.id,c.name HAVING sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0))>0 ORDER BY outstanding DESC",
+        [a.core.organisation_id])).rows;
+      const today=new Date(end+'T00:00:00Z').getTime();
+      const enriched=rows.map((x:any)=>{const due=x.earliest_due_date?new Date(String(x.earliest_due_date).slice(0,10)+'T00:00:00Z').getTime():today;
+        const days=Math.floor((today-due)/86400000);return{...x,age_days:Math.max(0,days),bucket:days<=0?'current':days<=30?'1-30':days<=60?'31-60':days<=90?'61-90':'90+'}});
+      return{report,asOf:end,rows:enriched,total:enriched.reduce((s:number,x:any)=>s+Number(x.outstanding),0)};
+    }
+    if(report==='fee-collections'){
+      const rows=(await db.query(
+        "SELECT p.payment_method,count(*)::int transactions,COALESCE(sum(p.amount),0) amount "+
+        "FROM payments p WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND p.paid_at::date BETWEEN $2 AND $3 GROUP BY p.payment_method ORDER BY amount DESC",
+        [a.core.organisation_id,start,end])).rows;
+      const daily=(await db.query(
+        "SELECT p.paid_at::date day,COALESCE(sum(p.amount),0) amount,count(*)::int transactions FROM payments p "+
+        "WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND p.paid_at::date BETWEEN $2 AND $3 GROUP BY p.paid_at::date ORDER BY day",
+        [a.core.organisation_id,start,end])).rows;
+      return{report,period:{start,end},rows,daily,total:rows.reduce((s:number,x:any)=>s+Number(x.amount),0)};
+    }
+    if(report==='budget-variance'){
+      const rows=(await db.query(
+        "SELECT b.id,fa.code,fa.name,fa.account_type,b.period_start,b.period_end,b.amount budget_amount,"+
+        "CASE WHEN fa.account_type='income' THEN COALESCE(sum(jl.credit-jl.debit),0) ELSE COALESCE(sum(jl.debit-jl.credit),0) END actual_amount "+
+        "FROM finance_budgets b JOIN finance_accounts fa ON fa.id=b.account_id "+
+        "LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id "+
+        "AND je.status='posted' AND je.entry_date BETWEEN GREATEST(b.period_start,$2::date) AND LEAST(b.period_end,$3::date) "+
+        "WHERE b.organisation_id=$1 AND b.period_end>=$2::date AND b.period_start<=$3::date GROUP BY b.id,fa.id ORDER BY fa.code",
+        [a.core.organisation_id,start,end])).rows;
+      return{report,period:{start,end},rows:rows.map((x:any)=>({...x,variance:Number(x.actual_amount)-Number(x.budget_amount)}))};
+    }
+    if(report==='general-ledger'){
+      const rows=(await db.query(
+        "SELECT je.entry_date,je.entry_no,je.description,je.reference,fa.code account_code,fa.name account_name,jl.description line_description,jl.debit,jl.credit "+
+        "FROM finance_journal_entries je JOIN finance_journal_lines jl ON jl.journal_entry_id=je.id JOIN finance_accounts fa ON fa.id=jl.account_id "+
+        "WHERE je.organisation_id=$1 AND je.status='posted' AND je.entry_date BETWEEN $2 AND $3 ORDER BY je.entry_date,je.entry_no,fa.code",
+        [a.core.organisation_id,start,end])).rows;
+      return{report,period:{start,end},rows,totalDebit:rows.reduce((s:number,x:any)=>s+Number(x.debit),0),totalCredit:rows.reduce((s:number,x:any)=>s+Number(x.credit),0)};
     }
     const rows=(await db.query(
       "SELECT fa.code,fa.name,COALESCE(sum(e.amount+e.tax_amount),0) amount,count(e.id)::int transactions FROM finance_accounts fa "+
