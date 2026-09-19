@@ -902,7 +902,35 @@ else if(p==='attendance'){
    E('staffSearch').oninput=function(){var q=this.value.toLowerCase();var rows=users.filter(function(u){return (u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.employee_number||'')+' '+(u.job_title||'')+' '+roleName(schoolRole(u.id))).toLowerCase().includes(q)});E('staffDirectoryTable').innerHTML=directoryTable(rows)};
 
    E('content').onclick=function(e){
-     var uid=e.target.dataset.sendUserInvite;if(uid){var u=users.find(function(x){return x.id===uid});if(!u||!u.email)return toast('Add a real email address before sending a setup link',true);if(!confirm('Send a fresh password setup link to '+u.email+'?'))return;return raw('/api/staff/teachers/'+uid+'/send-invitation',{method:'POST',body:'{}'}).then(function(x){toast(x.status==='sent'?'Setup link sent':'Invitation created')}).catch(function(err){toast(err.message,true)})}
+     var uid=e.target.dataset.editUser;if(uid){
+       var u=users.find(function(x){return x.id===uid});if(!u||!u.membership_id)return;
+       return form('Edit User',[
+         {key:'firstName',label:'First name'},{key:'lastName',label:'Last name'},{key:'email',label:'Email address',type:'email'},
+         {key:'jobTitle',label:'Job title'},{key:'employeeNumber',label:'Staff number'},
+         {key:'schoolRole',label:'School role',type:'select',options:roleOptions(u.school_role||schoolRole(u.id))}
+       ],{firstName:u.first_name,lastName:u.last_name,email:u.email||'',jobTitle:u.job_title||'',employeeNumber:u.employee_number||'',schoolRole:u.school_role||schoolRole(u.id)},function(v){
+         return raw('/api/staff/users/'+u.membership_id,{method:'PATCH',body:JSON.stringify({
+           firstName:v.firstName,lastName:v.lastName,email:v.email||null,jobTitle:v.jobTitle||null,
+           employeeNumber:v.employeeNumber||null,schoolRole:v.schoolRole
+         })})
+       })
+     }
+     uid=e.target.dataset.resetUser;if(uid){
+       var ru=users.find(function(x){return x.id===uid});if(!ru||!ru.membership_id)return;
+       if(!ru.email)return toast('Add an email address before resetting the password',true);
+       if(!confirm('Send a new password reset link to '+ru.email+'?'))return;
+       return raw('/api/staff/users/'+ru.membership_id+'/password-reset',{method:'POST',body:'{}'}).then(function(x){toast(x.status==='sent'?'Password reset link sent':'Password reset link created')}).catch(function(err){toast(err.message,true)})
+     }
+     uid=e.target.dataset.userStatus;if(uid){
+       var su=users.find(function(x){return x.id===uid});if(!su||!su.membership_id)return;
+       var next=e.target.dataset.nextStatus;if(!confirm((next==='suspended'?'Disable':'Enable')+' access for '+su.first_name+' '+su.last_name+'?'))return;
+       return raw('/api/staff/users/'+su.membership_id+'/status',{method:'POST',body:JSON.stringify({status:next})}).then(function(){toast(next==='active'?'User enabled':'User disabled');page('staff')}).catch(function(err){toast(err.message,true)})
+     }
+     uid=e.target.dataset.unlockUser;if(uid){
+       var uu=users.find(function(x){return x.id===uid});if(!uu||!uu.membership_id)return;
+       if(!confirm('Unlock '+uu.first_name+' '+uu.last_name+' and revoke old sessions?'))return;
+       return raw('/api/staff/users/'+uu.membership_id+'/unlock',{method:'POST',body:'{}'}).then(function(){toast('User unlocked');page('staff')}).catch(function(err){toast(err.message,true)})
+     }
      var id=e.target.dataset.editAccess;if(id){var x=memberships.find(function(r){return r.id===id});return form('Edit user access',[{key:'role',label:'School role',type:'select',options:roleOptions(x.role)},{key:'status',label:'Status',type:'select',options:['active','suspended']}],{role:x.role,status:x.status},function(v){return raw('/api/staff/module-memberships/'+id,{method:'PATCH',body:JSON.stringify(v)})})}
      id=e.target.dataset.removeAccess;if(id)return confirmDo('Remove this user from Revolt-X School?',function(){return raw('/api/staff/module-memberships/'+id,{method:'DELETE'})});
      id=e.target.dataset.toggleReviewer;if(id){var active=e.target.dataset.reviewActive==='true';return raw('/api/report-reviewers',{method:'POST',body:JSON.stringify({classroomId:e.target.dataset.reviewClass,reviewerOsUserId:e.target.dataset.reviewUser,isActive:!active})}).then(function(){toast(active?'Reviewer disabled':'Reviewer enabled');page('staff')}).catch(function(err){toast(err.message,true)})}
