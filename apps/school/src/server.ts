@@ -2279,11 +2279,23 @@ If you did not request or expect this message, contact your school administrator
   return{status:delivered.status,error:delivered.last_error??null,expiresInHours:24};
 });
 
-app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'staff.view');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
-app.post('/api/staff/module-memberships',async(request,reply)=>{
-  const a=await authorize(request,db,config,'staff.edit');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
+app.get('/api/staff/module-memberships',async request=>{
+  const a=await authorize(request,db,config,'staff.view');
+  return (await db.query(`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach
+    FROM school_memberships sm LEFT JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 ORDER BY sm.created_at`,[a.core.organisation_id])).rows;
 });
-
+app.post('/api/staff/module-memberships',async(request,reply)=>{
+  const a=await authorize(request,db,config,'staff.edit');
+  const b=z.object({osUserId:z.string().uuid(),role:z.string().min(1).max(40),status:z.enum(['active','suspended']).default('active')}).parse(request.body);
+  await one<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,b.role]);
+  const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+    VALUES($1,$2,$3,$4)
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now()
+    RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);
+  await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});
+  return reply.code(201).send(row);
+});
 
 app.patch('/api/academic-years/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');
@@ -2555,10 +2567,13 @@ app.delete('/api/timetable/:id',async(request,reply)=>{
 });
 
 app.patch('/api/staff/module-memberships/:id',async request=>{
-  const a=await authorize(request,db,config,'staff.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']).optional(),status:z.enum(['active','suspended']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const a=await authorize(request,db,config,'staff.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({role:z.string().min(1).max(40).optional(),status:z.enum(['active','suspended']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  if(b.role)await one<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,b.role]);
   const row=await one<any>(db,'UPDATE school_memberships SET role=COALESCE($1,role),status=COALESCE($2,status),updated_at=now() WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.role??null,b.status??null,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'school_staff.updated','school_membership',id,{role:row.role,status:row.status});return row;
+  await audit(a.core.organisation_id,a.core.id,'school_staff.updated','school_membership',id,{role:row.role,status:row.status});
+  return row;
 });
 app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
@@ -3881,28 +3896,79 @@ app.post('/api/admissions/:id/enrol',async(request,reply)=>{
 app.get('/api/roles/capabilities',async request=>{
   const a=await authorize(request,db,config,'roles.view');
   const capabilities=(await db.query(`SELECT * FROM school_capabilities ORDER BY sort_order,module,action,label`)).rows;
-  const mappings=(await db.query(`SELECT role,capability_key,allowed FROM school_role_capabilities ORDER BY role,capability_key`)).rows;
-  const manage=await maybeOne<any>(db,'SELECT allowed FROM school_role_capabilities WHERE role=$1 AND capability_key=$2',[a.role,'roles.manage']);
-  return{
-    currentRole:a.role,
-    canManage:a.role==='school_admin'||Boolean(manage?.allowed),
-    roles:['school_admin','headteacher','teacher','bursar','registrar'],
-    capabilities,
-    mappings
-  };
+  const roles=(await db.query(`SELECT key,name,description,portal_mode,can_teach,is_system,is_active
+    FROM school_roles WHERE organisation_id=$1 ORDER BY is_system DESC,name`,[a.core.organisation_id])).rows;
+  const mappings=(await db.query(`SELECT role,capability_key,allowed FROM school_role_capabilities
+    WHERE organisation_id=$1 ORDER BY role,capability_key`,[a.core.organisation_id])).rows;
+  const manage=a.role==='school_admin'||Boolean((await maybeOne<any>(db,
+    'SELECT allowed FROM school_role_capabilities WHERE organisation_id=$1 AND role=$2 AND capability_key=$3',
+    [a.core.organisation_id,a.role,'roles.manage']))?.allowed);
+  return{currentRole:a.role,canManage:manage,roles,capabilities,mappings};
+});
+app.post('/api/roles',async(request,reply)=>{
+  const a=await authorize(request,db,config,'roles.manage');
+  const b=z.object({
+    name:z.string().trim().min(2).max(120),
+    key:z.string().trim().regex(/^[a-z][a-z0-9_]{1,39}$/).optional(),
+    description:z.string().max(500).optional(),
+    portalMode:z.enum(['admin','teacher']).default('admin'),
+    canTeach:z.boolean().default(false),
+    copyFromRole:z.string().max(40).optional()
+  }).parse(request.body);
+  const key=(b.key||b.name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')).slice(0,40);
+  if(!key||key==='school_admin')throw fail(400,'Choose a different role name');
+  const existing=await maybeOne<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2',[a.core.organisation_id,key]);
+  if(existing)throw fail(409,'A School role with this key already exists');
+  const row=await one<any>(db,`INSERT INTO school_roles(organisation_id,key,name,description,portal_mode,can_teach,is_system,is_active)
+    VALUES($1,$2,$3,$4,$5,$6,false,true) RETURNING *`,
+    [a.core.organisation_id,key,b.name,b.description??null,b.portalMode,b.canTeach]);
+  const source=b.copyFromRole
+    ?await db.query('SELECT capability_key,allowed FROM school_role_capabilities WHERE organisation_id=$1 AND role=$2',[a.core.organisation_id,b.copyFromRole])
+    :null;
+  if(source&&source.rowCount){
+    for(const p of source.rows)await db.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed)
+      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[a.core.organisation_id,key,p.capability_key,p.allowed]);
+  }else{
+    await db.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed)
+      SELECT $1,$2,key,false FROM school_capabilities ON CONFLICT DO NOTHING`,[a.core.organisation_id,key]);
+  }
+  await audit(a.core.organisation_id,a.core.id,'school_role.created','school_role',key,{name:b.name,portalMode:b.portalMode,canTeach:b.canTeach});
+  return reply.code(201).send(row);
+});
+app.patch('/api/roles/:role',async request=>{
+  const a=await authorize(request,db,config,'roles.manage');
+  const {role}=z.object({role:z.string().min(1).max(40)}).parse(request.params);
+  const b=z.object({
+    name:z.string().trim().min(2).max(120).optional(),
+    description:z.string().max(500).nullable().optional(),
+    portalMode:z.enum(['admin','teacher']).optional(),
+    canTeach:z.boolean().optional(),
+    isActive:z.boolean().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM school_roles WHERE organisation_id=$1 AND key=$2',[a.core.organisation_id,role]);
+  if(current.key==='school_admin'&&b.isActive===false)throw fail(409,'School Administrator cannot be disabled');
+  const row=await one<any>(db,`UPDATE school_roles SET name=COALESCE($1,name),
+    description=CASE WHEN $2 THEN $3 ELSE description END,
+    portal_mode=COALESCE($4,portal_mode),can_teach=COALESCE($5,can_teach),is_active=COALESCE($6,is_active),updated_at=now()
+    WHERE organisation_id=$7 AND key=$8 RETURNING *`,
+    [b.name??null,Object.hasOwn(b,'description'),b.description??null,b.portalMode??null,b.canTeach??null,b.isActive??null,a.core.organisation_id,role]);
+  await audit(a.core.organisation_id,a.core.id,'school_role.updated','school_role',role,{name:row.name});
+  return row;
 });
 app.put('/api/roles/:role/capabilities',async request=>{
   const a=await authorize(request,db,config,'roles.manage');
-  const {role}=z.object({role:z.enum(['headteacher','teacher','bursar','registrar'])}).parse(request.params);
-  const b=z.object({permissions:z.array(z.object({capabilityKey:z.string().min(1).max(100),allowed:z.boolean()})).min(1).max(100)}).parse(request.body);
+  const {role}=z.object({role:z.string().min(1).max(40)}).parse(request.params);
+  if(role==='school_admin')throw fail(409,'School Administrator always has full access');
+  await one<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,role]);
+  const b=z.object({permissions:z.array(z.object({capabilityKey:z.string().min(1).max(100),allowed:z.boolean()})).min(1).max(200)}).parse(request.body);
   const known=(await db.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>x.key);
   for(const p of b.permissions)if(!known.includes(p.capabilityKey))throw fail(400,`Unknown school capability: ${p.capabilityKey}`);
   await tx(db,async client=>{
     for(const p of b.permissions){
-      await client.query(`INSERT INTO school_role_capabilities(role,capability_key,allowed,updated_at)
-        VALUES($1,$2,$3,now())
-        ON CONFLICT(role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
-        [role,p.capabilityKey,p.allowed]);
+      await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
+        VALUES($1,$2,$3,$4,now())
+        ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
+        [a.core.organisation_id,role,p.capabilityKey,p.allowed]);
     }
   });
   await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{count:b.permissions.length});
