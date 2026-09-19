@@ -104,6 +104,7 @@ async function previewToken(){
 async function boot(){
  try{
    token=sessionStorage.getItem('rx_school_token')||'';
+   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_school_token');token=''}
    if(!token){token=await previewToken();sessionStorage.setItem('rx_school_token',token)}
    try{ctx=await raw('/api/context')}
    catch(e){
