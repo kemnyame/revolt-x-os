@@ -459,30 +459,13 @@ app.get('/api/students/:id/360',async request=>{
     WHERE p.organisation_id=$1 AND p.student_id=$2 ORDER BY p.paid_at DESC LIMIT 15`,[a.core.organisation_id,id])).rows;
   let subjects:any[]=[];let performance:any={overallAverage:null,classPosition:null,classSize:null};
   if(term){
-    const rawSubjects=(await db.query(`SELECT sub.id subject_id,sub.name subject_name,
-      ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage,COUNT(sc.score)::int assessment_count
-      FROM assessments a JOIN subjects sub ON sub.id=a.subject_id
-      JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1
-      WHERE a.organisation_id=$2 AND a.term_id=$3
-      GROUP BY sub.id,sub.name ORDER BY sub.name`,[id,a.core.organisation_id,term.id])).rows;
-    const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[a.core.organisation_id])).rows;
-    subjects=rawSubjects.map((s:any)=>{const pct=Number(s.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...s,grade:band?.name??'',remark:band?.remark??''}});
-    if(subjects.length)performance.overallAverage=Math.round((subjects.reduce((sum:number,s:any)=>sum+Number(s.percentage),0)/subjects.length)*100)/100;
+    subjects=await calculateStudentTermResults(a.core.organisation_id,id,term.id);
+    if(subjects.length){
+      const available=subjects.filter((s:any)=>s.percentage!=null);
+      if(available.length)performance.overallAverage=Math.round((available.reduce((sum:number,s:any)=>sum+Number(s.percentage),0)/available.length)*100)/100;
+    }
     if(student.classroom_id){
-      const rank=await maybeOne<any>(db,`WITH class_scores AS (
-          SELECT e.student_id,AVG((sc.score/a.max_score)*100.0) avg_pct
-          FROM enrolments e
-          JOIN assessments a ON a.classroom_id=e.classroom_id AND a.term_id=$2
-          JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=e.student_id
-          WHERE e.classroom_id=$1 AND e.status='active'
-          GROUP BY e.student_id
-        ), ranked AS (
-          SELECT student_id,ROUND(avg_pct::numeric,2) average,
-                 RANK() OVER(ORDER BY avg_pct DESC)::int position,
-                 COUNT(*) OVER()::int class_size
-          FROM class_scores
-        )
-        SELECT * FROM ranked WHERE student_id=$3`,[student.classroom_id,term.id,id]);
+      const rank=await calculateClassRank(a.core.organisation_id,student.classroom_id,term.id,id);
       if(rank)performance={...performance,overallAverage:Number(rank.average),classPosition:rank.position,classSize:rank.class_size};
     }
   }
@@ -684,32 +667,11 @@ app.get('/api/report-cards/:studentId',async request=>{
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
   if(current?.classroom_id)await ensureTeacherScope(a,current.classroom_id,null);
-  const results=(await db.query(`SELECT sub.id subject_id,sub.name subject_name,
-      ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage,
-      COUNT(sc.score)::int assessment_count
-    FROM assessments a JOIN subjects sub ON sub.id=a.subject_id
-    LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1
-    WHERE a.organisation_id=$2 AND a.term_id=$3
-    GROUP BY sub.id,sub.name ORDER BY sub.name`,[studentId,a.core.organisation_id,q.termId])).rows;
-  const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[a.core.organisation_id])).rows;
-  const subjects=results.map((s:any)=>{const pct=Number(s.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...s,grade:band?.name??'',remark:band?.remark??''}});
-  let overallAverage=subjects.length?Math.round((subjects.reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/subjects.length)*100)/100:null;
+  const subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
+  let overallAverage=subjects.length?Math.round((subjects.filter((s:any)=>s.percentage!=null).reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/Math.max(1,subjects.filter((s:any)=>s.percentage!=null).length))*100)/100:null;
   let classPosition:number|null=null,classSize:number|null=null;
   if(current?.classroom_id){
-    const rank=await maybeOne<any>(db,`WITH class_scores AS (
-        SELECT e.student_id,AVG((sc.score/a.max_score)*100.0) avg_pct
-        FROM enrolments e
-        JOIN assessments a ON a.classroom_id=e.classroom_id AND a.term_id=$2
-        JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=e.student_id
-        WHERE e.classroom_id=$1 AND e.academic_year_id=$3
-        GROUP BY e.student_id
-      ), ranked AS (
-        SELECT student_id,ROUND(avg_pct::numeric,2) average,
-               RANK() OVER(ORDER BY avg_pct DESC)::int position,
-               COUNT(*) OVER()::int class_size
-        FROM class_scores
-      )
-      SELECT * FROM ranked WHERE student_id=$4`,[current.classroom_id,q.termId,term.academic_year_id,studentId]);
+    const rank=await calculateClassRank(a.core.organisation_id,current.classroom_id,q.termId,studentId);
     if(rank){overallAverage=Number(rank.average);classPosition=rank.position;classSize=rank.class_size}
   }
   const attendanceRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records ar
@@ -1291,12 +1253,11 @@ app.get('/api/student/me',async request=>{
 });
 app.get('/api/student/latest-report',async request=>{
   const s=await studentAuth(request);
-  const term=await maybeOne<any>(db,`SELECT * FROM terms WHERE organisation_id=$1 AND status IN('active','closed') ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END,end_date DESC LIMIT 1`,[s.organisation_id]);if(!term)return{term:null,subjects:[],comments:null};
-  const subjects=(await db.query(`SELECT sub.name subject_name,ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage FROM assessments a JOIN subjects sub ON sub.id=a.subject_id JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1 WHERE a.organisation_id=$2 AND a.term_id=$3 GROUP BY sub.id,sub.name ORDER BY sub.name`,[s.student_id,s.organisation_id,term.id])).rows;
-  const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[s.organisation_id])).rows;
-  const graded=subjects.map((x:any)=>{const pct=Number(x.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...x,grade:band?.name??'',remark:band?.remark??''}});
+  const term=await maybeOne<any>(db,`SELECT * FROM terms WHERE organisation_id=$1 AND status IN('active','closed') ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END,end_date DESC LIMIT 1`,[s.organisation_id]);
+  if(!term)return{term:null,subjects:[],comments:null};
+  const subjects=await calculateStudentTermResults(s.organisation_id,s.student_id,term.id);
   const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[s.organisation_id,s.student_id,term.id]);
-  return{term,subjects:graded,comments};
+  return{term,subjects,comments};
 });
 
 app.get('/api/public/school',async()=>{
