@@ -327,6 +327,96 @@ app.post('/api/students',async(request,reply)=>{
   const row=await one<any>(db,'INSERT INTO students(organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,notes) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8::date,current_date),$9) RETURNING *',[a.core.organisation_id,b.admissionNo,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,b.admissionDate??null,b.notes??null]);await audit(a.core.organisation_id,a.core.id,'student.created','student',row.id);return reply.code(201).send(row);
 });
 app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
+
+app.get('/api/students/:id/360',async request=>{
+  const a=await authorize(request,db,config);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const student=await maybeOne<any>(db,`SELECT s.*,e.id enrolment_id,e.academic_year_id,c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,
+      g.id grade_level_id,g.code grade_code,g.name grade_name,y.name academic_year
+    FROM students s
+    LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active'
+    LEFT JOIN classrooms c ON c.id=e.classroom_id
+    LEFT JOIN grade_levels g ON g.id=c.grade_level_id
+    LEFT JOIN academic_years y ON y.id=e.academic_year_id
+    WHERE s.id=$1 AND s.organisation_id=$2
+    ORDER BY e.enrolled_at DESC LIMIT 1`,[id,a.core.organisation_id]);
+  if(!student)throw fail(404,'Student not found');
+  if(student.classroom_id)await ensureTeacherScope(a,student.classroom_id,null);
+  const term=await activeTerm(a.core.organisation_id);
+  const guardians=(await db.query(`SELECT g.id,g.first_name,g.last_name,g.phone,g.email,g.address,sg.relationship,sg.is_primary,
+      (gpa.guardian_id IS NOT NULL AND gpa.is_active=true) portal_active,gpa.last_login_at
+    FROM guardians g
+    JOIN student_guardians sg ON sg.guardian_id=g.id
+    LEFT JOIN guardian_portal_access gpa ON gpa.guardian_id=g.id
+    WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;
+  const enrolments=(await db.query(`SELECT e.id,e.status,e.enrolled_at,c.name classroom_name,g.name grade_name,y.name academic_year,y.start_date,y.end_date
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
+    WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;
+  const attendanceRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records
+    WHERE organisation_id=$1 AND student_id=$2 AND ($3::uuid IS NULL OR attendance_date BETWEEN (SELECT start_date FROM terms WHERE id=$3) AND (SELECT end_date FROM terms WHERE id=$3))
+    GROUP BY status`,[a.core.organisation_id,id,term?.id??null])).rows;
+  const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
+  for(const r of attendanceRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
+  attendance.rate=attendance.total?Math.round(((attendance.present+attendance.late)/attendance.total)*1000)/10:0;
+  const recentAttendance=(await db.query(`SELECT attendance_date,status,note FROM attendance_records WHERE organisation_id=$1 AND student_id=$2 ORDER BY attendance_date DESC LIMIT 20`,[a.core.organisation_id,id])).rows;
+  const fee=await one<any>(db,`SELECT
+      COALESCE(sum(sf.amount_due-sf.discount),0) billed,
+      COALESCE(sum((SELECT COALESCE(sum(p.amount),0) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL)),0) paid
+    FROM student_fees sf WHERE sf.organisation_id=$1 AND sf.student_id=$2`,[a.core.organisation_id,id]);
+  fee.outstanding=Math.max(0,Number(fee.billed)-Number(fee.paid));
+  const payments=(await db.query(`SELECT p.id,p.amount,p.payment_method,p.reference,p.paid_at,p.voided_at,f.name fee_name
+    FROM payments p LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    WHERE p.organisation_id=$1 AND p.student_id=$2 ORDER BY p.paid_at DESC LIMIT 15`,[a.core.organisation_id,id])).rows;
+  let subjects:any[]=[];let performance:any={overallAverage:null,classPosition:null,classSize:null};
+  if(term){
+    const rawSubjects=(await db.query(`SELECT sub.id subject_id,sub.name subject_name,
+      ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage,COUNT(sc.score)::int assessment_count
+      FROM assessments a JOIN subjects sub ON sub.id=a.subject_id
+      JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1
+      WHERE a.organisation_id=$2 AND a.term_id=$3
+      GROUP BY sub.id,sub.name ORDER BY sub.name`,[id,a.core.organisation_id,term.id])).rows;
+    const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[a.core.organisation_id])).rows;
+    subjects=rawSubjects.map((s:any)=>{const pct=Number(s.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...s,grade:band?.name??'',remark:band?.remark??''}});
+    if(subjects.length)performance.overallAverage=Math.round((subjects.reduce((sum:number,s:any)=>sum+Number(s.percentage),0)/subjects.length)*100)/100;
+    if(student.classroom_id){
+      const rank=await maybeOne<any>(db,`WITH class_scores AS (
+          SELECT e.student_id,AVG((sc.score/a.max_score)*100.0) avg_pct
+          FROM enrolments e
+          JOIN assessments a ON a.classroom_id=e.classroom_id AND a.term_id=$2
+          JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=e.student_id
+          WHERE e.classroom_id=$1 AND e.status='active'
+          GROUP BY e.student_id
+        ), ranked AS (
+          SELECT student_id,ROUND(avg_pct::numeric,2) average,
+                 RANK() OVER(ORDER BY avg_pct DESC)::int position,
+                 COUNT(*) OVER()::int class_size
+          FROM class_scores
+        )
+        SELECT * FROM ranked WHERE student_id=$3`,[student.classroom_id,term.id,id]);
+      if(rank)performance={...performance,overallAverage:Number(rank.average),classPosition:rank.position,classSize:rank.class_size};
+    }
+  }
+  const homework=(await db.query(`SELECT h.id,h.title,h.due_at,h.status,sub.name subject_name,
+      COALESCE(hs.status,'not_submitted') submission_status,hs.score,hs.teacher_comment
+    FROM homework_assignments h JOIN subjects sub ON sub.id=h.subject_id
+    LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2
+    WHERE h.organisation_id=$1 AND ($3::uuid IS NULL OR h.term_id=$3)
+      AND ($4::uuid IS NULL OR h.classroom_id=$4)
+    ORDER BY h.due_at DESC NULLS LAST LIMIT 20`,[a.core.organisation_id,id,term?.id??null,student.classroom_id??null])).rows;
+  const promotions=(await db.query(`SELECT p.*,fy.name from_year,ty.name to_year,fc.name from_class,tc.name to_class
+    FROM student_promotions p
+    JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id
+    LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id
+    WHERE p.organisation_id=$1 AND p.student_id=$2 ORDER BY p.created_at DESC`,[a.core.organisation_id,id])).rows;
+  const comments=term?await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,id,term.id]):null;
+  const portal=await maybeOne<any>(db,`SELECT spa.is_active,spa.last_login_at,
+      (SELECT count(*)::int FROM student_portal_sessions sps WHERE sps.student_id=spa.student_id AND sps.revoked_at IS NULL AND sps.expires_at>now()) active_sessions
+    FROM student_portal_access spa WHERE spa.student_id=$1`,[id]);
+  const activity=(await db.query(`SELECT action,resource_type,resource_id,metadata,created_at FROM school_audit_logs
+    WHERE organisation_id=$1 AND (resource_id=$2 OR metadata->>'studentId'=$2)
+    ORDER BY created_at DESC LIMIT 20`,[a.core.organisation_id,id])).rows;
+  return{student,term,guardians,enrolments,attendance,recentAttendance,fees:fee,payments,subjects,performance,homework,promotions,comments,portal,activity};
+});
 app.patch('/api/students/:id',async request=>{
   const a=await authorize(request,db,config,'students.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({firstName:z.string().min(1).max(100).optional(),middleName:z.string().max(100).nullable().optional(),lastName:z.string().min(1).max(100).optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional(),notes:z.string().max(5000).nullable().optional()}).parse(request.body);
   const row=await one<any>(db,`UPDATE students SET first_name=COALESCE($1,first_name),middle_name=CASE WHEN $2 THEN $3 ELSE middle_name END,last_name=COALESCE($4,last_name),status=COALESCE($5,status),notes=CASE WHEN $6 THEN $7 ELSE notes END,updated_at=now() WHERE id=$8 AND organisation_id=$9 RETURNING *`,[b.firstName??null,Object.hasOwn(b,'middleName'),b.middleName??null,b.lastName??null,b.status??null,Object.hasOwn(b,'notes'),b.notes??null,id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'student.updated','student',id);return row;
