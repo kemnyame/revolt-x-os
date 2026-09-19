@@ -3,6 +3,7 @@ import type { SchoolConfig } from './config.js';
 export type MessageChannel='email'|'sms'|'whatsapp';
 
 export function providerStatus(config:SchoolConfig){
+  const twilioAuth=Boolean(config.TWILIO_ACCOUNT_SID&&((config.TWILIO_API_KEY_SID&&config.TWILIO_API_KEY_SECRET)||config.TWILIO_AUTH_TOKEN));
   return{
     email:{
       provider:'resend',
@@ -10,11 +11,13 @@ export function providerStatus(config:SchoolConfig){
     },
     sms:{
       provider:'twilio',
-      configured:Boolean(config.TWILIO_ACCOUNT_SID&&config.TWILIO_AUTH_TOKEN&&config.TWILIO_SMS_FROM)
+      configured:Boolean(twilioAuth&&config.TWILIO_SMS_FROM),
+      authentication:config.TWILIO_API_KEY_SID?'api_key':config.TWILIO_AUTH_TOKEN?'auth_token':'missing'
     },
     whatsapp:{
       provider:'twilio',
-      configured:Boolean(config.TWILIO_ACCOUNT_SID&&config.TWILIO_AUTH_TOKEN&&config.TWILIO_WHATSAPP_FROM)
+      configured:Boolean(twilioAuth&&config.TWILIO_WHATSAPP_FROM),
+      authentication:config.TWILIO_API_KEY_SID?'api_key':config.TWILIO_AUTH_TOKEN?'auth_token':'missing'
     },
     payments:{
       provider:'paystack',
@@ -33,14 +36,17 @@ function toWhatsappAddress(v:string){
 }
 
 async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string,body:string){
-  if(!config.TWILIO_ACCOUNT_SID||!config.TWILIO_AUTH_TOKEN)throw new Error('Twilio is not configured');
+  if(!config.TWILIO_ACCOUNT_SID)throw new Error('Twilio Account SID is not configured');
+  const username=config.TWILIO_API_KEY_SID||config.TWILIO_ACCOUNT_SID;
+  const password=config.TWILIO_API_KEY_SECRET||config.TWILIO_AUTH_TOKEN;
+  if(!password)throw new Error('Twilio API key or Auth Token is not configured');
   const from=channel==='sms'?config.TWILIO_SMS_FROM:config.TWILIO_WHATSAPP_FROM;
   if(!from)throw new Error(channel==='sms'?'SMS sender is not configured':'WhatsApp sender is not configured');
   const form=new URLSearchParams();
   form.set('To',channel==='whatsapp'?toWhatsappAddress(to):to);
   form.set('From',channel==='whatsapp'?toWhatsappAddress(from):from);
   form.set('Body',body);
-  const auth=Buffer.from(config.TWILIO_ACCOUNT_SID+':'+config.TWILIO_AUTH_TOKEN).toString('base64');
+  const auth=Buffer.from(username+':'+password).toString('base64');
   const res=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.TWILIO_ACCOUNT_SID)}/Messages.json`,{
     method:'POST',
     headers:{authorization:'Basic '+auth,'content-type':'application/x-www-form-urlencoded'},
