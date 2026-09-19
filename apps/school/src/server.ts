@@ -1626,7 +1626,7 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
 
   const periodMinutes=Number(settings.default_period_minutes||40);
   const maxTeacherPeriods=Number(settings.max_teacher_periods_per_day||8);
-  const toMinutes=(v:any)=>{const x=String(v).slice(0,5).split(':').map(Number);return x[0]*60+x[1]};
+  const toMinutes=(v:any)=>{const [hours=0,minutes=0]=String(v).slice(0,5).split(':').map(Number);return hours*60+minutes};
   const toTime=(m:number)=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
   const schoolStart=toMinutes(settings.school_day_start),schoolEnd=toMinutes(settings.school_day_end);
 
