@@ -552,6 +552,7 @@ app.post('/api/system/core-wake',async(_request,reply)=>{
 app.post('/api/auth/teacher-login',async(request,reply)=>{
   const b=z.object({email:z.string().trim().toLowerCase().email(),password:z.string().min(8).max(200)}).parse(request.body);
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  await wakeCoreOS();
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const loginRes=await fetch(base+'/v1/auth/login',{
     method:'POST',headers:{'content-type':'application/json'},
@@ -590,6 +591,7 @@ app.post('/api/auth/teacher-set-password',async(request,reply)=>{
       .regex(/[a-z]/,'Password must contain a lowercase letter')
       .regex(/[0-9]/,'Password must contain a number')
   }).parse(request.body);
+  await wakeCoreOS();
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const res=await fetch(base+'/v1/auth/password-reset/confirm',{
     method:'POST',headers:{'content-type':'application/json'},
@@ -600,6 +602,17 @@ app.post('/api/auth/teacher-set-password',async(request,reply)=>{
   const payload=await res.json().catch(()=>null) as any;
   if(!res.ok)throw fail(res.status,payload?.error?.message||'Password setup failed');
   return reply.send({reset:true});
+});
+
+app.post('/api/auth/logout',async(request,reply)=>{
+  const token=requestSessionToken(request);
+  if(token&&token.startsWith('rxs_')){
+    const hash=createHash('sha256').update(token).digest('hex');
+    await db.query('UPDATE school_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hash]);
+  }
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+  return reply.send({signedOut:true});
 });
 
 app.post('/api/auth/preview',async(_r,p)=>{
@@ -3457,10 +3470,10 @@ app.get('/api/search',async request=>{
       SELECT 'admission',aa.id::text,(aa.first_name||' '||aa.last_name),(aa.application_no||' • '||aa.status),'admissions',3
       FROM admission_applications aa WHERE aa.organisation_id=$1 AND lower(aa.first_name||' '||aa.last_name||' '||aa.application_no||' '||aa.guardian_phone||' '||COALESCE(aa.guardian_email,'')) LIKE lower($2)
       UNION ALL
-      SELECT 'class',c.id::text,c.name,(gl.name||' • '||COALESCE(c.stream,'No stream')),'classes',4
+      SELECT 'class',c.id::text,c.name,(gl.name||' • '||COALESCE(c.stream,'No stream')),'assignments',4
       FROM classrooms c JOIN grade_levels gl ON gl.id=c.grade_level_id WHERE c.organisation_id=$1 AND (c.name ILIKE $2 OR gl.name ILIKE $2)
       UNION ALL
-      SELECT 'subject',s.id::text,s.name,(s.code||' • '||s.stage),'classes',5
+      SELECT 'subject',s.id::text,s.name,(s.code||' • '||s.stage),'assignments',5
       FROM subjects s WHERE s.organisation_id=$1 AND (s.name ILIKE $2 OR s.code ILIKE $2)
       UNION ALL
       SELECT 'lesson_note',ln.id::text,ln.title,(c.name||' • '||sub.name||' • '||ln.status),'lessonnotes',6
@@ -3488,7 +3501,7 @@ app.get('/api/search',async request=>{
   const allowed=(section:string)=>a.role==='school_admin'||(
     section==='students'?caps.includes('students.view'):
     section==='admissions'?caps.includes('admissions.view'):
-    section==='classes'?caps.includes('academic.view'):
+    section==='assignments'?(caps.includes('teaching_assignments.view')||caps.includes('academic.view')):
     section==='lessonnotes'?caps.includes('lesson_notes.view'):
     section==='fees'?caps.includes('fees.view'):
     section==='announcements'?caps.includes('communications.view'):
