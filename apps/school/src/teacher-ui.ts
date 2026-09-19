@@ -32,16 +32,37 @@ function form(title,fields,vals,save){vals=vals||{};modal('<h2>'+esc(title)+'</h
 function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
 async function previewToken(){var last=null;for(var i=0;i<3;i++){try{var p=await fetch('/api/auth/preview',{method:'POST'}),j=await p.json();if(p.ok&&j.accessToken)return j.accessToken;last=Error(j&&j.error&&j.error.message?j.error.message:'Core OS access failed');last.status=p.status}catch(e){last=e}if(i<2)await wait(900*(i+1))}throw last||Error('Core OS access failed')}
 async function boot(){try{
+  token=sessionStorage.getItem('rx_teacher_token')||token||'';
   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');token=''}
-  if(!token){token=await previewToken();sessionStorage.setItem('rx_teacher_token',token)}
-  try{ctx=await raw('/api/teacher/context')}
-  catch(e){
-    if(e.status===401){sessionStorage.removeItem('rx_teacher_token');token=await previewToken();sessionStorage.setItem('rx_teacher_token',token);ctx=await raw('/api/teacher/context')}
-    else if(e.status===429||e.status===502||e.status===503||e.status===504){await wait(1200);ctx=await raw('/api/teacher/context')}
-    else throw e
+  if(token){
+    try{ctx=await raw('/api/teacher/context')}
+    catch(e){
+      if(e.status===401||e.status===403){sessionStorage.removeItem('rx_teacher_token');token=''}
+      else if(e.status===429||e.status===502||e.status===503||e.status===504){await wait(1200);ctx=await raw('/api/teacher/context')}
+      else throw e
+    }
+  }
+  if(!ctx&&!token){
+    try{ctx=await raw('/api/teacher/context')}
+    catch(e){
+      if(e.status!==401&&e.status!==403)throw e;
+      token=await previewToken();sessionStorage.setItem('rx_teacher_token',token);ctx=await raw('/api/teacher/context')
+    }
   }
   E('school').textContent=ctx.school.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.schoolRole.replace('_',' ');var visibleNav=nav.filter(function(n){return can(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};E('loading').classList.add('hide');E('app').classList.remove('hide');var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
-}catch(e){E('loading').innerHTML='<div><h2>Teacher workspace unavailable</h2><p>'+esc(e.message)+'</p><button id="retryTeacher" class="primary">Retry</button></div>';var b=E('retryTeacher');if(b)b.onclick=function(){sessionStorage.removeItem('rx_teacher_token');location.reload()}}}
+}catch(e){
+  E('loading').innerHTML='<div class="connection-card"><h2>Teacher workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">You can retry, or wake Core OS if the hosting service is sleeping.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retryTeacher" class="primary">Retry connection</button><button id="wakeTeacherCore" class="ghost">Wake Core OS</button></div></div>';
+  var retry=E('retryTeacher');if(retry)retry.onclick=function(){location.reload()};
+  var wake=E('wakeTeacherCore');if(wake)wake.onclick=async function(){
+    wake.disabled=true;E('teacherConnectionStatus').textContent='Waking Core Revolt-X OS. This can take a few seconds on the free hosting tier...';
+    try{
+      var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();
+      if(!r.ok)throw Error(j&&j.message?j.message:'Core OS is still unavailable');
+      E('teacherConnectionStatus').textContent='Core OS is awake. Reconnecting...';
+      sessionStorage.removeItem('rx_teacher_token');token='';setTimeout(function(){location.reload()},700)
+    }catch(err){E('teacherConnectionStatus').textContent=err.message;wake.disabled=false}
+  }
+}}
 async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
 if(p==='dashboard'){var d=await raw('/api/teacher/dashboard');E('content').innerHTML='<div class="section"><div><h1>My Dashboard</h1><p class="muted">Your teaching responsibilities, whether you are a Class Teacher, Subject Teacher or both.</p></div></div><div class="grid">'+[['Teaching classes',d.assignedClasses],['Subject assignments',d.subjectAssignments||0],['Class teacher classes',d.classTeacherClasses||0],['Students in my classes',d.students],['Homework',d.homework],['Assessments',d.assessments]].map(function(x){return'<div class="panel stat"><span class="muted">'+x[0]+'</span><b>'+esc(x[1])+'</b></div>'}).join('')+'</div><div class="two" style="margin-top:12px"><div class="panel"><h3>Today</h3><p><b>'+esc(d.presentToday)+'</b> marked present</p><p><b>'+esc(d.absentToday)+'</b> marked absent</p></div><div class="panel"><h3>Current term</h3><p>'+esc(d.term?d.term.name:'No active term')+'</p><p class="muted">Subject Teachers do not need to be Class Teachers. Assigned class-subject combinations appear automatically in Homework, Assessments, Lesson Notes and My Timetable.</p></div></div>'}
 else if(p==='classes'){var rows=await raw('/api/teacher/classes');E('content').innerHTML='<h1>My Classes</h1><div class="panel">'+table(rows,[{key:'classroom_name',label:'Class'},{key:'grade_name',label:'Grade'},{key:'subject_name',label:'Subject',render:function(r){return esc(r.subject_name||'Class teacher / all subjects')}},{key:'student_count',label:'Students'}])+'</div>'}
