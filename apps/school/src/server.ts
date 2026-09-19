@@ -1599,7 +1599,8 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
     academicYearId:z.string().uuid(),
     termId:z.string().uuid().nullable().optional(),
     teacherOsUserId:z.string().uuid().nullable().optional(),
-    regenerateAuto:z.boolean().default(true)
+    regenerateAuto:z.boolean().default(true),
+    dryRun:z.boolean().default(false)
   }).parse(request.body);
 
   const settings=(await maybeOne<any>(db,`SELECT * FROM timetable_settings
@@ -1643,7 +1644,7 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
       AND ($4::uuid IS NULL OR ta.teacher_os_user_id=$4)
     ORDER BY c.name,s.name`,[a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null])).rows;
 
-  if(b.regenerateAuto){
+  if(b.regenerateAuto&&!b.dryRun){
     await db.query(`DELETE FROM timetable_entries
       WHERE organisation_id=$1 AND academic_year_id=$2
         AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
@@ -1723,13 +1724,19 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
         break;
       }
 
-      const row=await one<any>(db,`INSERT INTO timetable_entries(
+      const proposal={
+        organisation_id:a.core.organisation_id,academic_year_id:b.academicYearId,term_id:b.termId??null,
+        classroom_id:req.classroom_id,classroom_name:req.classroom_name,subject_id:req.subject_id,subject_name:req.subject_name,
+        teacher_os_user_id:req.teacher_os_user_id,day_of_week:chosen.day,start_time:toTime(chosen.start),end_time:toTime(chosen.end),
+        room:null,schedule_source:'auto',is_locked:false
+      };
+      const row=b.dryRun?proposal:await one<any>(db,`INSERT INTO timetable_entries(
         organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room,schedule_source,is_locked
       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'auto',false) RETURNING *`,[
         a.core.organisation_id,b.academicYearId,b.termId??null,req.classroom_id,req.subject_id,req.teacher_os_user_id,
         chosen.day,toTime(chosen.start),toTime(chosen.end)
       ]);
-      created.push(row);
+      created.push({...proposal,...row});
       const occ={classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id,day:chosen.day,start:chosen.start,end:chosen.end};
       occupancy.push(occ);
       teacherLoad.set(req.teacher_os_user_id+'|'+chosen.day,(teacherLoad.get(req.teacher_os_user_id+'|'+chosen.day)||0)+1);
@@ -1739,18 +1746,20 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
     }
   }
 
-  await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{
-    academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,created:created.length,unscheduled:unscheduled.length
-  });
-  await changeLog({
-    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.auto_scheduled',
-    resourceType:'timetable',performedOn:'Academic year '+b.academicYearId,
-    oldValue:{existingPeriods:existing.length},newValue:{createdPeriods:created.length,unscheduled},
-    metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,periodMinutes}
-  });
-  return reply.code(201).send({
-    created:created.length,unscheduled,periodMinutes,schoolDayStart:toTime(schoolStart),schoolDayEnd:toTime(schoolEnd),
-    preservedManual:existing.filter((x:any)=>x.schedule_source!=='auto'||x.is_locked).length
+  if(!b.dryRun){
+    await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{
+      academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,created:created.length,unscheduled:unscheduled.length
+    });
+    await changeLog({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.auto_scheduled',
+      resourceType:'timetable',performedOn:'Academic year '+b.academicYearId,
+      oldValue:{existingPeriods:existing.length},newValue:{createdPeriods:created.length,unscheduled},
+      metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,periodMinutes}
+    });
+  }
+  return reply.code(b.dryRun?200:201).send({
+    created:created.length,suggestions:created,unscheduled,periodMinutes,schoolDayStart:toTime(schoolStart),schoolDayEnd:toTime(schoolEnd),
+    preservedManual:existing.filter((x:any)=>x.schedule_source!=='auto'||x.is_locked).length,dryRun:b.dryRun
   });
 });
 
