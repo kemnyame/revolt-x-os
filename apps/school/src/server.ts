@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { z } from 'zod';
 import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { Script } from 'node:vm';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
@@ -20,6 +21,10 @@ const config=loadSchoolConfig();
 const db=createSchoolDb(config);
 await ensureSchoolSchema(db);
 await migrateSchool(db);
+
+// Refuse to start a deployment if the generated browser application contains invalid JavaScript.
+// This prevents production from going live with a permanent "Connecting to Core" splash.
+new Script(schoolAppScript,{filename:'school-app.js'});
 
 const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
 await app.register(helmet,{contentSecurityPolicy:false});
@@ -638,7 +643,26 @@ async function provisionDemoTeachers(){
   }
 }
 
-app.get('/',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/',async(request,p)=>{
+  // Do not depend on browser JavaScript to discover that a School session is missing
+  // or expired. Route unauthenticated users straight to sign-in on the server.
+  const token=requestSessionToken(request);
+  let active=false;
+  if(token&&token.startsWith('rxs_')){
+    const hash=createHash('sha256').update(token).digest('hex');
+    const session=await maybeOne<any>(db,
+      'SELECT 1 FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',
+      [hash]
+    );
+    active=Boolean(session);
+  }
+  if(!active){
+    const secure=config.NODE_ENV==='production'?'; Secure':'';
+    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+    return p.redirect('/login?next=%2F');
+  }
+  return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
+});
 app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
