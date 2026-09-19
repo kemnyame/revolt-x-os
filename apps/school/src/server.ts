@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
-import { authorize, effectiveCapabilities } from './auth.js';
+import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
 import { schoolFrontend } from './ui.js';
 import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
@@ -781,8 +781,9 @@ app.post('/api/auth/preview',async(_r,p)=>{
 app.get('/api/context',async request=>{
   const a=await authorize(request,db,config);
   const profile=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
-  const capabilities=await effectiveCapabilities(db,a.role);
-  return {core:a.core,schoolRole:a.role,profile,capabilities};
+  const capabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
+  const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  return {core:a.core,schoolRole:a.role,roleProfile,profile,capabilities};
 });
 
 app.post('/api/school/bootstrap',async(request,reply)=>{
@@ -3360,8 +3361,10 @@ app.get('/api/teacher/context',async request=>{
   const a=await authorize(request,db,config);
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   const school=await one<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
-  const capabilities=await effectiveCapabilities(db,a.role);
-  return{core:a.core,schoolRole:a.role,school,capabilities};
+  const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(!roleProfile?.can_teach)throw fail(403,'Teacher workspace access is not enabled for this role');
+  const capabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
+  return{core:a.core,schoolRole:a.role,roleProfile,school,capabilities};
 });
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
@@ -4269,7 +4272,7 @@ app.get('/api/search',async request=>{
       type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
     }));
   }
-  const caps=await effectiveCapabilities(db,a.role);
+  const caps=await effectiveCapabilities(db,a.core.organisation_id,a.role);
   const allowed=(section:string)=>a.role==='school_admin'||(
     section==='students'?caps.includes('students.view'):
     section==='admissions'?caps.includes('admissions.view'):
