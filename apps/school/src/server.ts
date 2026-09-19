@@ -861,9 +861,65 @@ app.post('/api/payments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 
-app.get('/api/timetable',async request=>{const a=await authorize(request,db,config);const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2) AND ($3::uuid IS NULL OR tt.term_id=$3) ORDER BY tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null])).rows});
+app.get('/api/timetable',async request=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+    FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
+    WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2)
+      AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
+    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null])).rows;
+});
+app.get('/api/timetable/export.csv',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  const rows=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+    FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
+    WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2)
+      AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
+    ORDER BY c.name,tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null])).rows;
+  let users:any[]=[];
+  try{
+    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:request.headers.authorization!},signal:AbortSignal.timeout(8000)});
+    if(res.ok)users=await res.json() as any[];
+  }catch{}
+  const userName=(id:string|null)=>{const u=users.find(x=>x.id===id);return u?u.first_name+' '+u.last_name:''};
+  const csv=(v:any)=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const days=['','Monday','Tuesday','Wednesday','Thursday','Friday'];
+  const lines=[['Academic Year','Term','Class','Day','Start','End','Subject','Teacher','Room'].map(csv).join(',')];
+  for(const r of rows)lines.push([r.academic_year,r.term_name||'',r.classroom_name,days[r.day_of_week],String(r.start_time).slice(0,5),String(r.end_time).slice(0,5),r.subject_name,userName(r.teacher_os_user_id),r.room||''].map(csv).join(','));
+  reply.header('content-type','text/csv; charset=utf-8');
+  reply.header('content-disposition','attachment; filename="revolt-x-school-timetable.csv"');
+  return '\ufeff'+lines.join('\n');
+});
 app.post('/api/timetable',async(request,reply)=>{
-  const a=await authorize(request,db,config,'timetable.manage');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),teacherOsUserId:z.string().uuid().optional(),dayOfWeek:z.number().int().min(1).max(5),startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),room:z.string().max(80).optional()}).parse(request.body);const row=await one<any>(db,'INSERT INTO timetable_entries(organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId??null,b.classroomId,b.subjectId,b.teacherOsUserId??null,b.dayOfWeek,b.startTime,b.endTime,b.room??null]);await audit(a.core.organisation_id,a.core.id,'timetable.created','timetable_entry',row.id);return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'timetable.manage');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),classroomId:z.string().uuid(),
+    subjectId:z.string().uuid(),teacherOsUserId:z.string().uuid().optional(),dayOfWeek:z.number().int().min(1).max(5),
+    startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),room:z.string().max(80).optional()
+  }).parse(request.body);
+  if(b.endTime<=b.startTime)throw fail(400,'End time must be after start time');
+  const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
+    JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3
+      AND tt.start_time<$5::time AND tt.end_time>$4::time
+      AND (
+        tt.classroom_id=$6 OR
+        ($7::uuid IS NOT NULL AND tt.teacher_os_user_id=$7)
+      )
+      AND (tt.term_id IS NOT DISTINCT FROM $8::uuid OR tt.term_id IS NULL OR $8::uuid IS NULL)
+    LIMIT 1`,[a.core.organisation_id,b.academicYearId,b.dayOfWeek,b.startTime,b.endTime,b.classroomId,b.teacherOsUserId??null,b.termId??null]);
+  if(conflict)throw fail(409,`Timetable conflict with ${conflict.classroom_name} - ${conflict.subject_name}`);
+  const row=await one<any>(db,`INSERT INTO timetable_entries(
+    organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[
+    a.core.organisation_id,b.academicYearId,b.termId??null,b.classroomId,b.subjectId,b.teacherOsUserId??null,b.dayOfWeek,b.startTime,b.endTime,b.room??null
+  ]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.created','timetable_entry',row.id);
+  return reply.code(201).send(row);
 });
 
 app.get('/api/staff/core-users',async request=>{
@@ -1089,10 +1145,34 @@ app.post('/api/payments/:id/void',async request=>{
 });
 
 app.patch('/api/timetable/:id',async request=>{
-  const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({subjectId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().nullable().optional(),dayOfWeek:z.number().int().min(1).max(5).optional(),startTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),endTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),room:z.string().max(80).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
-  const row=await one<any>(db,`UPDATE timetable_entries SET subject_id=COALESCE($1,subject_id),teacher_os_user_id=CASE WHEN $2 THEN $3 ELSE teacher_os_user_id END,day_of_week=COALESCE($4,day_of_week),start_time=COALESCE($5::time,start_time),end_time=COALESCE($6::time,end_time),room=CASE WHEN $7 THEN $8 ELSE room END WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.subjectId??null,Object.hasOwn(b,'teacherOsUserId'),b.teacherOsUserId??null,b.dayOfWeek??null,b.startTime??null,b.endTime??null,Object.hasOwn(b,'room'),b.room??null,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'timetable.updated','timetable_entry',id);return row;
+  const a=await authorize(request,db,config,'timetable.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    subjectId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().nullable().optional(),
+    dayOfWeek:z.number().int().min(1).max(5).optional(),startTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    endTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),room:z.string().max(80).nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM timetable_entries WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const day=b.dayOfWeek??current.day_of_week,start=b.startTime??String(current.start_time).slice(0,5),end=b.endTime??String(current.end_time).slice(0,5);
+  const teacher=Object.hasOwn(b,'teacherOsUserId')?b.teacherOsUserId:current.teacher_os_user_id;
+  if(end<=start)throw fail(400,'End time must be after start time');
+  const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
+    JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3 AND tt.id<>$4
+      AND tt.start_time<$6::time AND tt.end_time>$5::time
+      AND (tt.classroom_id=$7 OR ($8::uuid IS NOT NULL AND tt.teacher_os_user_id=$8))
+      AND (tt.term_id IS NOT DISTINCT FROM $9::uuid OR tt.term_id IS NULL OR $9::uuid IS NULL)
+    LIMIT 1`,[a.core.organisation_id,current.academic_year_id,day,id,start,end,current.classroom_id,teacher??null,current.term_id]);
+  if(conflict)throw fail(409,`Timetable conflict with ${conflict.classroom_name} - ${conflict.subject_name}`);
+  const row=await one<any>(db,`UPDATE timetable_entries SET subject_id=COALESCE($1,subject_id),
+    teacher_os_user_id=CASE WHEN $2 THEN $3 ELSE teacher_os_user_id END,day_of_week=COALESCE($4,day_of_week),
+    start_time=COALESCE($5::time,start_time),end_time=COALESCE($6::time,end_time),
+    room=CASE WHEN $7 THEN $8 ELSE room END WHERE id=$9 AND organisation_id=$10 RETURNING *`,[
+    b.subjectId??null,Object.hasOwn(b,'teacherOsUserId'),b.teacherOsUserId??null,b.dayOfWeek??null,b.startTime??null,b.endTime??null,
+    Object.hasOwn(b,'room'),b.room??null,id,a.core.organisation_id
+  ]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.updated','timetable_entry',id);
+  return row;
 });
 app.delete('/api/timetable/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
