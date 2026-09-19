@@ -298,6 +298,25 @@ async function reverseFinanceJournal(client:any,organisationId:string,originalId
   return reversal;
 }
 
+async function postStudentFeeReceivable(client:any,studentFeeId:string,actorOsUserId?:string|null){
+  const sf=await one<any>(client,`SELECT sf.*,s.first_name,s.last_name,s.admission_no,f.name fee_name
+    FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id
+    WHERE sf.id=$1`,[studentFeeId]);
+  const amount=Number(sf.amount_due)-Number(sf.discount||0);
+  if(amount<=0)return null;
+  const ar=await financeAccountByCode(client,sf.organisation_id,'1100');
+  const income=await financeAccountByCode(client,sf.organisation_id,'4000');
+  return postFinanceJournal(client,{
+    organisationId:sf.organisation_id,entryDate:String(sf.created_at||new Date().toISOString()).slice(0,10),
+    description:`School fee receivable - ${sf.first_name} ${sf.last_name} (${sf.admission_no}) - ${sf.fee_name}`,
+    sourceType:'student_fee',sourceId:sf.id,actorOsUserId:actorOsUserId??null,
+    lines:[
+      {accountId:ar.id,debit:amount,description:sf.fee_name+' receivable'},
+      {accountId:income.id,credit:amount,description:sf.fee_name+' income'}
+    ]
+  });
+}
+
 async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserId?:string|null){
   const p=await one<any>(client,`SELECT p.*,s.first_name,s.last_name,s.admission_no,f.name fee_name
     FROM payments p JOIN students s ON s.id=p.student_id
@@ -306,14 +325,16 @@ async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserI
   if(p.voided_at)return null;
   const debitCode=p.payment_method==='mobile_money'?'1020':p.payment_method==='card'?'1030':p.payment_method==='bank'?'1010':'1000';
   const debitAccount=await financeAccountByCode(client,p.organisation_id,debitCode);
-  const incomeAccount=await financeAccountByCode(client,p.organisation_id,'4000');
+  const creditAccount=p.student_fee_id
+    ?await financeAccountByCode(client,p.organisation_id,'1100')
+    :await financeAccountByCode(client,p.organisation_id,'4000');
   return postFinanceJournal(client,{
     organisationId:p.organisation_id,entryDate:String(p.paid_at||new Date().toISOString()).slice(0,10),
     description:`School fee payment - ${p.first_name} ${p.last_name} (${p.admission_no})`,
     sourceType:'student_payment',sourceId:p.id,reference:p.reference??null,actorOsUserId:actorOsUserId??p.received_by_os_user_id??null,
     lines:[
       {accountId:debitAccount.id,debit:Number(p.amount),description:p.payment_method+' receipt'},
-      {accountId:incomeAccount.id,credit:Number(p.amount),description:p.fee_name||'School fees income'}
+      {accountId:creditAccount.id,credit:Number(p.amount),description:p.student_fee_id?'Accounts receivable settlement':(p.fee_name||'School fees income')}
     ]
   });
 }
@@ -324,12 +345,14 @@ async function assignMandatoryFees(client:any,organisationId:string,studentId:st
     WHERE organisation_id=$1 AND academic_year_id=$2 AND mandatory=true
       AND (grade_level_id IS NULL OR grade_level_id=$3)`,
     [organisationId,academicYearId,classroom.grade_level_id])).rows;
+  let assigned=0;
   for(const fee of rows){
-    await client.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due)
-      VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,
-      [organisationId,studentId,fee.id,fee.amount]);
+    const inserted=(await client.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due)
+      VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING RETURNING id`,
+      [organisationId,studentId,fee.id,fee.amount])).rows[0];
+    if(inserted){await postStudentFeeReceivable(client,inserted.id,null);assigned++}
   }
-  return rows.length;
+  return assigned;
 }
 
 async function settleOnlinePayment(reference:string){
@@ -1800,7 +1823,26 @@ app.post('/api/fee-items',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.create');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),name:z.string().min(2).max(160),amount:z.number().min(0),mandatory:z.boolean().default(true)}).parse(request.body);const row=await one<any>(db,'INSERT INTO fee_items(organisation_id,academic_year_id,term_id,grade_level_id,name,amount,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId??null,b.gradeLevelId??null,b.name,b.amount,b.mandatory]);await audit(a.core.organisation_id,a.core.id,'fee_item.created','fee_item',row.id);return reply.code(201).send(row);
 });
 app.post('/api/fees/assign',async request=>{
-  const a=await authorize(request,db,config,'fees.create');const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);const fee=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);let students:string[]=[];if(b.studentId)students=[b.studentId];else students=(await db.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND status='active'",[a.core.organisation_id,b.classroomId])).rows.map((x:any)=>x.student_id);for(const sid of students)await db.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due) VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,[a.core.organisation_id,sid,fee.id,fee.amount]);await audit(a.core.organisation_id,a.core.id,'fees.assigned','fee_item',fee.id,{count:students.length});return{assigned:students.length};
+  const a=await authorize(request,db,config,'fees.create');
+  const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()})
+    .refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);
+  const result=await tx(db,async client=>{
+    const fee=await one<any>(client,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);
+    let students:string[]=[];
+    if(b.studentId)students=[b.studentId];
+    else students=(await client.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND status='active'",
+      [a.core.organisation_id,b.classroomId])).rows.map((x:any)=>x.student_id);
+    let assigned=0;
+    for(const sid of students){
+      const inserted=(await client.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due)
+        VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING RETURNING id`,
+        [a.core.organisation_id,sid,fee.id,fee.amount])).rows[0];
+      if(inserted){await postStudentFeeReceivable(client,inserted.id,a.core.id);assigned++}
+    }
+    return{assigned,feeId:fee.id};
+  });
+  await audit(a.core.organisation_id,a.core.id,'fees.assigned','fee_item',result.feeId,{count:result.assigned});
+  return{assigned:result.assigned};
 });
 app.get('/api/fees/student/:studentId',async request=>{
   const a=await authorize(request,db,config,'fees.view');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
@@ -5049,7 +5091,7 @@ app.patch('/api/system/errors/:id',async request=>{
 
 await registerFinanceLeaveRoutes(app,{
   db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,
-  postFinanceJournal,postStudentPaymentLedger,reverseFinanceJournal,
+  postFinanceJournal,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal,
   clearCoreUsersCache:(organisationId:string)=>coreUsersCache.delete(organisationId)
 });
 
