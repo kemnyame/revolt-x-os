@@ -43,15 +43,15 @@ function normalizePhone(phone:string){
 
 async function deliverCommunication(input:{
   organisationId:string;
-  actorOsUserId?:string|null;
+  actorOsUserId?:string|null|undefined;
   channel:MessageChannel;
-  recipientName?:string|null;
+  recipientName?:string|null|undefined;
   recipientAddress:string;
-  subject?:string|null;
+  subject?:string|null|undefined;
   body:string;
-  templateKey?:string|null;
-  relatedType?:string|null;
-  relatedId?:string|null;
+  templateKey?:string|null|undefined;
+  relatedType?:string|null|undefined;
+  relatedId?:string|null|undefined;
 }){
   const status=providerStatus(config);
   const configured=input.channel==='email'?status.email.configured:input.channel==='sms'?status.sms.configured:status.whatsapp.configured;
@@ -81,15 +81,15 @@ async function deliverCommunication(input:{
 
 async function notifyContact(input:{
   organisationId:string;
-  actorOsUserId?:string|null;
+  actorOsUserId?:string|null|undefined;
   eventKey:string;
-  name?:string|null;
-  email?:string|null;
-  phone?:string|null;
+  name?:string|null|undefined;
+  email?:string|null|undefined;
+  phone?:string|null|undefined;
   subject:string;
   body:string;
-  relatedType?:string|null;
-  relatedId?:string|null;
+  relatedType?:string|null|undefined;
+  relatedId?:string|null|undefined;
 }){
   const rules=(await db.query('SELECT channel,enabled FROM notification_rules WHERE organisation_id=$1 AND event_key=$2',[input.organisationId,input.eventKey])).rows;
   const active=rules.length?rules.filter((r:any)=>r.enabled).map((r:any)=>r.channel):['email'];
