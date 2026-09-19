@@ -459,15 +459,65 @@ app.post('/api/assessments/:id/scores',async request=>{
 });
 
 app.get('/api/report-cards/:studentId',async request=>{
-  const a=await authorize(request,db,config,'reports.read');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const q=z.object({termId:z.string().uuid()}).parse(request.query);const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[studentId,a.core.organisation_id]);
-  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId]);if(current?.classroom_id)await ensureTeacherScope(a,current.classroom_id,null);
-  const results=(await db.query(`SELECT sub.id subject_id,sub.name subject_name,ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage,COUNT(sc.score)::int assessment_count FROM assessments a JOIN subjects sub ON sub.id=a.subject_id LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1 WHERE a.organisation_id=$2 AND a.term_id=$3 GROUP BY sub.id,sub.name ORDER BY sub.name`,[studentId,a.core.organisation_id,q.termId])).rows;
+  const a=await authorize(request,db,config,'reports.read');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const q=z.object({termId:z.string().uuid()}).parse(request.query);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[studentId,a.core.organisation_id]);
+  const term=await one<any>(db,`SELECT t.*,y.name academic_year,y.start_date academic_year_start,y.end_date academic_year_end
+    FROM terms t JOIN academic_years y ON y.id=t.academic_year_id
+    WHERE t.id=$1 AND t.organisation_id=$2`,[q.termId,a.core.organisation_id]);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,g.name grade_name,g.code grade_code,
+      e.academic_year_id,y.name academic_year
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
+  if(current?.classroom_id)await ensureTeacherScope(a,current.classroom_id,null);
+  const results=(await db.query(`SELECT sub.id subject_id,sub.name subject_name,
+      ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage,
+      COUNT(sc.score)::int assessment_count
+    FROM assessments a JOIN subjects sub ON sub.id=a.subject_id
+    LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1
+    WHERE a.organisation_id=$2 AND a.term_id=$3
+    GROUP BY sub.id,sub.name ORDER BY sub.name`,[studentId,a.core.organisation_id,q.termId])).rows;
   const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[a.core.organisation_id])).rows;
   const subjects=results.map((s:any)=>{const pct=Number(s.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...s,grade:band?.name??'',remark:band?.remark??''}});
-  const att=(await db.query(`SELECT status,count(*)::int count FROM attendance_records ar JOIN terms t ON t.id=$3 WHERE ar.organisation_id=$2 AND ar.student_id=$1 AND ar.attendance_date BETWEEN t.start_date AND t.end_date GROUP BY status`,[studentId,a.core.organisation_id,q.termId])).rows;
+  let overallAverage=subjects.length?Math.round((subjects.reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/subjects.length)*100)/100:null;
+  let classPosition:number|null=null,classSize:number|null=null;
+  if(current?.classroom_id){
+    const rank=await maybeOne<any>(db,`WITH class_scores AS (
+        SELECT e.student_id,AVG((sc.score/a.max_score)*100.0) avg_pct
+        FROM enrolments e
+        JOIN assessments a ON a.classroom_id=e.classroom_id AND a.term_id=$2
+        JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=e.student_id
+        WHERE e.classroom_id=$1 AND e.academic_year_id=$3
+        GROUP BY e.student_id
+      ), ranked AS (
+        SELECT student_id,ROUND(avg_pct::numeric,2) average,
+               RANK() OVER(ORDER BY avg_pct DESC)::int position,
+               COUNT(*) OVER()::int class_size
+        FROM class_scores
+      )
+      SELECT * FROM ranked WHERE student_id=$4`,[current.classroom_id,q.termId,term.academic_year_id,studentId]);
+    if(rank){overallAverage=Number(rank.average);classPosition=rank.position;classSize=rank.class_size}
+  }
+  const attendanceRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records ar
+    WHERE ar.organisation_id=$1 AND ar.student_id=$2 AND ar.attendance_date BETWEEN $3::date AND $4::date
+    GROUP BY status`,[a.core.organisation_id,studentId,term.start_date,term.end_date])).rows;
+  const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
+  for(const r of attendanceRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
+  attendance.rate=attendance.total?Math.round(((attendance.present+attendance.late)/attendance.total)*1000)/10:0;
   const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]);
-  const term=await maybeOne<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id]);
-  return{student:{...student,...(current||{})},term,termId:q.termId,subjects,attendance:att,comments};
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+  return{
+    school,
+    student:{...student,...(current||{})},
+    term,
+    termId:q.termId,
+    subjects,
+    performance:{overallAverage,classPosition,classSize},
+    attendance,
+    comments,
+    generatedAt:new Date().toISOString()
+  };
 });
 
 app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
