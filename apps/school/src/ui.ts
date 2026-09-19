@@ -122,16 +122,23 @@ async function boot(){try{
   }
   if(!ctx.profile){await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});ctx=await raw('/api/context')}E('schoolName').textContent=ctx.profile.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;E('role').textContent=ctx.schoolRole.replace('_',' ');var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};setupGlobalSearch();E('loading').classList.add('hide');E('app').classList.remove('hide');await page('dashboard')
 }catch(e){
-  E('loading').innerHTML='<div class="connection-card"><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">You can retry, or wake Core OS if the hosting service is sleeping.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retrySchool" class="primary">Retry connection</button><button id="wakeSchoolCore" class="ghost">Wake Core OS</button></div></div>';
+  E('loading').innerHTML='<div class="connection-card"><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">Use Reconnect & Repair to wake Core OS, refresh authentication and reconnect the School workspace automatically.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="repairSchool" class="primary">Reconnect & Repair</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Reload page</button></div></div>';
   var retry=E('retrySchool');if(retry)retry.onclick=function(){location.reload()};
-  var wake=E('wakeSchoolCore');if(wake)wake.onclick=async function(){
-    wake.disabled=true;E('schoolConnectionStatus').textContent='Waking Core Revolt-X OS. This can take a few seconds on the free hosting tier...';
+  var check=E('checkSchoolCore');if(check)check.onclick=async function(){
+    check.disabled=true;E('schoolConnectionStatus').textContent='Checking School, database and Core OS...';
+    try{var r=await fetch('/api/system/core-status'),j=await r.json();E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(j.core&&j.core.reachable?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')}catch(err){E('schoolConnectionStatus').textContent=err.message}finally{check.disabled=false}
+  };
+  var repair=E('repairSchool');if(repair)repair.onclick=async function(){
+    repair.disabled=true;E('schoolConnectionStatus').textContent='Waking Core OS and repairing the School authentication session...';
     try{
-      var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();
-      if(!r.ok)throw Error(j&&j.message?j.message:'Core OS is still unavailable');
-      E('schoolConnectionStatus').textContent='Core OS is awake. Reconnecting...';
-      sessionStorage.removeItem('rx_school_token');token='';setTimeout(function(){location.reload()},700)
-    }catch(err){E('schoolConnectionStatus').textContent=err.message;wake.disabled=false}
+      var wakeRes=await fetch('/api/system/core-wake',{method:'POST'}),wakeJson=await wakeRes.json();
+      if(!wakeRes.ok)throw Error(wakeJson&&wakeJson.message?wakeJson.message:'Core OS is still unavailable');
+      sessionStorage.removeItem('rx_school_token');token='';
+      token=await previewToken();sessionStorage.setItem('rx_school_token',token);
+      ctx=await raw('/api/context');
+      E('schoolConnectionStatus').textContent='Connection repaired successfully. Opening Revolt-X School...';
+      setTimeout(function(){location.reload()},500)
+    }catch(err){E('schoolConnectionStatus').textContent=err.message;repair.disabled=false}
   }
 }}
 async function page(p){
