@@ -1359,24 +1359,101 @@ app.post('/api/report-reviewers',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 
+app.get('/api/promotions/preview',async request=>{
+  const a=await authorize(request,db,config,'promotion.manage');
+  const q=z.object({
+    fromAcademicYearId:z.string().uuid(),
+    toAcademicYearId:z.string().uuid(),
+    classroomId:z.string().uuid()
+  }).parse(request.query);
+  const classroom=await one<any>(db,`SELECT c.*,g.level_order,g.name grade_name,g.code grade_code
+    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE c.id=$1 AND c.academic_year_id=$2 AND c.organisation_id=$3`,
+    [q.classroomId,q.fromAcademicYearId,a.core.organisation_id]);
+  const nextGrade=await maybeOne<any>(db,`SELECT * FROM grade_levels WHERE organisation_id=$1 AND is_active=true AND level_order>$2
+    ORDER BY level_order LIMIT 1`,[a.core.organisation_id,classroom.level_order]);
+  const destinations=nextGrade?(await db.query(`SELECT c.id,c.name,c.stream,g.name grade_name,g.code grade_code
+    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND c.grade_level_id=$3 AND c.is_active=true
+    ORDER BY c.name`,[a.core.organisation_id,q.toAcademicYearId,nextGrade.id])).rows:[];
+  const repeatDestinations=(await db.query(`SELECT c.id,c.name,c.stream,g.name grade_name,g.code grade_code
+    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND g.code=$3 AND c.is_active=true ORDER BY c.name`,
+    [a.core.organisation_id,q.toAcademicYearId,classroom.grade_code])).rows;
+  const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,
+      e.id enrolment_id,c.name classroom_name,g.name grade_name
+    FROM enrolments e JOIN students s ON s.id=e.student_id JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE e.organisation_id=$1 AND e.academic_year_id=$2 AND e.classroom_id=$3 AND e.status='active'
+    ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.fromAcademicYearId,q.classroomId])).rows;
+  return{
+    classroom,
+    nextGrade,
+    defaultOutcome:nextGrade?'promoted':'completed',
+    destinations,
+    repeatDestinations,
+    students
+  };
+});
 app.post('/api/promotions/batch',async request=>{
-  const a=await authorize(request,db,config,'promotion.manage');const b=z.object({fromAcademicYearId:z.string().uuid(),toAcademicYearId:z.string().uuid(),records:z.array(z.object({studentId:z.string().uuid(),toClassroomId:z.string().uuid().nullable().optional(),outcome:z.enum(['promoted','repeated','completed'])})).min(1).max(300)}).parse(request.body);
-  return tx(db,async c=>{
-    let processed=0;
+  const a=await authorize(request,db,config,'promotion.manage');
+  const b=z.object({
+    fromAcademicYearId:z.string().uuid(),
+    toAcademicYearId:z.string().uuid(),
+    fromClassroomId:z.string().uuid().optional(),
+    records:z.array(z.object({
+      studentId:z.string().uuid(),
+      toClassroomId:z.string().uuid().nullable().optional(),
+      outcome:z.enum(['promoted','repeated','completed'])
+    })).min(1).max(300)
+  }).parse(request.body);
+  if(b.fromAcademicYearId===b.toAcademicYearId)throw fail(400,'Choose a different destination academic year');
+  return tx(db,async client=>{
+    const batch=await one<any>(client,`INSERT INTO promotion_batches(
+      organisation_id,from_academic_year_id,to_academic_year_id,from_classroom_id,processed_by_os_user_id,total_students
+    ) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[
+      a.core.organisation_id,b.fromAcademicYearId,b.toAcademicYearId,b.fromClassroomId??null,a.core.id,b.records.length
+    ]);
+    let processed=0,promoted=0,repeated=0,completed=0;
     for(const r of b.records){
-      const old=await maybeOne<any>(c,'SELECT * FROM enrolments WHERE student_id=$1 AND academic_year_id=$2 AND organisation_id=$3',[r.studentId,b.fromAcademicYearId,a.core.organisation_id]);if(!old)continue;
-      if(r.outcome!=='completed'&&!r.toClassroomId)throw fail(400,'A destination class is required for promoted or repeated students');
-      if(r.outcome==='completed'){
-        await c.query("UPDATE enrolments SET status='completed' WHERE id=$1",[old.id]);await c.query("UPDATE students SET status='graduated',updated_at=now() WHERE id=$1",[r.studentId]);
-      }else{
-        await c.query("UPDATE enrolments SET status=$1 WHERE id=$2",[r.outcome==='promoted'?'promoted':'repeated',old.id]);
-        await c.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status) VALUES($1,$2,$3,$4,'active') ON CONFLICT(student_id,academic_year_id) DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()`,[a.core.organisation_id,r.studentId,b.toAcademicYearId,r.toClassroomId]);
+      const old=await maybeOne<any>(client,`SELECT e.*,c.grade_level_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+        WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3 AND e.status='active' FOR UPDATE`,
+        [r.studentId,b.fromAcademicYearId,a.core.organisation_id]);
+      if(!old)throw fail(409,'One or more selected students no longer have an active enrolment in the source year');
+      if(b.fromClassroomId&&old.classroom_id!==b.fromClassroomId)throw fail(409,'A selected student is no longer in the source class');
+      if(r.outcome!=='completed'){
+        if(!r.toClassroomId)throw fail(400,'A destination class is required for promoted or repeated students');
+        const dest=await one<any>(client,`SELECT c.*,g.level_order FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+          WHERE c.id=$1 AND c.organisation_id=$2 AND c.academic_year_id=$3 AND c.is_active=true`,
+          [r.toClassroomId,a.core.organisation_id,b.toAcademicYearId]);
+        if(r.outcome==='repeated'&&dest.grade_level_id!==old.grade_level_id)throw fail(400,'A repeated student must remain in the same grade level');
       }
-      await c.query(`INSERT INTO student_promotions(organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,processed_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(student_id,to_academic_year_id) DO UPDATE SET from_classroom_id=EXCLUDED.from_classroom_id,to_classroom_id=EXCLUDED.to_classroom_id,outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,created_at=now()`,[a.core.organisation_id,r.studentId,b.fromAcademicYearId,b.toAcademicYearId,old.classroom_id,r.toClassroomId??null,r.outcome,a.core.id]);
+      if(r.outcome==='completed'){
+        await client.query("UPDATE enrolments SET status='completed' WHERE id=$1",[old.id]);
+        await client.query("UPDATE students SET status='graduated',updated_at=now() WHERE id=$1",[r.studentId]);
+        completed++;
+      }else{
+        await client.query("UPDATE enrolments SET status=$1 WHERE id=$2",[r.outcome==='promoted'?'promoted':'repeated',old.id]);
+        await client.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status)
+          VALUES($1,$2,$3,$4,'active')
+          ON CONFLICT(student_id,academic_year_id)
+          DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()`,
+          [a.core.organisation_id,r.studentId,b.toAcademicYearId,r.toClassroomId]);
+        await client.query("UPDATE students SET status='active',updated_at=now() WHERE id=$1",[r.studentId]);
+        if(r.outcome==='promoted')promoted++;else repeated++;
+      }
+      await client.query(`INSERT INTO student_promotions(
+        organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,processed_by_os_user_id
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT(student_id,to_academic_year_id)
+      DO UPDATE SET from_classroom_id=EXCLUDED.from_classroom_id,to_classroom_id=EXCLUDED.to_classroom_id,
+        outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,created_at=now()`,
+        [a.core.organisation_id,r.studentId,b.fromAcademicYearId,b.toAcademicYearId,old.classroom_id,r.toClassroomId??null,r.outcome,a.core.id]);
       processed++;
     }
-    await audit(a.core.organisation_id,a.core.id,'students.promoted','academic_year',b.toAcademicYearId,{processed});
-    return{processed};
+    await client.query(`UPDATE promotion_batches SET promoted_count=$1,repeated_count=$2,completed_count=$3 WHERE id=$4`,
+      [promoted,repeated,completed,batch.id]);
+    await audit(a.core.organisation_id,a.core.id,'students.promoted','promotion_batch',batch.id,{processed,promoted,repeated,completed});
+    return{batchId:batch.id,processed,promoted,repeated,completed};
   });
 });
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
