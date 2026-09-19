@@ -34,18 +34,36 @@ async function publicJson(path,opt){opt=opt||{};opt.headers=Object.assign({'cont
 async function showTeacherTestAccess(message){
   sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;
   E('app').classList.add('hide');E('loading').classList.remove('hide');
-  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><div class="badge info">TEST ACCESS</div><h1>Choose a Teacher</h1><p class="muted">Temporary testing mode. Select a teacher to open the workspace without password setup.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<label>Teacher</label><select id="testTeacherSelect"><option>Loading teachers...</option></select><button id="testTeacherLogin" class="primary" style="width:100%">Open Teacher Workspace</button><div id="testTeacherStatus" class="muted" style="margin-top:10px"></div></div>';
-  try{
-    var teachers=await publicJson('/api/test-access/teachers');
-    E('testTeacherSelect').innerHTML=teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name+' • '+t.role.replace('_',' ')+' • '+(t.job_title||'Teacher'))+'</option>'}).join('');
-    E('testTeacherLogin').onclick=async function(){
-      var btn=E('testTeacherLogin');btn.disabled=true;btn.textContent='Opening workspace...';
-      try{
-        var x=await publicJson('/api/test-access/teacher-login',{method:'POST',body:JSON.stringify({osUserId:E('testTeacherSelect').value})});
-        token=x.accessToken;sessionStorage.setItem('rx_teacher_token',token);await openWorkspace()
-      }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Teacher Workspace'}
+  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><div class="badge info">DEMO ACCESS</div><h1>Teacher Access</h1><p class="muted">Unlock the demo environment once, then select a teacher. Individual teacher passwords are not required in Demo Access.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<div id="testGate"><label>Demo access password</label><input id="testAccessPassword" type="password" autocomplete="current-password" placeholder="Enter demo password"><button id="unlockTestAccess" class="primary" style="width:100%">Unlock Demo Access</button></div><div id="teacherChooser" class="hide"><label>Teacher</label><select id="testTeacherSelect"><option>Loading teachers...</option></select><button id="testTeacherLogin" class="primary" style="width:100%">Open Teacher Workspace</button></div><div id="testTeacherStatus" class="muted" style="margin-top:10px"></div></div>';
+  async function loadTeachers(){
+    try{
+      var teachers=await publicJson('/api/test-access/teachers');
+      E('testGate').classList.add('hide');E('teacherChooser').classList.remove('hide');
+      E('testTeacherSelect').innerHTML=teachers.length?teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name+' • '+t.role.replace('_',' ')+' • '+(t.job_title||'Teacher'))+'</option>'}).join(''):'<option value="">No teachers configured</option>';
+      E('testTeacherLogin').onclick=async function(){
+        if(!E('testTeacherSelect').value)return;
+        var btn=E('testTeacherLogin');btn.disabled=true;btn.textContent='Opening workspace...';
+        try{
+          var x=await publicJson('/api/test-access/teacher-login',{method:'POST',body:JSON.stringify({osUserId:E('testTeacherSelect').value})});
+          token=x.accessToken;sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token);await openWorkspace()
+        }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Teacher Workspace'}
+      }
+    }catch(err){
+      if(err.status===401){E('testGate').classList.remove('hide');E('teacherChooser').classList.add('hide');return}
+      E('testTeacherStatus').textContent=err.message
     }
-  }catch(err){E('testTeacherStatus').textContent=err.message}
+  }
+  E('unlockTestAccess').onclick=async function(){
+    var btn=E('unlockTestAccess');btn.disabled=true;btn.textContent='Unlocking...';E('testTeacherStatus').textContent='';
+    try{
+      await publicJson('/api/test-access/unlock',{method:'POST',body:JSON.stringify({password:E('testAccessPassword').value})});
+      await loadTeachers()
+    }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Unlock Demo Access'}
+  };
+  E('testAccessPassword').onkeydown=function(e){if(e.key==='Enter')E('unlockTestAccess').click()};
+  var state=await publicJson('/api/test-access/status').catch(function(){return{enabled:false,unlocked:false}});
+  if(!state.enabled){showTeacherLogin(message);return}
+  if(state.unlocked)await loadTeachers();
 }
 function showTeacherLogin(message){
   var url='/login?next='+encodeURIComponent('/teacher');
@@ -86,7 +104,10 @@ async function boot(){
     await openWorkspace();
     if(token){sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token)}
   }catch(e){
-    if(e.status===401||e.status===403){showTeacherLogin(e.message);return}
+    if(e.status===401||e.status===403){
+      try{var testState=await publicJson('/api/test-access/status');if(testState.enabled){await showTeacherTestAccess(e.message);return}}catch(_e){}
+      showTeacherLogin(e.message);return
+    }
     E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><h1>Teacher workspace unavailable</h1><p class="muted">'+esc(e.message)+'</p><button id="teacherRetry" class="primary" style="width:100%">Retry</button><button id="teacherSignIn" class="ghost" style="width:100%;margin-top:8px">Return to sign in</button></div>';
     E('teacherRetry').onclick=function(){location.reload()};
     E('teacherSignIn').onclick=function(){location.replace('/login?next='+encodeURIComponent('/teacher'))}
