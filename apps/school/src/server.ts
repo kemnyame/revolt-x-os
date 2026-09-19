@@ -12,6 +12,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
+import { initializePaystack, providerStatus, sendMessage, verifyPaystack, type MessageChannel } from './providers.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -31,6 +32,120 @@ async function activeYear(org:string){
 }
 async function activeTerm(org:string){
   return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
+}
+
+function normalizePhone(phone:string){
+  const p=String(phone||'').trim().replace(/[\s()-]/g,'');
+  if(p.startsWith('+'))return p;
+  if(/^0\d{9}$/.test(p))return '+233'+p.slice(1);
+  return p;
+}
+
+async function deliverCommunication(input:{
+  organisationId:string;
+  actorOsUserId?:string|null;
+  channel:MessageChannel;
+  recipientName?:string|null;
+  recipientAddress:string;
+  subject?:string|null;
+  body:string;
+  templateKey?:string|null;
+  relatedType?:string|null;
+  relatedId?:string|null;
+}){
+  const status=providerStatus(config);
+  const configured=input.channel==='email'?status.email.configured:input.channel==='sms'?status.sms.configured:status.whatsapp.configured;
+  const row=await one<any>(db,`INSERT INTO communication_outbox(
+      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
+      input.organisationId,input.channel,input.recipientName??null,input.recipientAddress,input.subject??null,input.body,
+      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null
+    ]);
+  if(!configured)return row;
+  try{
+    await db.query("UPDATE communication_outbox SET status='sending',attempt_count=attempt_count+1 WHERE id=$1",[row.id]);
+    const sent=await sendMessage(config,{
+      channel:input.channel,
+      to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
+      subject:input.subject,
+      body:input.body
+    });
+    return await one<any>(db,`UPDATE communication_outbox
+      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL
+      WHERE id=$3 RETURNING *`,[sent.provider,sent.messageId,row.id]);
+  }catch(error:any){
+    return await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1 WHERE id=$2 RETURNING *`,
+      [String(error?.message||error),row.id]);
+  }
+}
+
+async function notifyContact(input:{
+  organisationId:string;
+  actorOsUserId?:string|null;
+  eventKey:string;
+  name?:string|null;
+  email?:string|null;
+  phone?:string|null;
+  subject:string;
+  body:string;
+  relatedType?:string|null;
+  relatedId?:string|null;
+}){
+  const rules=(await db.query('SELECT channel,enabled FROM notification_rules WHERE organisation_id=$1 AND event_key=$2',[input.organisationId,input.eventKey])).rows;
+  const active=rules.length?rules.filter((r:any)=>r.enabled).map((r:any)=>r.channel):['email'];
+  const results:any[]=[];
+  for(const ch of active as MessageChannel[]){
+    const address=ch==='email'?input.email:input.phone;
+    if(!address)continue;
+    results.push(await deliverCommunication({
+      organisationId:input.organisationId,actorOsUserId:input.actorOsUserId,channel:ch,
+      recipientName:input.name,recipientAddress:address,subject:input.subject,body:input.body,
+      templateKey:input.eventKey,relatedType:input.relatedType,relatedId:input.relatedId
+    }));
+  }
+  return results;
+}
+
+async function updateStudentFeeStatus(client:any,studentFeeId:string){
+  const calc=await one<any>(client,`SELECT sf.id,(sf.amount_due-sf.discount) due,
+    COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid
+    FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id
+    WHERE sf.id=$1 GROUP BY sf.id`,[studentFeeId]);
+  const paid=Number(calc.paid),due=Number(calc.due);
+  const status=paid>=due?'paid':paid>0?'part_paid':'unpaid';
+  await client.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,studentFeeId]);
+  return{paid,due,status,balance:Math.max(0,due-paid)};
+}
+
+async function settleOnlinePayment(reference:string){
+  const intent=await maybeOne<any>(db,'SELECT * FROM payment_intents WHERE reference=$1',[reference]);
+  if(!intent)throw fail(404,'Payment reference not found');
+  if(intent.status==='success'&&intent.settled_payment_id)return intent;
+  const verified=await verifyPaystack(config,reference);
+  if(verified.status!=='success'){
+    await db.query(`UPDATE payment_intents SET status=$1,failure_reason=$2,provider_payload=$3,updated_at=now() WHERE id=$4`,
+      [verified.status==='failed'?'failed':'pending',verified.gatewayResponse,JSON.stringify(verified.raw),intent.id]);
+    return await one<any>(db,'SELECT * FROM payment_intents WHERE id=$1',[intent.id]);
+  }
+  if(Math.abs(Number(intent.amount)-Number(verified.amount))>0.001||String(intent.currency)!==String(verified.currency)){
+    await db.query("UPDATE payment_intents SET status='failed',failure_reason='Verified amount or currency mismatch',updated_at=now() WHERE id=$1",[intent.id]);
+    throw fail(409,'Payment verification amount did not match the request');
+  }
+  return tx(db,async client=>{
+    const locked=await one<any>(client,'SELECT * FROM payment_intents WHERE id=$1 FOR UPDATE',[intent.id]);
+    if(locked.status==='success'&&locked.settled_payment_id)return locked;
+    const payment=await one<any>(client,`INSERT INTO payments(
+      organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note,source,payment_intent_id
+    ) VALUES($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9) RETURNING *`,[
+      locked.organisation_id,locked.student_id,locked.student_fee_id,locked.amount,locked.method,
+      verified.reference,'Online payment verified by Paystack',locked.initiated_by_type==='guardian'?'parent_online':'school_online',locked.id
+    ]);
+    if(locked.student_fee_id)await updateStudentFeeStatus(client,locked.student_fee_id);
+    if(locked.payment_request_id)await client.query("UPDATE fee_payment_requests SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1",[locked.payment_request_id]);
+    const updated=await one<any>(client,`UPDATE payment_intents SET status='success',settled_payment_id=$1,paid_at=now(),
+      provider_payload=$2,updated_at=now() WHERE id=$3 RETURNING *`,[payment.id,JSON.stringify(verified.raw),locked.id]);
+    return updated;
+  });
 }
 
 function hashPortalPin(pin:string){
