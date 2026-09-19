@@ -51,16 +51,23 @@ async function boot(){try{
   }
   E('school').textContent=ctx.school.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.schoolRole.replace('_',' ');var visibleNav=nav.filter(function(n){return can(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};E('loading').classList.add('hide');E('app').classList.remove('hide');var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }catch(e){
-  E('loading').innerHTML='<div class="connection-card"><h2>Teacher workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">You can retry, or wake Core OS if the hosting service is sleeping.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retryTeacher" class="primary">Retry connection</button><button id="wakeTeacherCore" class="ghost">Wake Core OS</button></div></div>';
+  E('loading').innerHTML='<div class="connection-card"><h2>Teacher workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">Use Reconnect & Repair to wake Core OS, refresh authentication and reconnect the Teacher workspace automatically.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="repairTeacher" class="primary">Reconnect & Repair</button><button id="checkTeacherCore" class="ghost">Check system status</button><button id="retryTeacher" class="ghost">Reload page</button></div></div>';
   var retry=E('retryTeacher');if(retry)retry.onclick=function(){location.reload()};
-  var wake=E('wakeTeacherCore');if(wake)wake.onclick=async function(){
-    wake.disabled=true;E('teacherConnectionStatus').textContent='Waking Core Revolt-X OS. This can take a few seconds on the free hosting tier...';
+  var check=E('checkTeacherCore');if(check)check.onclick=async function(){
+    check.disabled=true;E('teacherConnectionStatus').textContent='Checking School, database and Core OS...';
+    try{var r=await fetch('/api/system/core-status'),j=await r.json();E('teacherConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(j.core&&j.core.reachable?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')}catch(err){E('teacherConnectionStatus').textContent=err.message}finally{check.disabled=false}
+  };
+  var repair=E('repairTeacher');if(repair)repair.onclick=async function(){
+    repair.disabled=true;E('teacherConnectionStatus').textContent='Waking Core OS and repairing the Teacher authentication session...';
     try{
-      var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();
-      if(!r.ok)throw Error(j&&j.message?j.message:'Core OS is still unavailable');
-      E('teacherConnectionStatus').textContent='Core OS is awake. Reconnecting...';
-      sessionStorage.removeItem('rx_teacher_token');token='';setTimeout(function(){location.reload()},700)
-    }catch(err){E('teacherConnectionStatus').textContent=err.message;wake.disabled=false}
+      var wakeRes=await fetch('/api/system/core-wake',{method:'POST'}),wakeJson=await wakeRes.json();
+      if(!wakeRes.ok)throw Error(wakeJson&&wakeJson.message?wakeJson.message:'Core OS is still unavailable');
+      sessionStorage.removeItem('rx_teacher_token');token='';
+      token=await previewToken();sessionStorage.setItem('rx_teacher_token',token);
+      ctx=await raw('/api/teacher/context');
+      E('teacherConnectionStatus').textContent='Connection repaired successfully. Opening Teacher workspace...';
+      setTimeout(function(){location.reload()},500)
+    }catch(err){E('teacherConnectionStatus').textContent=err.message;repair.disabled=false}
   }
 }}
 async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
