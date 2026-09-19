@@ -15,12 +15,13 @@ type Deps={
   deliverCommunication:(input:any)=>Promise<any>;
   postFinanceJournal:(client:any,input:any)=>Promise<any>;
   postStudentPaymentLedger:(client:any,paymentId:string,actorOsUserId?:string|null)=>Promise<any>;
+  postStudentFeeReceivable:(client:any,studentFeeId:string,actorOsUserId?:string|null)=>Promise<any>;
   reverseFinanceJournal:(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string)=>Promise<any>;
   clearCoreUsersCache:(organisationId:string)=>void;
 };
 
 export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
-  const {db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,postFinanceJournal,postStudentPaymentLedger,reverseFinanceJournal,clearCoreUsersCache}=d;
+  const {db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,postFinanceJournal,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal,clearCoreUsersCache}=d;
 
   app.get('/api/staff/users',async request=>{
     const a=await authorize(request,db,config,'staff.view');
@@ -407,8 +408,8 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     const end=q.end??new Date().toISOString().slice(0,10);
     if(report==='income-statement'){
       const rows=(await db.query(
-        "SELECT fa.code,fa.name,fa.account_type,CASE WHEN fa.account_type='income' THEN COALESCE(sum(jl.credit-jl.debit),0) "+
-        "ELSE COALESCE(sum(jl.debit-jl.credit),0) END amount FROM finance_accounts fa "+
+        "SELECT fa.code,fa.name,fa.account_type,CASE WHEN fa.account_type='income' THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0) "+
+        "ELSE COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) END amount FROM finance_accounts fa "+
         "LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id "+
         "AND je.status='posted' AND je.entry_date BETWEEN $2 AND $3 WHERE fa.organisation_id=$1 AND fa.account_type IN('income','expense') "+
         "GROUP BY fa.id ORDER BY fa.account_type DESC,fa.code",[a.core.organisation_id,start,end])).rows;
@@ -418,7 +419,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     }
     if(report==='trial-balance'){
       const rows=(await db.query(
-        "SELECT fa.code,fa.name,fa.account_type,COALESCE(sum(jl.debit),0) debit,COALESCE(sum(jl.credit),0) credit "+
+        "SELECT fa.code,fa.name,fa.account_type,COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit ELSE 0 END),0) debit,COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit ELSE 0 END),0) credit "+
         "FROM finance_accounts fa LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id "+
         "LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2 "+
         "WHERE fa.organisation_id=$1 GROUP BY fa.id ORDER BY fa.code",[a.core.organisation_id,end])).rows;
@@ -426,7 +427,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     }
     if(report==='cashflow'){
       const rows=(await db.query(
-        "SELECT fa.code,fa.name,COALESCE(sum(jl.debit-jl.credit),0) net_movement FROM finance_accounts fa "+
+        "SELECT fa.code,fa.name,COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) net_movement FROM finance_accounts fa "+
         "LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id "+
         "AND je.status='posted' AND je.entry_date BETWEEN $2 AND $3 WHERE fa.organisation_id=$1 AND fa.is_cash_account=true "+
         "GROUP BY fa.id ORDER BY fa.code",[a.core.organisation_id,start,end])).rows;
@@ -443,8 +444,8 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     if(report==='balance-sheet'){
       const rows=(await db.query(
         "SELECT fa.code,fa.name,fa.account_type,fa.opening_balance,"+
-        "CASE WHEN fa.account_type='asset' THEN fa.opening_balance+COALESCE(sum(jl.debit-jl.credit),0) "+
-        "ELSE fa.opening_balance+COALESCE(sum(jl.credit-jl.debit),0) END balance "+
+        "CASE WHEN fa.account_type='asset' THEN fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) "+
+        "ELSE fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0) END balance "+
         "FROM finance_accounts fa LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id "+
         "LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2 "+
         "WHERE fa.organisation_id=$1 AND fa.account_type IN('asset','liability','equity') GROUP BY fa.id ORDER BY fa.account_type,fa.code",
@@ -489,7 +490,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     if(report==='budget-variance'){
       const rows=(await db.query(
         "SELECT b.id,fa.code,fa.name,fa.account_type,b.period_start,b.period_end,b.amount budget_amount,"+
-        "CASE WHEN fa.account_type='income' THEN COALESCE(sum(jl.credit-jl.debit),0) ELSE COALESCE(sum(jl.debit-jl.credit),0) END actual_amount "+
+        "CASE WHEN fa.account_type='income' THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0) ELSE COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) END actual_amount "+
         "FROM finance_budgets b JOIN finance_accounts fa ON fa.id=b.account_id "+
         "LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id "+
         "AND je.status='posted' AND je.entry_date BETWEEN GREATEST(b.period_start,$2::date) AND LEAST(b.period_end,$3::date) "+
@@ -514,14 +515,21 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/backfill-student-payments',async request=>{
     const a=await authorize(request,db,config,'finance.manage');
-    const rows=(await db.query(
-      "SELECT id FROM payments p WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND NOT EXISTS("+
+    const feeRows=(await db.query(
+      "SELECT sf.id FROM student_fees sf WHERE sf.organisation_id=$1 AND NOT EXISTS("+
+      "SELECT 1 FROM finance_journal_entries je WHERE je.organisation_id=sf.organisation_id AND je.source_type='student_fee' "+
+      "AND je.source_id=sf.id AND je.status='posted') ORDER BY sf.created_at",[a.core.organisation_id])).rows;
+    const paymentRows=(await db.query(
+      "SELECT p.id FROM payments p WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND NOT EXISTS("+
       "SELECT 1 FROM finance_journal_entries je WHERE je.organisation_id=p.organisation_id AND je.source_type='student_payment' "+
-      "AND je.source_id=p.id AND je.status<>'voided') ORDER BY p.paid_at",[a.core.organisation_id])).rows;
-    let posted=0;
-    await tx(db,async(client:any)=>{for(const row of rows){await postStudentPaymentLedger(client,row.id,a.core.id);posted++}});
-    await audit(a.core.organisation_id,a.core.id,'finance.student_payments_backfilled','finance_journal_entry',null,{posted});
-    return{posted};
+      "AND je.source_id=p.id AND je.status='posted') ORDER BY p.paid_at",[a.core.organisation_id])).rows;
+    let receivablesPosted=0,paymentsPosted=0;
+    await tx(db,async(client:any)=>{
+      for(const row of feeRows){await postStudentFeeReceivable(client,row.id,a.core.id);receivablesPosted++}
+      for(const row of paymentRows){await postStudentPaymentLedger(client,row.id,a.core.id);paymentsPosted++}
+    });
+    await audit(a.core.organisation_id,a.core.id,'finance.school_fees_backfilled','finance_journal_entry',null,{receivablesPosted,paymentsPosted});
+    return{posted:receivablesPosted+paymentsPosted,receivablesPosted,paymentsPosted};
   });
 
   function datesBetween(start:string,end:string){
