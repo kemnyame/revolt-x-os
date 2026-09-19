@@ -787,7 +787,7 @@ else if(p==='attendance'){
  else if(p==='staff'){
    var coreUsersError=null;
    var rr=await Promise.all([
-     raw('/api/staff/core-users').catch(function(e){coreUsersError=e;return[]}),
+     raw('/api/staff/users').catch(function(e){coreUsersError=e;return[]}),
      raw('/api/staff/module-memberships'),
      raw('/api/teacher-assignments'),
      raw('/api/roles/capabilities'),
@@ -867,10 +867,11 @@ else if(p==='attendance'){
      form('Add User',[
        {key:'firstName',label:'First name'},
        {key:'lastName',label:'Last name'},
+       {key:'email',label:'Email address (optional)',type:'email'},
        {key:'jobTitle',label:'Job title'},
        {key:'employeeNumber',label:'Staff number'},
        {key:'schoolRole',label:'School role',type:'select',options:opts}
-     ],{schoolRole:(opts[0]&&opts[0].value)||''},function(v){return raw('/api/staff/users',{method:'POST',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,jobTitle:v.jobTitle||undefined,employeeNumber:v.employeeNumber||undefined,schoolRole:v.schoolRole})})})
+     ],{schoolRole:(opts[0]&&opts[0].value)||''},function(v){return raw('/api/staff/users',{method:'POST',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,email:v.email||undefined,jobTitle:v.jobTitle||undefined,employeeNumber:v.employeeNumber||undefined,schoolRole:v.schoolRole})})})
    };
    var openManager=E('openAcademicManager');if(openManager)openManager.onclick=function(){page('assignments')};
    var quickRole=E('quickCreateRole');if(quickRole)quickRole.onclick=function(){document.querySelector('[data-staff-tab="privileges"]').click();setTimeout(function(){var b=E('createSchoolRole');if(b)b.click()},0)};
