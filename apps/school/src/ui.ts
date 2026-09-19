@@ -767,102 +767,108 @@ else if(p==='attendance'){
  else if(p==='staff'){
    var coreUsersError=null;
    var rr=await Promise.all([
-     raw('/api/staff/core-users').catch(function(e){coreUsersError=e;return[]}),raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),
-     raw('/api/roles/capabilities'),raw('/api/classes'),raw('/api/report-reviewers'),
-     raw('/api/academic-years'),raw('/api/terms'),raw('/api/class-subjects')
+     raw('/api/staff/core-users').catch(function(e){coreUsersError=e;return[]}),
+     raw('/api/staff/module-memberships'),
+     raw('/api/teacher-assignments'),
+     raw('/api/roles/capabilities'),
+     raw('/api/classes'),
+     raw('/api/report-reviewers'),
+     raw('/api/academic-years'),
+     raw('/api/terms'),
+     raw('/api/class-subjects')
    ]);
-   var users=rr[0],memberships=rr[1],assignments=rr[2],roleMatrix=rr[3],staffClasses=rr[4],reviewers=rr[5],years=rr[6],terms=rr[7],classSubjects=rr[8],selectedRole='teacher';
+   var users=rr[0],memberships=rr[1],assignments=rr[2],roleMatrix=rr[3],staffClasses=rr[4],reviewers=rr[5],years=rr[6],terms=rr[7],classSubjects=rr[8];
+   var roleDefs=roleMatrix.roles||[],selectedRole=(roleDefs.find(function(r){return r.key==='teacher'})||roleDefs[0]||{}).key||'';
    var activeYear=years.find(function(y){return y.status==='active'})||years[0];
-   function schoolRole(uid){var m=memberships.find(function(x){return x.os_user_id===uid});return m?m.role:'Not assigned'}
-   function userName(id){var u=users.find(function(x){return x.id===id});return u?u.first_name+' '+u.last_name:id}
+
+   function membershipFor(uid){return memberships.find(function(x){return x.os_user_id===uid})}
+   function roleDef(key){return roleDefs.find(function(r){return r.key===key})}
+   function schoolRole(uid){var m=membershipFor(uid);return m?m.role:'Not assigned'}
+   function roleName(key){var r=roleDef(key);return r?r.name:String(key||'').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
+   function userName(id){var u=users.find(function(x){return x.id===id});return u?(u.first_name+' '+u.last_name):id}
+   function emailLabel(u){return u&&u.email?u.email:'Email not configured'}
    function roleAllowed(role,key){if(role==='school_admin')return true;var m=roleMatrix.mappings.find(function(x){return x.role===role&&x.capability_key===key});return !!(m&&m.allowed)}
-   function roleLabel(role){return role.replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
-   var teachers=users.filter(function(u){var m=memberships.find(function(x){return x.os_user_id===u.id});return m&&['teacher','headteacher','school_admin'].indexOf(m.role)>=0&&m.status==='active'});
+   function activeRoles(){return roleDefs.filter(function(r){return r.is_active})}
+   function roleOptions(selected){return activeRoles().map(function(r){return{value:r.key,label:r.name+(r.can_teach?' • Teaching':'')}})}
+   var teachers=users.filter(function(u){var m=membershipFor(u.id),r=m&&roleDef(m.role);return m&&m.status==='active'&&r&&r.can_teach});
+
    function renderPrivileges(){
      var box=E('privilegePanel');if(!box)return;
+     var selected=roleDef(selectedRole)||roleDefs[0];
+     if(!selected){box.innerHTML='<div class="empty">No roles configured.</div>';return}
+     selectedRole=selected.key;
      var groups={};roleMatrix.capabilities.forEach(function(cap){(groups[cap.module]||(groups[cap.module]=[])).push(cap)});
-     box.innerHTML='<div class="privilege-head"><div><label>Role</label><select id="privRole">'+roleMatrix.roles.map(function(r){return'<option value="'+r+'"'+(r===selectedRole?' selected':'')+'>'+esc(roleLabel(r))+'</option>'}).join('')+'</select></div><div class="notice '+(selectedRole==='school_admin'?'warn':'')+'">'+(selectedRole==='school_admin'?'School Administrator always has full access and cannot be restricted.':'Choose what this role can view, create, edit, save, report or delete.')+'</div></div>'+
+     box.innerHTML='<div class="section compact"><div><h3>Roles & Privileges</h3><p class="muted">Create the roles your school uses, then decide what each role can view, create, edit, save, approve or report.</p></div>'+(roleMatrix.canManage?'<button id="createSchoolRole" class="primary">Create role</button>':'')+'</div>'+
+       '<div class="privilege-head"><div><label>Role</label><select id="privRole">'+roleDefs.map(function(r){return'<option value="'+r.key+'"'+(r.key===selectedRole?' selected':'')+'>'+esc(r.name)+'</option>'}).join('')+'</select></div>'+
+       '<div class="notice '+(selectedRole==='school_admin'?'warn':'')+'"><b>'+esc(selected.name)+'</b><br>'+esc(selected.description||'No description')+'<br><span class="muted">'+(selected.can_teach?'Teaching role • ':'')+(selected.portal_mode==='teacher'?'Teacher workspace':'Administration workspace')+'</span></div></div>'+
        Object.keys(groups).map(function(module){return'<div class="privilege-group"><h4>'+esc(module)+'</h4><div class="privilege-grid">'+groups[module].map(function(cap){var checked=roleAllowed(selectedRole,cap.key);return'<label class="privilege-item"><input type="checkbox" data-capability="'+cap.key+'"'+(checked?' checked':'')+((selectedRole==='school_admin'||!roleMatrix.canManage)?' disabled':'')+'><span><b>'+esc(cap.label)+'</b><small>'+esc(cap.action)+' • '+esc(cap.description||'')+'</small></span></label>'}).join('')+'</div></div>'}).join('')+
-       ((selectedRole!=='school_admin'&&roleMatrix.canManage)?'<button id="savePrivileges" class="primary">Save role privileges</button>':'');
+       ((selectedRole!=='school_admin'&&roleMatrix.canManage)?'<div class="actions"><button id="savePrivileges" class="primary">Save privileges</button>'+(selected&&!selected.is_system?'<button id="editRoleProfile" class="ghost">Edit role</button>':'')+'</div>':'');
      E('privRole').onchange=function(){selectedRole=this.value;renderPrivileges()};
-     var save=E('savePrivileges');if(save)save.onclick=async function(){var permissions=[];box.querySelectorAll('[data-capability]').forEach(function(i){permissions.push({capabilityKey:i.dataset.capability,allowed:i.checked})});try{await raw('/api/roles/'+selectedRole+'/capabilities',{method:'PUT',body:JSON.stringify({permissions:permissions})});roleMatrix=await raw('/api/roles/capabilities');toast('Privileges saved');renderPrivileges()}catch(err){toast(err.message,true)}};
+     var create=E('createSchoolRole');if(create)create.onclick=function(){
+       form('Create School role',[
+         {key:'name',label:'Role name'},
+         {key:'description',label:'Description',type:'textarea'},
+         {key:'portalMode',label:'Workspace',type:'select',options:[{value:'admin',label:'Administration workspace'},{value:'teacher',label:'Teacher workspace'}]},
+         {key:'canTeach',label:'Can be assigned to classes/subjects?',type:'select',options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]},
+         {key:'copyFromRole',label:'Start privileges from',type:'select',options:[{value:'',label:'No privileges'}].concat(roleDefs.map(function(r){return{value:r.key,label:r.name}}))}
+       ],{portalMode:'admin',canTeach:'false',copyFromRole:''},function(v){return raw('/api/roles',{method:'POST',body:JSON.stringify({name:v.name,description:v.description||undefined,portalMode:v.portalMode,canTeach:v.canTeach==='true',copyFromRole:v.copyFromRole||undefined})})})
+     };
+     var edit=E('editRoleProfile');if(edit)edit.onclick=function(){
+       form('Edit role',[
+         {key:'name',label:'Role name'},
+         {key:'description',label:'Description',type:'textarea'},
+         {key:'portalMode',label:'Workspace',type:'select',options:[{value:'admin',label:'Administration workspace'},{value:'teacher',label:'Teacher workspace'}]},
+         {key:'canTeach',label:'Can be assigned to classes/subjects?',type:'select',options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]},
+         {key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}
+       ],{name:selected.name,description:selected.description||'',portalMode:selected.portal_mode,canTeach:String(selected.can_teach),isActive:String(selected.is_active)},function(v){return raw('/api/roles/'+selected.key,{method:'PATCH',body:JSON.stringify({name:v.name,description:v.description||null,portalMode:v.portalMode,canTeach:v.canTeach==='true',isActive:v.isActive==='true'})})})
+     };
+     var save=E('savePrivileges');if(save)save.onclick=async function(){var permissions=[];box.querySelectorAll('[data-capability]').forEach(function(i){permissions.push({capabilityKey:i.dataset.capability,allowed:i.checked})});try{await raw('/api/roles/'+selectedRole+'/capabilities',{method:'PUT',body:JSON.stringify({permissions:permissions})});roleMatrix=await raw('/api/roles/capabilities');roleDefs=roleMatrix.roles||[];toast('Role privileges saved');renderPrivileges()}catch(err){toast(err.message,true)}}
    }
-   function assignmentTable(){
-     return table(assignments.filter(function(a){return a.is_active}),[
-       {key:'teacher_os_user_id',label:'Teacher',render:function(a){return '<b>'+esc(userName(a.teacher_os_user_id))+'</b>'}},
-       {key:'classroom_name',label:'Class'},
-       {key:'subject_name',label:'Assignment',render:function(a){return a.subject_name?esc(a.subject_name):'<b>Class Teacher</b>'}},
-       {key:'term_name',label:'Scope',render:function(a){return esc(a.term_name||a.academic_year||'Whole academic year')}}
-     ],function(r){return (can('staff.edit')?'<button class="mini" data-disable-assignment="'+r.id+'">Disable</button>':'')+(can('staff.delete')?'<button class="mini danger" data-delete-assignment="'+r.id+'">Remove</button>':'')})
+
+   function directoryTable(rows){
+     return table(rows,[{key:'first_name',label:'User',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(emailLabel(u))+'</span>'}},{key:'job_title',label:'Job Title'},{key:'employee_number',label:'Staff No.'},{key:'id',label:'School Role',render:function(u){return badge(roleName(schoolRole(u.id)))}},{key:'membership_status',label:'Core Status',render:function(u){return badge(u.membership_status)}}],function(u){var m=membershipFor(u.id);return (m&&m.status==='active'&&u.email&&can('staff.edit')?'<button class="mini primary-lite" data-send-user-invite="'+u.id+'">Send setup link</button>':'')})
    }
-   E('content').innerHTML='<div class="section"><div><h1>Access Management</h1><p class="muted">Manage staff access and teaching responsibilities without mixing them with academic setup.</p></div><div class="actions">'+(can('staff.create')?'<button id="addTeacher" class="primary">Add teacher</button>':'')+'<button id="openAssignmentManager" class="ghost">Teaching Assignment Manager</button>'+(can('staff.edit')?'<button id="assignStaff" class="ghost">Assign school role</button>':'')+'</div></div>'+
-   (coreUsersError?'<div class="notice warn">Core staff directory could not be reached. School roles, permissions and teaching assignments are still available. Refresh this page to retry the directory.</div>':'')+
-   '<div class="grid staff-stats"><div class="panel stat"><span class="muted">Core OS staff</span><b>'+esc(users.length)+'</b></div><div class="panel stat"><span class="muted">Teaching staff</span><b>'+esc(teachers.length)+'</b></div><div class="panel stat"><span class="muted">Active teaching assignments</span><b>'+esc(assignments.filter(function(a){return a.is_active}).length)+'</b></div><div class="panel stat"><span class="muted">Active School roles</span><b>'+esc(memberships.filter(function(m){return m.status==='active'}).length)+'</b></div></div>'+
-   '<div class="staff-tabs"><button class="staff-tab active" data-staff-tab="directory">Staff Directory</button><button class="staff-tab" data-staff-tab="access">User Access</button><button class="staff-tab" data-staff-tab="privileges">Roles & Privileges</button><button class="staff-tab" data-staff-tab="reviewers">Report Reviewers</button></div>'+
-   '<div id="staff-directory" class="staff-pane"><div class="panel"><div class="toolbar"><input id="staffSearch" placeholder="Search staff name, email, staff number or role"></div><div id="staffDirectoryTable">'+table(users,[{key:'first_name',label:'Staff Member',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(u.email)+'</span>'}},{key:'job_title',label:'Job Title'},{key:'employee_number',label:'Staff No.'},{key:'id',label:'School Role',render:function(u){return badge(schoolRole(u.id))}},{key:'membership_status',label:'Core Status',render:function(u){return badge(u.membership_status)}}],function(u){return teachers.some(function(t){return t.id===u.id})&&can('staff.edit')?'<button class="mini primary-lite" data-send-teacher-invite="'+u.id+'">Send setup link</button>':''})+'</div></div></div>'+
-   '<div id="staff-access" class="staff-pane hide"><div class="panel"><div class="notice">School access and teaching assignment are separate. A person must have active Teacher/Headteacher access before they can be assigned to a class or subject.</div><div style="margin-top:12px">'+table(memberships,[{key:'os_user_id',label:'Staff',render:function(x){return '<b>'+esc(userName(x.os_user_id))+'</b>'}},{key:'role',render:function(x){return badge(roleLabel(x.role))}},{key:'status',render:function(x){return badge(x.status)}}],function(r){return (can('staff.edit')?'<button class="mini" data-edit-staff="'+r.id+'">Edit</button>':'')+(can('staff.delete')?'<button class="mini danger" data-remove-staff="'+r.id+'">Remove</button>':'')})+'</div></div></div>'+
+
+   E('content').innerHTML='<div class="section"><div><h1>Access Management</h1><p class="muted">Create School users, assign the roles your administrator has configured, and manage access separately from Academic Manager teaching assignments.</p></div><div class="actions">'+(can('staff.create')?'<button id="addUser" class="primary">Add User</button>':'')+(can('roles.manage')?'<button id="quickCreateRole" class="ghost">Create Role</button>':'')+'<button id="openAcademicManager" class="ghost">Academic Manager</button></div></div>'+
+   '<div class="notice"><b>Email is temporarily optional.</b> A user can be created now without an email address. They can be assigned a role and teaching responsibilities immediately, but they will not be able to receive a password-setup invitation until a real email is added later.</div>'+
+   (coreUsersError?'<div class="notice warn" style="margin-top:10px">Core staff directory could not be reached. Refresh this page to retry.</div>':'')+
+   '<div class="grid staff-stats"><div class="panel stat"><span class="muted">Users</span><b>'+esc(users.length)+'</b></div><div class="panel stat"><span class="muted">Teaching users</span><b>'+esc(teachers.length)+'</b></div><div class="panel stat"><span class="muted">School roles</span><b>'+esc(activeRoles().length)+'</b></div><div class="panel stat"><span class="muted">Active access</span><b>'+esc(memberships.filter(function(m){return m.status==='active'}).length)+'</b></div></div>'+
+   '<div class="staff-tabs"><button class="staff-tab active" data-staff-tab="directory">User Directory</button><button class="staff-tab" data-staff-tab="access">User Access</button><button class="staff-tab" data-staff-tab="privileges">Roles & Privileges</button><button class="staff-tab" data-staff-tab="reviewers">Report Reviewers</button></div>'+
+   '<div id="staff-directory" class="staff-pane"><div class="panel"><div class="toolbar"><input id="staffSearch" placeholder="Search user, role, staff number or job title"></div><div id="staffDirectoryTable">'+directoryTable(users)+'</div></div></div>'+
+   '<div id="staff-access" class="staff-pane hide"><div class="panel"><div class="notice">A user role controls system access. Class Teacher and Subject Teacher responsibilities are assigned separately in Academic Manager.</div><div style="margin-top:12px">'+table(memberships,[{key:'os_user_id',label:'User',render:function(x){return '<b>'+esc(userName(x.os_user_id))+'</b>'}},{key:'role',label:'Role',render:function(x){return badge(x.role_name||roleName(x.role))}},{key:'portal_mode',label:'Workspace',render:function(x){return esc(x.portal_mode==='teacher'?'Teacher':'Administration')}},{key:'status',render:function(x){return badge(x.status)}}],function(r){return (can('staff.edit')?'<button class="mini" data-edit-access="'+r.id+'">Edit</button>':'')+(can('staff.delete')?'<button class="mini danger" data-remove-access="'+r.id+'">Remove</button>':'')})+'</div></div></div>'+
    '<div id="staff-privileges" class="staff-pane hide"><div id="privilegePanel" class="panel"></div></div>'+
-   '<div id="staff-reviewers" class="staff-pane hide"><div class="panel"><div class="section compact"><div><h3>Report Reviewers</h3><p class="muted">Assign authorised reviewers to classes for the report-card approval workflow.</p></div><button id="assignReviewer" class="primary">Assign reviewer</button></div>'+table(reviewers,[{key:'classroom_name',label:'Class'},{key:'reviewer_os_user_id',label:'Reviewer',render:function(r){return '<b>'+esc(userName(r.reviewer_os_user_id))+'</b>'}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class="mini" data-toggle-reviewer="'+r.id+'" data-review-class="'+r.classroom_id+'" data-review-user="'+r.reviewer_os_user_id+'" data-review-active="'+String(r.is_active)+'">'+(r.is_active?'Disable':'Enable')+'</button>'})+'</div></div>';
+   '<div id="staff-reviewers" class="staff-pane hide"><div class="panel"><div class="section compact"><div><h3>Report Reviewers</h3><p class="muted">The Class Teacher prepares the complete report. Assign a separate authorised reviewer where needed.</p></div>'+(can('staff.edit')?'<button id="assignReviewer" class="primary">Assign reviewer</button>':'')+'</div>'+table(reviewers,[{key:'classroom_name',label:'Class'},{key:'reviewer_os_user_id',label:'Reviewer',render:function(r){return '<b>'+esc(userName(r.reviewer_os_user_id))+'</b>'}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return can('staff.edit')?'<button class="mini" data-toggle-reviewer="'+r.id+'" data-review-class="'+r.classroom_id+'" data-review-user="'+r.reviewer_os_user_id+'" data-review-active="'+String(r.is_active)+'">'+(r.is_active?'Disable':'Enable')+'</button>':''})+'</div></div>';
    renderPrivileges();
+
    E('content').querySelectorAll('[data-staff-tab]').forEach(function(b){b.onclick=function(){E('content').querySelectorAll('.staff-tab').forEach(function(x){x.classList.toggle('active',x===b)});E('content').querySelectorAll('.staff-pane').forEach(function(x){x.classList.add('hide')});E('staff-'+b.dataset.staffTab).classList.remove('hide')}});
 
-   function openTeachingAssignment(preselectedTeacher){
-     if(!activeYear)return toast('Create and activate an academic year first',true);
-     if(!teachers.length)return toast('Create a teacher or assign Teacher access first',true);
-     var yearClasses=staffClasses.filter(function(x){return x.academic_year_id===activeYear.id&&x.is_active});
-     if(!yearClasses.length)return toast('No active classes exist in the active academic year',true);
-     modal('<h2>Assign Teacher</h2><p class="muted">1. Choose teacher → 2. Choose class → 3. Choose Class Teacher or subject → 4. Save.</p>'+
-       '<label>Teacher</label><input id="assignTeacherSearch" placeholder="Type a teacher name"><select id="assignTeacher"></select>'+
-       '<label>Academic year</label><input value="'+esc(activeYear.name)+'" disabled>'+
-       '<label>Class</label><select id="assignClass">'+yearClasses.map(function(x){return'<option value="'+x.id+'">'+esc(x.name)+'</option>'}).join('')+'</select>'+
-       '<label>Assignment type</label><select id="assignType"><option value="subject">Subject Teacher</option><option value="class">Class Teacher</option></select>'+
-       '<div id="assignSubjectWrap"><label>Subject</label><select id="assignSubject"></select></div>'+
-       '<label>Applies to</label><select id="assignTerm"><option value="">Whole academic year</option>'+terms.filter(function(t){return t.academic_year_id===activeYear.id}).map(function(t){return'<option value="'+t.id+'">'+esc(t.name)+'</option>'}).join('')+'</select>'+
-       '<div id="assignCurrent" class="notice" style="margin-top:10px"></div><button id="saveTeachingAssignment" class="primary" style="width:100%;margin-top:12px">Save teaching assignment</button>');
-     function renderTeachers(q){
-       q=(q||'').toLowerCase();var filtered=teachers.filter(function(u){return (u.first_name+' '+u.last_name+' '+u.email).toLowerCase().includes(q)});
-       E('assignTeacher').innerHTML=filtered.map(function(u){return'<option value="'+u.id+'"'+(preselectedTeacher===u.id?' selected':'')+'>'+esc(u.first_name+' '+u.last_name+' • '+u.email)+'</option>'}).join('');
-     }
-     function renderSubjects(){
-       var cid=E('assignClass').value,options=classSubjects.filter(function(x){return x.classroom_id===cid&&x.is_active!==false});
-       E('assignSubject').innerHTML=options.map(function(x){return'<option value="'+x.subject_id+'">'+esc(x.subject_name)+'</option>'}).join('');
-       E('assignCurrent').innerHTML=options.length?'This class has '+options.length+' subject'+(options.length===1?'':'s')+' available for assignment.':'No subjects have been added to this class yet. Add subjects in Teaching Assignment Manager first.';
-     }
-     renderTeachers('');renderSubjects();
-     E('assignTeacherSearch').oninput=function(){renderTeachers(this.value)};
-     E('assignClass').onchange=renderSubjects;
-     E('assignType').onchange=function(){E('assignSubjectWrap').style.display=this.value==='class'?'none':'block'};
-     E('saveTeachingAssignment').onclick=async function(){
-       var teacher=E('assignTeacher').value,cid=E('assignClass').value,type=E('assignType').value,sid=type==='class'?null:E('assignSubject').value;
-       if(!teacher)return toast('Choose a teacher',true);if(!cid)return toast('Choose a class',true);if(type==='subject'&&!sid)return toast('Add a subject to this class before assigning a subject teacher',true);
-       var payload={academicYearId:activeYear.id,termId:E('assignTerm').value||null,classroomId:cid,subjectId:sid,teacherOsUserId:teacher,replaceExisting:false};
-       try{
-         await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify(payload)});close();toast('Teaching assignment saved');page('staff')
-       }catch(err){
-         if(err.message&&err.message.toLowerCase().includes('already')){
-           if(confirm(err.message+'\\n\\nReplace the existing teacher with '+userName(teacher)+'?')){
-             payload.replaceExisting=true;await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify(payload)});close();toast('Teacher reassigned successfully');page('staff')
-           }
-         }else toast(err.message,true)
-       }
-     }
-   }
-
-   var addTeacherButton=E('addTeacher');if(addTeacherButton)addTeacherButton.onclick=function(){
-     modal('<h2>Add Teacher</h2><p class="muted">The teacher account will be created in Core Revolt-X OS and a secure 24-hour password-setup invitation will be emailed to the teacher.</p><label>First name</label><input id="newTeacherFirst"><label>Last name</label><input id="newTeacherLast"><label>Email</label><input id="newTeacherEmail" type="email"><label>Job title</label><input id="newTeacherJob" value="Teacher"><label>Staff number</label><input id="newTeacherNumber"><button id="createTeacherAccount" class="primary" style="width:100%">Create teacher & send invitation</button>');
-     E('createTeacherAccount').onclick=async function(){var btn=this;btn.disabled=true;btn.textContent='Creating account...';try{var x=await raw('/api/staff/teachers',{method:'POST',body:JSON.stringify({firstName:E('newTeacherFirst').value,lastName:E('newTeacherLast').value,email:E('newTeacherEmail').value,jobTitle:E('newTeacherJob').value||'Teacher',employeeNumber:E('newTeacherNumber').value||undefined})});close();await page('staff');var inv=x.invitation||{};if(inv.status==='sent')successDialog('Teacher created','The teacher account was created and the password-setup email was sent successfully.');else modal('<h2>Teacher created</h2><div class="notice warn"><b>The account is active, but the invitation email was not delivered.</b><br>'+esc(inv.error||('Email status: '+(inv.status||'unknown')))+'</div><p class="muted">Open Communication Centre after fixing the sender/domain and retry the failed invitation message. The secure setup link itself is never displayed here.</p><button id="teacherCreatedOk" class="primary">Continue</button>');var ok=E('teacherCreatedOk');if(ok)ok.onclick=close}catch(err){btn.disabled=false;btn.textContent='Create teacher & send invitation';toast(err.message,true)}}
+   var addUser=E('addUser');if(addUser)addUser.onclick=function(){
+     var opts=roleOptions('');
+     form('Add User',[
+       {key:'firstName',label:'First name'},
+       {key:'lastName',label:'Last name'},
+       {key:'jobTitle',label:'Job title'},
+       {key:'employeeNumber',label:'Staff number'},
+       {key:'schoolRole',label:'School role',type:'select',options:opts}
+     ],{schoolRole:(opts[0]&&opts[0].value)||''},function(v){return raw('/api/staff/users',{method:'POST',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,jobTitle:v.jobTitle||undefined,employeeNumber:v.employeeNumber||undefined,schoolRole:v.schoolRole})})})
    };
-   var openAssignmentManager=E('openAssignmentManager');if(openAssignmentManager)openAssignmentManager.onclick=function(){page('assignments')};
-   var assignStaffButton=E('assignStaff');if(assignStaffButton)assignStaffButton.onclick=function(){form('Assign school role',[{key:'osUserId',label:'Core OS user',type:'select',options:users.map(function(u){return{value:u.id,label:u.first_name+' '+u.last_name+' ('+u.email+')'}})},{key:'role',label:'School role',type:'select',options:['school_admin','headteacher','teacher','bursar','registrar']},{key:'status',label:'Status',type:'select',options:['active','suspended']}],{role:'teacher',status:'active'},function(v){return raw('/api/staff/module-memberships',{method:'POST',body:JSON.stringify(v)})})};
-   E('assignReviewer').onclick=function(){var eligible=users.filter(function(u){var r=schoolRole(u.id);return r==='headteacher'||r==='school_admin'||r==='teacher'});form('Assign report reviewer',[{key:'classroomId',label:'Class',type:'select',options:staffClasses.filter(function(x){return x.is_active}).map(function(x){return{value:x.id,label:x.name}})},{key:'reviewerOsUserId',label:'Reviewer',type:'select',options:eligible.map(function(u){return{value:u.id,label:u.first_name+' '+u.last_name+' • '+roleLabel(schoolRole(u.id))}})}],{},function(v){return raw('/api/report-reviewers',{method:'POST',body:JSON.stringify({classroomId:v.classroomId,reviewerOsUserId:v.reviewerOsUserId,isActive:true})})})};
-   E('staffSearch').oninput=function(){var q=this.value.toLowerCase();var rows=users.filter(function(u){return (u.first_name+' '+u.last_name+' '+u.email+' '+(u.employee_number||'')+' '+schoolRole(u.id)).toLowerCase().includes(q)});E('staffDirectoryTable').innerHTML=table(rows,[{key:'first_name',label:'Staff Member',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(u.email)+'</span>'}},{key:'job_title',label:'Job Title'},{key:'employee_number',label:'Staff No.'},{key:'id',label:'School Role',render:function(u){return badge(schoolRole(u.id))}},{key:'membership_status',label:'Core Status',render:function(u){return badge(u.membership_status)}}],function(u){return teachers.some(function(t){return t.id===u.id})&&can('staff.edit')?'<button class="mini primary-lite" data-send-teacher-invite="'+u.id+'">Send setup link</button>':''})};
+   var openManager=E('openAcademicManager');if(openManager)openManager.onclick=function(){page('assignments')};
+   var quickRole=E('quickCreateRole');if(quickRole)quickRole.onclick=function(){document.querySelector('[data-staff-tab="privileges"]').click();setTimeout(function(){var b=E('createSchoolRole');if(b)b.click()},0)};
+
+   var assignReviewer=E('assignReviewer');if(assignReviewer)assignReviewer.onclick=function(){
+     var eligible=users.filter(function(u){var m=membershipFor(u.id);return m&&m.status==='active'});
+     form('Assign report reviewer',[
+       {key:'classroomId',label:'Class',type:'select',options:staffClasses.filter(function(x){return x.is_active}).map(function(x){return{value:x.id,label:x.name}})},
+       {key:'reviewerOsUserId',label:'Reviewer',type:'select',options:eligible.map(function(u){return{value:u.id,label:u.first_name+' '+u.last_name+' • '+roleName(schoolRole(u.id))}})}
+     ],{},function(v){return raw('/api/report-reviewers',{method:'POST',body:JSON.stringify({classroomId:v.classroomId,reviewerOsUserId:v.reviewerOsUserId,isActive:true})})})
+   };
+
+   E('staffSearch').oninput=function(){var q=this.value.toLowerCase();var rows=users.filter(function(u){return (u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.employee_number||'')+' '+(u.job_title||'')+' '+roleName(schoolRole(u.id))).toLowerCase().includes(q)});E('staffDirectoryTable').innerHTML=directoryTable(rows)};
+
    E('content').onclick=function(e){
-     var inviteUser=e.target.dataset.sendTeacherInvite;if(inviteUser){var u=users.find(function(x){return x.id===inviteUser});if(!confirm('Send a fresh 24-hour password setup link to '+(u?u.email:'this teacher')+'?'))return;return raw('/api/staff/teachers/'+inviteUser+'/send-invitation',{method:'POST',body:'{}'}).then(function(x){if(x.status==='sent')successDialog('Invitation sent','A fresh password-setup link was emailed successfully.');else modal('<h2>Invitation created</h2><div class="notice warn"><b>Email delivery failed.</b><br>'+esc(x.error||('Email status: '+x.status))+'</div><p class="muted">Fix the email sender/domain in Communication Centre, then send a fresh setup link again.</p><button id="inviteResultOk" class="primary">Continue</button>');var ok=E('inviteResultOk');if(ok)ok.onclick=close}).catch(function(err){toast(err.message,true)})}
-     var uid=e.target.dataset.assignUser;if(uid)return openTeachingAssignment(uid);
-     var id=e.target.dataset.editStaff;if(id){var x=memberships.find(function(r){return r.id===id});return form('Edit School access',[{key:'role',label:'School role',type:'select',options:['school_admin','headteacher','teacher','bursar','registrar']},{key:'status',label:'Status',type:'select',options:['active','suspended']}],{role:x.role,status:x.status},function(v){return raw('/api/staff/module-memberships/'+id,{method:'PATCH',body:JSON.stringify(v)})})}
-     id=e.target.dataset.removeStaff;if(id)return confirmDo('Remove this user from the School application?',function(){return raw('/api/staff/module-memberships/'+id,{method:'DELETE'})});
-     id=e.target.dataset.disableAssignment;if(id)return raw('/api/teacher-assignments/'+id,{method:'PATCH',body:JSON.stringify({isActive:false})}).then(function(){toast('Teaching assignment disabled');page('staff')}).catch(function(err){toast(err.message,true)});
-     id=e.target.dataset.deleteAssignment;if(id)return confirmDo('Remove this teaching assignment?',function(){return raw('/api/teacher-assignments/'+id,{method:'DELETE'})});
+     var uid=e.target.dataset.sendUserInvite;if(uid){var u=users.find(function(x){return x.id===uid});if(!u||!u.email)return toast('Add a real email address before sending a setup link',true);if(!confirm('Send a fresh password setup link to '+u.email+'?'))return;return raw('/api/staff/teachers/'+uid+'/send-invitation',{method:'POST',body:'{}'}).then(function(x){toast(x.status==='sent'?'Setup link sent':'Invitation created')}).catch(function(err){toast(err.message,true)})}
+     var id=e.target.dataset.editAccess;if(id){var x=memberships.find(function(r){return r.id===id});return form('Edit user access',[{key:'role',label:'School role',type:'select',options:roleOptions(x.role)},{key:'status',label:'Status',type:'select',options:['active','suspended']}],{role:x.role,status:x.status},function(v){return raw('/api/staff/module-memberships/'+id,{method:'PATCH',body:JSON.stringify(v)})})}
+     id=e.target.dataset.removeAccess;if(id)return confirmDo('Remove this user from Revolt-X School?',function(){return raw('/api/staff/module-memberships/'+id,{method:'DELETE'})});
      id=e.target.dataset.toggleReviewer;if(id){var active=e.target.dataset.reviewActive==='true';return raw('/api/report-reviewers',{method:'POST',body:JSON.stringify({classroomId:e.target.dataset.reviewClass,reviewerOsUserId:e.target.dataset.reviewUser,isActive:!active})}).then(function(){toast(active?'Reviewer disabled':'Reviewer enabled');page('staff')}).catch(function(err){toast(err.message,true)})}
    }
  }
