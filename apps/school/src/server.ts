@@ -464,8 +464,14 @@ app.post('/api/academic-years/:id/activate',async request=>{
 
 app.get('/api/terms',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/terms',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:z.string().uuid(),termNo:z.number().int().min(1).max(3),name:z.string().min(2).max(80),startDate:z.string().date(),endDate:z.string().date()}).parse(request.body);
-  const row=await one<any>(db,'INSERT INTO terms(organisation_id,academic_year_id,term_no,name,start_date,end_date) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termNo,b.name,b.startDate,b.endDate]);
+  const a=await authorize(request,db,config,'academic.create');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termNo:z.number().int().min(1).max(3),name:z.string().min(2).max(80),
+    startDate:z.string().date(),endDate:z.string().date(),nextTermBegins:z.string().date().nullable().optional()
+  }).parse(request.body);
+  if(b.endDate<=b.startDate)throw fail(400,'Term end date must be after start date');
+  if(b.nextTermBegins&&b.nextTermBegins<=b.endDate)throw fail(400,'Next term begins must be after the current term ends');
+  const row=await one<any>(db,'INSERT INTO terms(organisation_id,academic_year_id,term_no,name,start_date,end_date,next_term_begins) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termNo,b.name,b.startDate,b.endDate,b.nextTermBegins??null]);
   await audit(a.core.organisation_id,a.core.id,'term.created','term',row.id);return reply.code(201).send(row);
 });
 app.post('/api/terms/:id/activate',async request=>{
@@ -875,13 +881,14 @@ app.post('/api/payments',async(request,reply)=>{
 
 app.get('/api/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
   return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
     WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2)
       AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
-    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null])).rows;
+      AND ($5::uuid IS NULL OR tt.teacher_os_user_id=$5)
+    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null,q.teacherOsUserId??null])).rows;
 });
 app.get('/api/timetable/export.csv',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.view');
@@ -999,11 +1006,18 @@ app.delete('/api/academic-years/:id',async(request,reply)=>{
 
 app.patch('/api/terms/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({name:z.string().min(2).max(80).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const b=z.object({
+    name:z.string().min(2).max(80).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional(),
+    nextTermBegins:z.string().date().nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
+  const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?String(current.next_term_begins).slice(0,10):null);
   if(end<=start)throw fail(400,'Term end date must be after start date');
-  const row=await one<any>(db,'UPDATE terms SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.startDate??null,b.endDate??null,id,a.core.organisation_id]);
+  if(next&&next<=end)throw fail(400,'Next term begins must be after the current term ends');
+  const row=await one<any>(db,`UPDATE terms SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date),
+    next_term_begins=CASE WHEN $4 THEN $5::date ELSE next_term_begins END WHERE id=$6 AND organisation_id=$7 RETURNING *`,
+    [b.name??null,b.startDate??null,b.endDate??null,Object.hasOwn(b,'nextTermBegins'),b.nextTermBegins??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'term.updated','term',id);return row;
 });
 app.delete('/api/terms/:id',async(request,reply)=>{
@@ -1328,8 +1342,7 @@ app.put('/api/report-comments/:studentId',async request=>{
     termId:z.string().uuid(),
     classTeacherComment:z.string().max(4000).nullable().optional(),
     conduct:z.string().max(80).nullable().optional(),
-    interest:z.string().max(1000).nullable().optional(),
-    nextTermBegins:z.string().date().nullable().optional()
+    interest:z.string().max(1000).nullable().optional()
   }).parse(request.body);
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id
@@ -1349,7 +1362,7 @@ app.put('/api/report-comments/:studentId',async request=>{
       workflow_status=CASE WHEN report_comments.workflow_status='returned' THEN 'draft' ELSE report_comments.workflow_status END,
       return_note=NULL,updated_at=now()
     RETURNING *`,[
-      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,b.nextTermBegins??null,a.core.id
+      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,term.next_term_begins??null,a.core.id
     ]);
   await audit(a.core.organisation_id,a.core.id,'report.remarks_saved','report_comment',row.id,{studentId,termId:b.termId});
   return row;
@@ -1419,8 +1432,7 @@ app.post('/api/report-comments/:studentId/review',async request=>{
     termId:z.string().uuid(),
     action:z.enum(['approve','return']),
     headteacherComment:z.string().max(4000).nullable().optional(),
-    returnNote:z.string().max(2000).nullable().optional(),
-    nextTermBegins:z.string().date().nullable().optional()
+    returnNote:z.string().max(2000).nullable().optional()
   }).parse(request.body);
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(report.workflow_status!=='submitted')throw fail(409,'Only submitted reports can be reviewed');
@@ -1435,11 +1447,11 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const status=b.action==='approve'?'approved':'returned';
   const updated=await one<any>(db,`UPDATE report_comments SET workflow_status=$1,
       headteacher_comment=CASE WHEN $1='approved' THEN $2 ELSE headteacher_comment END,
-      next_term_begins=CASE WHEN $1='approved' AND $3 THEN $4::date ELSE next_term_begins END,
-      return_note=CASE WHEN $1='returned' THEN $5 ELSE NULL END,
-      reviewed_by_os_user_id=$6,reviewed_at=now(),updated_at=now()
-    WHERE id=$7 RETURNING *`,[
-      status,b.headteacherComment??null,Object.hasOwn(b,'nextTermBegins'),b.nextTermBegins??null,b.returnNote??null,a.core.id,report.id
+      next_term_begins=$3::date,
+      return_note=CASE WHEN $1='returned' THEN $4 ELSE NULL END,
+      reviewed_by_os_user_id=$5,reviewed_at=now(),updated_at=now()
+    WHERE id=$6 RETURNING *`,[
+      status,b.headteacherComment??null,term.next_term_begins??null,b.returnNote??null,a.core.id,report.id
     ]);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1',[studentId]);
   const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
@@ -1812,14 +1824,13 @@ app.post('/api/public/admissions',async(request,reply)=>{
   return reply.code(201).send({id:row.id,applicationNo:row.application_no,status:row.status});
 });
 app.get('/api/public/admissions/status',async request=>{
-  const q=z.object({applicationNo:z.string().min(1).max(40),phone:z.string().min(5).max(60)}).parse(request.query);
-  const row=await maybeOne<any>(db,`SELECT application_no,status,review_note,submitted_at,updated_at
-    FROM admission_applications WHERE application_no=$1 AND guardian_phone=$2`,[q.applicationNo,q.phone]);
-  if(!row)throw fail(404,'Application not found');
-  const history=(await db.query(`SELECT new_status,note,created_at FROM admission_status_history h
-    JOIN admission_applications a ON a.id=h.application_id
-    WHERE a.application_no=$1 AND a.guardian_phone=$2 ORDER BY h.created_at`,[q.applicationNo,q.phone])).rows;
-  return{applicationNo:row.application_no,status:row.status,reviewNote:row.review_note,submittedAt:row.submitted_at,updatedAt:row.updated_at,history};
+  const q=z.object({applicationNo:z.string().trim().min(1).max(40)}).parse(request.query);
+  const row=await maybeOne<any>(db,`SELECT id,application_no,status,submitted_at,updated_at
+    FROM admission_applications WHERE upper(application_no)=upper($1)`,[q.applicationNo]);
+  if(!row)throw fail(404,'Application reference not found');
+  const history=(await db.query(`SELECT new_status,created_at FROM admission_status_history
+    WHERE application_id=$1 ORDER BY created_at`,[row.id])).rows;
+  return{applicationNo:row.application_no,status:row.status,submittedAt:row.submitted_at,updatedAt:row.updated_at,history};
 });
 app.get('/api/admissions',async request=>{
   const a=await authorize(request,db,config,'admissions.view');
@@ -1987,63 +1998,267 @@ app.put('/api/roles/:role/capabilities',async request=>{
   return{role,updated:b.permissions.length};
 });
 
+app.get('/api/teacher/timetable',async request=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher timetable access is not enabled for this role');
+  const q=z.object({termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  const filterTeacher=a.role==='teacher'?a.core.id:null;
+  return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+    FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
+    WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.term_id=$2) AND ($3::uuid IS NULL OR tt.academic_year_id=$3)
+      AND ($4::uuid IS NULL OR tt.teacher_os_user_id=$4)
+    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.termId??null,q.academicYearId??null,filterTeacher])).rows;
+});
+app.get('/api/student/timetable',async request=>{
+  const s=await studentAuth(request);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[s.student_id]);
+  if(!current)return[];
+  return (await db.query(`SELECT tt.*,sub.name subject_name,c.name classroom_name,t.name term_name
+    FROM timetable_entries tt JOIN subjects sub ON sub.id=tt.subject_id JOIN classrooms c ON c.id=tt.classroom_id
+    LEFT JOIN terms t ON t.id=tt.term_id
+    WHERE tt.organisation_id=$1 AND tt.classroom_id=$2 AND tt.academic_year_id=$3
+    ORDER BY tt.day_of_week,tt.start_time`,[s.organisation_id,current.classroom_id,current.academic_year_id])).rows;
+});
+app.get('/api/parent/students/:id/timetable',async request=>{
+  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await ensureGuardianStudent(g.guardian_id,id);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[id]);
+  if(!current)return[];
+  return (await db.query(`SELECT tt.*,sub.name subject_name,c.name classroom_name,t.name term_name
+    FROM timetable_entries tt JOIN subjects sub ON sub.id=tt.subject_id JOIN classrooms c ON c.id=tt.classroom_id
+    LEFT JOIN terms t ON t.id=tt.term_id
+    WHERE tt.organisation_id=$1 AND tt.classroom_id=$2 AND tt.academic_year_id=$3
+    ORDER BY tt.day_of_week,tt.start_time`,[g.organisation_id,current.classroom_id,current.academic_year_id])).rows;
+});
+
+app.get('/api/timetable/settings',async request=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional()}).parse(request.query);
+  const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2
+    AND term_id IS NOT DISTINCT FROM $3::uuid LIMIT 1`,[a.core.organisation_id,q.academicYearId,q.termId??null]);
+  const breaks=(await db.query(`SELECT * FROM timetable_breaks WHERE organisation_id=$1 AND academic_year_id=$2
+    AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL) ORDER BY day_of_week NULLS FIRST,start_time`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
+  return{settings:settings??{school_day_start:'07:30:00',school_day_end:'15:30:00',default_period_minutes:40,minimum_break_minutes:20,max_teacher_periods_per_day:8},breaks};
+});
+app.put('/api/timetable/settings',async request=>{
+  const a=await authorize(request,db,config,'timetable.configure');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),
+    schoolDayStart:z.string().regex(/^\d{2}:\d{2}$/),schoolDayEnd:z.string().regex(/^\d{2}:\d{2}$/),
+    defaultPeriodMinutes:z.number().int().min(15).max(180),minimumBreakMinutes:z.number().int().min(0).max(180),
+    maxTeacherPeriodsPerDay:z.number().int().min(1).max(20)
+  }).parse(request.body);
+  if(b.schoolDayEnd<=b.schoolDayStart)throw fail(400,'School day end must be after school day start');
+  await db.query(`DELETE FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id IS NOT DISTINCT FROM $3::uuid`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null]);
+  const row=await one<any>(db,`INSERT INTO timetable_settings(
+      organisation_id,academic_year_id,term_id,school_day_start,school_day_end,default_period_minutes,minimum_break_minutes,max_teacher_periods_per_day,updated_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[
+      a.core.organisation_id,b.academicYearId,b.termId??null,b.schoolDayStart,b.schoolDayEnd,b.defaultPeriodMinutes,b.minimumBreakMinutes,b.maxTeacherPeriodsPerDay,a.core.id
+    ]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.settings_updated','timetable_settings',null,{academicYearId:b.academicYearId,termId:b.termId??null});
+  return row;
+});
+app.post('/api/timetable/breaks',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.configure');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),dayOfWeek:z.number().int().min(1).max(5).nullable().optional(),
+    label:z.string().min(2).max(100),startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),
+    breakType:z.enum(['break','lunch','assembly','other']).default('break')
+  }).parse(request.body);
+  if(b.endTime<=b.startTime)throw fail(400,'Break end time must be after start time');
+  const row=await one<any>(db,`INSERT INTO timetable_breaks(organisation_id,academic_year_id,term_id,day_of_week,label,start_time,end_time,break_type)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[
+      a.core.organisation_id,b.academicYearId,b.termId??null,b.dayOfWeek??null,b.label,b.startTime,b.endTime,b.breakType
+    ]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.break_created','timetable_break',row.id);
+  return reply.code(201).send(row);
+});
+app.delete('/api/timetable/breaks/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'DELETE FROM timetable_breaks WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.break_deleted','timetable_break',row.id);
+  return reply.code(204).send();
+});
+app.get('/api/timetable/schedule-analysis',async request=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional()}).parse(request.query);
+  const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id IS NOT DISTINCT FROM $3::uuid`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null]);
+  const entries=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name FROM timetable_entries tt
+    JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
+    WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND ($3::uuid IS NULL OR tt.term_id=$3)`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
+  const conflicts:any[]=[];
+  for(let i=0;i<entries.length;i++)for(let j=i+1;j<entries.length;j++){
+    const x=entries[i],y=entries[j];
+    if(x.day_of_week!==y.day_of_week)continue;
+    if(String(x.start_time)<String(y.end_time)&&String(x.end_time)>String(y.start_time)){
+      if(x.classroom_id===y.classroom_id)conflicts.push({type:'class',first:x.id,second:y.id,message:`${x.classroom_name}: ${x.subject_name} overlaps ${y.subject_name}`});
+      if(x.teacher_os_user_id&&x.teacher_os_user_id===y.teacher_os_user_id)conflicts.push({type:'teacher',first:x.id,second:y.id,message:`A teacher is scheduled for two classes at the same time`});
+    }
+  }
+  const teacherLoad=(await db.query(`SELECT teacher_os_user_id,day_of_week,count(*)::int periods FROM timetable_entries
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND ($3::uuid IS NULL OR term_id=$3) AND teacher_os_user_id IS NOT NULL
+    GROUP BY teacher_os_user_id,day_of_week ORDER BY teacher_os_user_id,day_of_week`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
+  const maxDaily=settings?.max_teacher_periods_per_day??8;
+  const overloads=teacherLoad.filter((x:any)=>Number(x.periods)>Number(maxDaily));
+  const unscheduled=(await db.query(`SELECT ta.id,c.name classroom_name,s.name subject_name,ta.teacher_os_user_id
+    FROM teacher_assignments ta JOIN classrooms c ON c.id=ta.classroom_id LEFT JOIN subjects s ON s.id=ta.subject_id
+    WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM timetable_entries tt WHERE tt.organisation_id=ta.organisation_id AND tt.academic_year_id=ta.academic_year_id
+        AND tt.classroom_id=ta.classroom_id AND tt.subject_id=ta.subject_id AND tt.teacher_os_user_id=ta.teacher_os_user_id
+        AND ($3::uuid IS NULL OR tt.term_id=$3))`,[a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
+  return{settings:settings??null,entryCount:entries.length,conflicts,teacherLoad,overloads,unscheduledAssignments:unscheduled};
+});
+
+app.get('/api/lesson-notes',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.view');
+  const q=z.object({
+    termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional(),subjectId:z.string().uuid().optional(),
+    teacherOsUserId:z.string().uuid().optional(),status:z.enum(['draft','submitted','approved','returned','taught']).optional(),q:z.string().max(100).optional()
+  }).parse(request.query);
+  const teacherFilter=a.role==='teacher'?a.core.id:(q.teacherOsUserId??null),like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT ln.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+    FROM lesson_notes ln JOIN classrooms c ON c.id=ln.classroom_id JOIN subjects s ON s.id=ln.subject_id
+    JOIN terms t ON t.id=ln.term_id JOIN academic_years y ON y.id=ln.academic_year_id
+    WHERE ln.organisation_id=$1 AND ($2::uuid IS NULL OR ln.term_id=$2) AND ($3::uuid IS NULL OR ln.classroom_id=$3)
+      AND ($4::uuid IS NULL OR ln.subject_id=$4) AND ($5::uuid IS NULL OR ln.teacher_os_user_id=$5)
+      AND ($6::text IS NULL OR ln.status=$6)
+      AND ($7::text IS NULL OR ln.title ILIKE $7 OR COALESCE(ln.strand,'') ILIKE $7 OR COALESCE(ln.sub_strand,'') ILIKE $7 OR COALESCE(ln.learning_objectives,'') ILIKE $7)
+    ORDER BY ln.lesson_date DESC NULLS LAST,ln.updated_at DESC`,[
+      a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,teacherFilter,q.status??null,like
+    ])).rows;
+});
+app.post('/api/lesson-notes',async(request,reply)=>{
+  const a=await authorize(request,db,config,'lesson_notes.create');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
+    weekNo:z.number().int().min(1).max(30).optional(),lessonDate:z.string().date().optional(),title:z.string().min(2).max(240),
+    strand:z.string().max(240).optional(),subStrand:z.string().max(240).optional(),learningObjectives:z.string().max(10000).optional(),
+    teachingLearningResources:z.string().max(10000).optional(),introductionActivity:z.string().max(10000).optional(),
+    mainActivity:z.string().max(20000).optional(),plenaryActivity:z.string().max(10000).optional(),differentiation:z.string().max(10000).optional(),
+    assessmentMethod:z.string().max(10000).optional(),homework:z.string().max(10000).optional(),teacherReflection:z.string().max(10000).optional()
+  }).parse(request.body);
+  await ensureTeacherScope(a,b.classroomId,b.subjectId);
+  const teacherId=a.role==='teacher'?a.core.id:a.core.id;
+  const row=await one<any>(db,`INSERT INTO lesson_notes(
+    organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,week_no,lesson_date,title,strand,sub_strand,
+    learning_objectives,teaching_learning_resources,introduction_activity,main_activity,plenary_activity,differentiation,assessment_method,homework,teacher_reflection
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,[
+    a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,teacherId,b.weekNo??null,b.lessonDate??null,b.title,b.strand??null,b.subStrand??null,
+    b.learningObjectives??null,b.teachingLearningResources??null,b.introductionActivity??null,b.mainActivity??null,b.plenaryActivity??null,b.differentiation??null,
+    b.assessmentMethod??null,b.homework??null,b.teacherReflection??null
+  ]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.created','lesson_note',row.id,{classroomId:b.classroomId,subjectId:b.subjectId});
+  return reply.code(201).send(row);
+});
+app.patch('/api/lesson-notes/:id',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only edit your own lesson notes');
+  if(!['draft','returned'].includes(current.status))throw fail(409,'Only draft or returned lesson notes can be edited');
+  const b=z.object({
+    weekNo:z.number().int().min(1).max(30).nullable().optional(),lessonDate:z.string().date().nullable().optional(),title:z.string().min(2).max(240).optional(),
+    strand:z.string().max(240).nullable().optional(),subStrand:z.string().max(240).nullable().optional(),learningObjectives:z.string().max(10000).nullable().optional(),
+    teachingLearningResources:z.string().max(10000).nullable().optional(),introductionActivity:z.string().max(10000).nullable().optional(),
+    mainActivity:z.string().max(20000).nullable().optional(),plenaryActivity:z.string().max(10000).nullable().optional(),differentiation:z.string().max(10000).nullable().optional(),
+    assessmentMethod:z.string().max(10000).nullable().optional(),homework:z.string().max(10000).nullable().optional(),teacherReflection:z.string().max(10000).nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const map:any={weekNo:'week_no',lessonDate:'lesson_date',title:'title',strand:'strand',subStrand:'sub_strand',learningObjectives:'learning_objectives',
+    teachingLearningResources:'teaching_learning_resources',introductionActivity:'introduction_activity',mainActivity:'main_activity',
+    plenaryActivity:'plenary_activity',differentiation:'differentiation',assessmentMethod:'assessment_method',homework:'homework',teacherReflection:'teacher_reflection'};
+  const fields:string[]=[],values:any[]=[];let n=1;
+  for(const [k,col] of Object.entries(map))if(Object.hasOwn(b,k)){fields.push(`${col}=${n++}`);values.push((b as any)[k]??null)}
+  fields.push(`status='draft'`,`review_note=NULL`,`updated_at=now()`);
+  values.push(id,a.core.organisation_id);
+  const row=await one<any>(db,`UPDATE lesson_notes SET ${fields.join(',')} WHERE id=${n++} AND organisation_id=${n} RETURNING *`,values);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.updated','lesson_note',id);
+  return row;
+});
+app.post('/api/lesson-notes/:id/submit',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.submit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only submit your own lesson notes');
+  if(!['draft','returned'].includes(current.status))throw fail(409,'Only draft or returned lesson notes can be submitted');
+  const row=await one<any>(db,"UPDATE lesson_notes SET status='submitted',submitted_at=now(),updated_at=now() WHERE id=$1 RETURNING *",[id]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.submitted','lesson_note',id);
+  return row;
+});
+app.post('/api/lesson-notes/:id/review',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.review');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({action:z.enum(['approve','return']),note:z.string().max(4000).nullable().optional()}).parse(request.body);
+  const current=await one<any>(db,"SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2 AND status='submitted'",[id,a.core.organisation_id]);
+  if(b.action==='return'&&!b.note)throw fail(400,'Enter a review note before returning the lesson note');
+  const status=b.action==='approve'?'approved':'returned';
+  const row=await one<any>(db,`UPDATE lesson_notes SET status=$1,review_note=$2,reviewed_by_os_user_id=$3,reviewed_at=now(),updated_at=now()
+    WHERE id=$4 RETURNING *`,[status,b.note??null,a.core.id,id]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.'+status,'lesson_note',id);
+  return row;
+});
+app.post('/api/lesson-notes/:id/teaching-log',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({teachingLog:z.string().min(1).max(10000),teacherReflection:z.string().max(10000).nullable().optional()}).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only update your own teaching log');
+  if(!['approved','taught'].includes(current.status))throw fail(409,'The lesson note must be approved before it can be marked as taught');
+  const row=await one<any>(db,`UPDATE lesson_notes SET status='taught',teaching_log=$1,teacher_reflection=COALESCE($2,teacher_reflection),
+    taught_at=COALESCE(taught_at,now()),updated_at=now() WHERE id=$3 RETURNING *`,[b.teachingLog,b.teacherReflection??null,id]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.taught','lesson_note',id);
+  return row;
+});
+
 app.get('/api/search',async request=>{
   const a=await authorize(request,db,config);
-  const q=z.object({q:z.string().trim().min(1).max(100),limit:z.coerce.number().int().min(1).max(30).default(15)}).parse(request.query);
+  const q=z.object({q:z.string().trim().min(1).max(100),limit:z.coerce.number().int().min(1).max(50).default(20)}).parse(request.query);
   const like='%'+q.q+'%';
   const rows=(await db.query(`
     SELECT * FROM (
       SELECT 'student' type,s.id::text id,(s.first_name||' '||s.last_name) title,
              (s.admission_no||COALESCE(' • '||c.name,'')) subtitle,'students' section,1 rank
-      FROM students s
-      LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active'
-      LEFT JOIN classrooms c ON c.id=e.classroom_id
-      WHERE s.organisation_id=$1 AND (
-        s.first_name ILIKE $2 OR s.last_name ILIKE $2 OR s.admission_no ILIKE $2 OR
-        (s.first_name||' '||s.last_name) ILIKE $2
-      )
+      FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id
+      WHERE s.organisation_id=$1 AND lower(s.first_name||' '||COALESCE(s.middle_name,'')||' '||s.last_name||' '||s.admission_no) LIKE lower($2)
       UNION ALL
-      SELECT 'guardian',g.id::text,(g.first_name||' '||g.last_name),
-             (g.phone||COALESCE(' • '||g.email,'')),'students',2
-      FROM guardians g WHERE g.organisation_id=$1 AND (
-        g.first_name ILIKE $2 OR g.last_name ILIKE $2 OR g.phone ILIKE $2 OR COALESCE(g.email,'') ILIKE $2
-      )
+      SELECT 'guardian',g.id::text,(g.first_name||' '||g.last_name),(g.phone||COALESCE(' • '||g.email,'')),'students',2
+      FROM guardians g WHERE g.organisation_id=$1 AND lower(g.first_name||' '||g.last_name||' '||g.phone||' '||COALESCE(g.email,'')) LIKE lower($2)
       UNION ALL
-      SELECT 'class',c.id::text,c.name,(gl.name||' • '||COALESCE(c.stream,'No stream')),'classes',3
-      FROM classrooms c JOIN grade_levels gl ON gl.id=c.grade_level_id
-      WHERE c.organisation_id=$1 AND (c.name ILIKE $2 OR gl.name ILIKE $2)
+      SELECT 'admission',aa.id::text,(aa.first_name||' '||aa.last_name),(aa.application_no||' • '||aa.status),'admissions',3
+      FROM admission_applications aa WHERE aa.organisation_id=$1 AND lower(aa.first_name||' '||aa.last_name||' '||aa.application_no||' '||aa.guardian_phone||' '||COALESCE(aa.guardian_email,'')) LIKE lower($2)
       UNION ALL
-      SELECT 'subject',s.id::text,s.name,(s.code||' • '||s.stage),'classes',4
+      SELECT 'class',c.id::text,c.name,(gl.name||' • '||COALESCE(c.stream,'No stream')),'classes',4
+      FROM classrooms c JOIN grade_levels gl ON gl.id=c.grade_level_id WHERE c.organisation_id=$1 AND (c.name ILIKE $2 OR gl.name ILIKE $2)
+      UNION ALL
+      SELECT 'subject',s.id::text,s.name,(s.code||' • '||s.stage),'classes',5
       FROM subjects s WHERE s.organisation_id=$1 AND (s.name ILIKE $2 OR s.code ILIKE $2)
       UNION ALL
-      SELECT 'admission',aa.id::text,(aa.first_name||' '||aa.last_name),
-             (aa.application_no||' • '||aa.status),'admissions',5
-      FROM admission_applications aa WHERE aa.organisation_id=$1 AND (
-        aa.first_name ILIKE $2 OR aa.last_name ILIKE $2 OR aa.application_no ILIKE $2 OR aa.guardian_phone ILIKE $2
-      )
+      SELECT 'lesson_note',ln.id::text,ln.title,(c.name||' • '||sub.name||' • '||ln.status),'lessonnotes',6
+      FROM lesson_notes ln JOIN classrooms c ON c.id=ln.classroom_id JOIN subjects sub ON sub.id=ln.subject_id
+      WHERE ln.organisation_id=$1 AND lower(ln.title||' '||COALESCE(ln.strand,'')||' '||COALESCE(ln.sub_strand,'')||' '||COALESCE(ln.learning_objectives,'')) LIKE lower($2)
       UNION ALL
-      SELECT 'fee',f.id::text,f.name,('GHS '||f.amount::text),'fees',6
+      SELECT 'fee',f.id::text,f.name,('GHS '||f.amount::text),'fees',7
       FROM fee_items f WHERE f.organisation_id=$1 AND f.name ILIKE $2
-    ) x
-    ORDER BY rank,title
-    LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
-  const auth=request.headers.authorization;
-  let staff:any[]=[];
+      UNION ALL
+      SELECT 'payment',p.id::text,(s.first_name||' '||s.last_name),('Payment • GHS '||p.amount::text||COALESCE(' • '||p.reference,'')),'fees',8
+      FROM payments p JOIN students s ON s.id=p.student_id WHERE p.organisation_id=$1 AND (COALESCE(p.reference,'') ILIKE $2 OR s.admission_no ILIKE $2 OR (s.first_name||' '||s.last_name) ILIKE $2)
+      UNION ALL
+      SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',9
+      FROM communication_outbox co WHERE co.organisation_id=$1 AND (COALESCE(co.subject,'') ILIKE $2 OR co.recipient_address ILIKE $2 OR COALESCE(co.recipient_name,'') ILIKE $2)
+    ) x ORDER BY rank,title LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
+  const auth=request.headers.authorization;let staff:any[]=[];
   if(auth){
-    try{
-      const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(5000)});
-      if(res.ok){
-        const users=await res.json() as any[];
-        const needle=q.q.toLowerCase();
-        staff=users.filter(u=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,5).map(u=>({
-          type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
-        }));
-      }
-    }catch{}
+    const users=await fetchCoreUsers(auth);
+    const needle=q.q.toLowerCase();
+    staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
+      type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
+    }));
   }
   return[...rows,...staff].slice(0,q.limit);
 });
-
 
 app.get('/api/communications/status',async request=>{
   const a=await authorize(request,db,config,'communications.view');
