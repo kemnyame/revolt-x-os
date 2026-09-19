@@ -433,16 +433,10 @@ app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
 
 app.get('/api/teacher-assignments',async request=>{
   const a=await authorize(request,db,config,'school.manage');
-  return (await db.query(`SELECT ta.*,c.name classroom_name,s.name subject_name,u.first_name,u.last_name,u.email
+  return (await db.query(`SELECT ta.*,c.name classroom_name,s.name subject_name
     FROM teacher_assignments ta
     JOIN classrooms c ON c.id=ta.classroom_id
     LEFT JOIN subjects s ON s.id=ta.subject_id
-    LEFT JOIN LATERAL (
-      SELECT u2.id,u2.first_name,u2.last_name,u2.email
-      FROM school_memberships sm
-      JOIN (SELECT NULL::uuid id,NULL::text first_name,NULL::text last_name,NULL::text email) u2 ON false
-      WHERE false
-    ) u ON true
     WHERE ta.organisation_id=$1
     ORDER BY c.name,s.name NULLS FIRST,ta.created_at DESC`,[a.core.organisation_id])).rows;
 });
@@ -611,7 +605,7 @@ app.get('/api/parent/students/:id/dashboard',async request=>{
   const fee=await one<any>(db,`SELECT COALESCE(sum((sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0)),0) outstanding FROM student_fees sf WHERE sf.organisation_id=$1 AND sf.student_id=$2`,[g.organisation_id,id]);
   const attRows=(await db.query('SELECT status,count(*)::int count FROM attendance_records WHERE organisation_id=$1 AND student_id=$2 GROUP BY status',[g.organisation_id,id])).rows;const attendance:any={};for(const x of attRows)attendance[x.status]=x.count;
   const homework=current?(await db.query(`SELECT h.id,h.title,h.instructions,h.due_at,h.status,s.name subject_name,hs.status submission_status,hs.score FROM homework_assignments h JOIN subjects s ON s.id=h.subject_id LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2 WHERE h.organisation_id=$1 AND h.classroom_id=$3 AND h.status='published' ORDER BY h.due_at DESC NULLS LAST LIMIT 20`,[g.organisation_id,id,current.classroom_id])).rows:[];
-  const announcements=(await db.query(`SELECT a.title,a.body,a.audience,a.published_at FROM school_announcements a WHERE a.organisation_id=$1 AND a.status='published' AND a.audience IN('all','parents') OR (a.organisation_id=$1 AND a.status='published' AND a.audience='class' AND a.classroom_id=$2) ORDER BY a.published_at DESC LIMIT 20`,[g.organisation_id,current?.classroom_id??null])).rows;
+  const announcements=(await db.query(`SELECT a.title,a.body,a.audience,a.published_at FROM school_announcements a WHERE a.organisation_id=$1 AND a.status='published' AND (a.audience IN('all','parents') OR (a.audience='class' AND a.classroom_id=$2)) ORDER BY a.published_at DESC LIMIT 20`,[g.organisation_id,current?.classroom_id??null])).rows;
   return{student,fees:fee,attendance,homework,announcements};
 });
 app.get('/api/parent/students/:id/fees',async request=>{
