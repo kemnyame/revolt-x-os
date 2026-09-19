@@ -1604,7 +1604,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
       ...b,
       roleKey:'member'
     }),
-    signal:AbortSignal.timeout(12000)
+    signal:AbortSignal.timeout(15000)
   }).catch(()=>null);
   if(!created)throw fail(503,'Core OS could not be reached');
   const payload=await created.json().catch(()=>null) as any;
@@ -1614,15 +1614,64 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     method:'PATCH',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
     body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,status:'active'}),
-    signal:AbortSignal.timeout(12000)
+    signal:AbortSignal.timeout(15000)
   }).catch(()=>null);
   if(!activated?.ok)throw fail(activated?.status||503,'Teacher was created but Core membership could not be activated');
 
-  await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+  const schoolMembership=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
     VALUES($1,$2,'teacher','active')
-    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()`,[a.core.organisation_id,payload.user_id]);
-  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',payload.id,{email:b.email,osUserId:payload.user_id});
-  return reply.code(201).send({osUserId:payload.user_id,membershipId:payload.id,email:b.email,firstName:b.firstName,lastName:b.lastName,jobTitle:b.jobTitle});
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()
+    RETURNING *`,[a.core.organisation_id,payload.user_id]);
+
+  let invitation:any={status:'not_created'};
+  const setupRes=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-setup',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(setupRes?.ok){
+    const setup=await setupRes.json().catch(()=>null) as any;
+    const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    const setupUrl=publicBase+'/teacher?setup='+encodeURIComponent(setup.setupToken);
+    const delivered=await deliverCommunication({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
+      recipientName:b.firstName+' '+b.lastName,recipientAddress:b.email,
+      subject:'Set up your Revolt-X Teacher account',
+      body:`Hello ${b.firstName},
+
+Your teacher account has been created in Revolt-X School.
+
+Use this secure link to create your password:
+${setupUrl}
+
+The link expires in 24 hours. After setting your password, sign in through the Teacher Portal using ${b.email}.
+
+If you did not expect this invitation, contact your school administrator.`,
+      templateKey:'teacher.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
+    });
+    invitation={
+      status:delivered.status,
+      expiresInHours:setup.expiresInHours,
+      error:delivered.last_error??null
+    };
+  }else{
+    const x=await setupRes?.json().catch(()=>null) as any;
+    invitation={status:'failed',error:x?.error?.message||'Could not create password setup invitation'};
+  }
+
+  coreUsersCache.delete(a.core.organisation_id);
+  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',schoolMembership.id,{email:b.email,osUserId:payload.user_id,invitationStatus:invitation.status});
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.created',
+    resourceType:'teacher',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
+    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:b.employeeNumber??null,schoolRole:'teacher',status:'active'},
+    metadata:{invitationStatus:invitation.status}
+  });
+  return reply.code(201).send({
+    osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email,firstName:b.firstName,lastName:b.lastName,
+    jobTitle:b.jobTitle,invitation
+  });
 });
 app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'staff.view');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
 app.post('/api/staff/module-memberships',async(request,reply)=>{
@@ -3258,6 +3307,33 @@ app.put('/api/communications/rules',async request=>{
   await audit(a.core.organisation_id,a.core.id,'notification_rules.updated','notification_rule',null,{count:b.rules.length});
   return{updated:b.rules.length};
 });
+app.post('/api/communications/outbox/:id/retry',async request=>{
+  const a=await authorize(request,db,config,'communications.send');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const current=await one<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(current.status==='sent')return current;
+  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL WHERE id=$1",[id]);
+  try{
+    const sent=await sendMessage(config,{
+      channel:current.channel,
+      to:current.channel==='email'?current.recipient_address:normalizePhone(current.recipient_address),
+      subject:current.subject,
+      recipientName:current.recipient_name,
+      body:current.body
+    });
+    const row=await one<any>(db,`UPDATE communication_outbox SET status='sent',provider=$1,provider_message_id=$2,
+      attempt_count=attempt_count+1,sent_at=now(),last_error=NULL WHERE id=$3 RETURNING *`,
+      [sent.provider,sent.messageId,id]);
+    await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'sent'});
+    return row;
+  }catch(error:any){
+    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',attempt_count=attempt_count+1,last_error=$1
+      WHERE id=$2 RETURNING *`,[String(error?.message||error),id]);
+    await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'failed'});
+    return row;
+  }
+});
+
 app.get('/api/communications/outbox',async request=>{
   const a=await authorize(request,db,config,'communications.view');
   const q=z.object({status:z.enum(['queued','pending_configuration','sending','sent','failed']).optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
