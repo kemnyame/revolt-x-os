@@ -102,29 +102,38 @@ async function previewToken(){
   }
   throw last||Error('Core OS access failed')
 }
-async function boot(){
- try{
-   token=sessionStorage.getItem('rx_school_token')||'';
-   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_school_token');token=''}
-   if(!token){token=await previewToken();sessionStorage.setItem('rx_school_token',token)}
-   try{ctx=await raw('/api/context')}
-   catch(e){
-     if(e.status===401||e.status===403){
-       sessionStorage.removeItem('rx_school_token');token=await previewToken();sessionStorage.setItem('rx_school_token',token);ctx=await raw('/api/context')
-     }else if(e.status===429||e.status===502||e.status===503||e.status===504){
-       await wait(1200);ctx=await raw('/api/context')
-     }else throw e
-   }
-   if(!ctx.profile){await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});ctx=await raw('/api/context')}
-   E('schoolName').textContent=ctx.profile.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;E('role').textContent=ctx.schoolRole.replace('_',' ');
-   var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
-   E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};setupGlobalSearch();
-   E('loading').classList.add('hide');E('app').classList.remove('hide');await page('dashboard')
- }catch(e){
-   E('loading').innerHTML='<div><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><button id="retrySchool" class="primary">Retry</button></div>';
-   var b=E('retrySchool');if(b)b.onclick=function(){sessionStorage.removeItem('rx_school_token');location.reload()}
- }
-}
+async function boot(){try{
+  token=sessionStorage.getItem('rx_school_token')||token||'';
+  if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_school_token');token=''}
+  if(token){
+    try{ctx=await raw('/api/context')}
+    catch(e){
+      if(e.status===401||e.status===403){sessionStorage.removeItem('rx_school_token');token=''}
+      else if(e.status===429||e.status===502||e.status===503||e.status===504){await wait(1200);ctx=await raw('/api/context')}
+      else throw e
+    }
+  }
+  if(!ctx&&!token){
+    try{ctx=await raw('/api/context')}
+    catch(e){
+      if(e.status!==401&&e.status!==403)throw e;
+      token=await previewToken();sessionStorage.setItem('rx_school_token',token);ctx=await raw('/api/context')
+    }
+  }
+  if(!ctx.profile){await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});ctx=await raw('/api/context')}E('schoolName').textContent=ctx.profile.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;E('role').textContent=ctx.schoolRole.replace('_',' ');var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};setupGlobalSearch();E('loading').classList.add('hide');E('app').classList.remove('hide');await page('dashboard')
+}catch(e){
+  E('loading').innerHTML='<div class="connection-card"><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">You can retry, or wake Core OS if the hosting service is sleeping.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retrySchool" class="primary">Retry connection</button><button id="wakeSchoolCore" class="ghost">Wake Core OS</button></div></div>';
+  var retry=E('retrySchool');if(retry)retry.onclick=function(){location.reload()};
+  var wake=E('wakeSchoolCore');if(wake)wake.onclick=async function(){
+    wake.disabled=true;E('schoolConnectionStatus').textContent='Waking Core Revolt-X OS. This can take a few seconds on the free hosting tier...';
+    try{
+      var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();
+      if(!r.ok)throw Error(j&&j.message?j.message:'Core OS is still unavailable');
+      E('schoolConnectionStatus').textContent='Core OS is awake. Reconnecting...';
+      sessionStorage.removeItem('rx_school_token');token='';setTimeout(function(){location.reload()},700)
+    }catch(err){E('schoolConnectionStatus').textContent=err.message;wake.disabled=false}
+  }
+}}
 async function page(p){
  var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!canAny(navItem[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role does not have permission to open this module.</p></div>';return}
  current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('pageTitle').textContent=(navItem||['',p])[1];E('content').innerHTML='<p class="muted">Loading...</p>';
