@@ -36,6 +36,27 @@ const coreContextCache=new Map<string,{value:CoreContext;expiresAt:number}>();
 const CORE_CONTEXT_CACHE_MS=15_000;
 function authCacheKey(auth:string){return createHash('sha256').update(auth).digest('hex')}
 
+function bearerToken(auth:string){return auth.replace(/^Bearer\s+/i,'').trim()}
+function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
+
+async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
+  const auth=request.headers.authorization;
+  if(!auth)return null;
+  const token=bearerToken(auth);
+  if(!token.startsWith('rxs_'))return null;
+  const row=await maybeOne<{core_context:CoreContext}>(
+    db,
+    `UPDATE school_sessions
+       SET last_used_at=now()
+       WHERE token_hash=$1
+         AND revoked_at IS NULL
+         AND expires_at>now()
+       RETURNING core_context`,
+    [schoolSessionHash(token)]
+  );
+  return row?.core_context??null;
+}
+
 const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 
@@ -87,7 +108,7 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
 }
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
-  const core=await fetchCoreContext(request,config);
+  const core=(await fetchSchoolSessionContext(request,db))??await fetchCoreContext(request,config);
   let membership=await maybeOne<{role:SchoolRole;status:string}>(
     db,
     'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
