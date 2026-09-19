@@ -14,7 +14,8 @@ const schema = z.object({
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
   ENABLE_PREVIEW_ACCESS: booleanFromEnv,
   AI_GATEWAY_URL: z.string().url().optional().or(z.literal('')),
-  AI_GATEWAY_TOKEN: z.string().optional()
+  AI_GATEWAY_TOKEN: z.string().optional(),
+  SCHOOL_SERVICE_KEY: z.string().min(32).optional()
 });
 
 export type Config = z.infer<typeof schema>;
