@@ -48,31 +48,12 @@ async function showTeacherTestAccess(message){
   }catch(err){E('testTeacherStatus').textContent=err.message}
 }
 function showTeacherLogin(message){
-  E('app').classList.add('hide');E('loading').classList.remove('hide');
-  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Teacher Sign In</h1><p class="muted">Sign in with the email address and password linked to your teacher account.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<label>Email address</label><input id="teacherEmail" type="email" autocomplete="username" placeholder="teacher@school.edu"><label>Password</label><input id="teacherPassword" type="password" autocomplete="current-password"><button id="teacherLogin" class="primary" style="width:100%">Sign in</button><div id="teacherLoginStatus" class="muted" style="margin-top:10px"></div></div>';
-  E('teacherLogin').onclick=async function(){
-    var btn=E('teacherLogin'),email=E('teacherEmail').value.trim(),password=E('teacherPassword').value;
-    if(!email||!password){E('teacherLoginStatus').textContent='Enter your email address and password.';return}
-    btn.disabled=true;btn.textContent='Signing in...';E('teacherLoginStatus').textContent='Connecting securely to Revolt-X OS...';
-    try{
-      var x=await publicJson('/api/auth/teacher-login',{method:'POST',body:JSON.stringify({email:email,password:password})});
-      token=x.accessToken;sessionStorage.setItem('rx_teacher_token',token);location.href='/teacher'
-    }catch(err){E('teacherLoginStatus').textContent=err.message;btn.disabled=false;btn.textContent='Sign in'}
-  };
-  E('teacherPassword').onkeydown=function(e){if(e.key==='Enter')E('teacherLogin').click()}
+  var url='/login?next='+encodeURIComponent('/teacher');
+  if(message)url+='&message='+encodeURIComponent(message);
+  location.replace(url)
 }
 function showPasswordSetup(setupToken){
-  sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;E('app').classList.add('hide');E('loading').classList.remove('hide');
-  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Create your password</h1><p class="muted">Your teacher account has been created. Set your password to activate normal Teacher Portal sign-in.</p><label>New password</label><input id="setupPassword" type="password" autocomplete="new-password"><div class="password-rule">At least 12 characters with uppercase, lowercase and a number.</div><label>Confirm password</label><input id="setupPassword2" type="password" autocomplete="new-password"><button id="saveTeacherPassword" class="primary" style="width:100%">Create password</button><div id="setupStatus" class="muted" style="margin-top:10px"></div></div>';
-  E('saveTeacherPassword').onclick=async function(){
-    var p1=E('setupPassword').value,p2=E('setupPassword2').value,btn=E('saveTeacherPassword');
-    if(p1!==p2){E('setupStatus').textContent='The passwords do not match.';return}
-    btn.disabled=true;btn.textContent='Creating password...';
-    try{
-      await publicJson('/api/auth/teacher-set-password',{method:'POST',body:JSON.stringify({token:setupToken,password:p1})});
-      history.replaceState({},document.title,'/teacher');showTeacherLogin('Password created successfully. Sign in with your teacher email and new password.')
-    }catch(err){E('setupStatus').textContent=err.message;btn.disabled=false;btn.textContent='Create password'}
-  }
+  location.replace('/login?next='+encodeURIComponent('/teacher')+'&setup='+encodeURIComponent(setupToken))
 }
 async function openWorkspace(){
   ctx=await raw('/api/teacher/context');
@@ -81,7 +62,7 @@ async function openWorkspace(){
   E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
-  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;location.reload()};
+  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace('/login')};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
@@ -95,24 +76,20 @@ async function startOnboardingAccess(){
   await openWorkspace();
 }
 async function boot(){
-  token=sessionStorage.getItem('rx_teacher_token')||'';
-  if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');token=''}
-  var testMode=false;
-  try{var status=await publicJson('/api/test-access/status');testMode=!!status.enabled}catch(e){}
-  if(testMode){
-    history.replaceState({},document.title,'/teacher');
-    if(!token){await showTeacherTestAccess();return}
-    try{await openWorkspace();return}catch(e){sessionStorage.removeItem('rx_teacher_token');token='';await showTeacherTestAccess(e.message);return}
-  }
+  token=sessionStorage.getItem('rx_teacher_token')||sessionStorage.getItem('rx_school_token')||'';
+  if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token=''}
 
   var setup=new URLSearchParams(location.search).get('setup');
-  if(setup){history.replaceState({},document.title,'/teacher');showPasswordSetup(setup);return}
+  if(setup){showPasswordSetup(setup);return}
+
   try{
-    if(!token){showTeacherLogin();return}
-    await openWorkspace()
+    await openWorkspace();
+    if(token){sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token)}
   }catch(e){
-    sessionStorage.removeItem('rx_teacher_token');token='';
-    showTeacherLogin(e.message)
+    if(e.status===401||e.status===403){showTeacherLogin(e.message);return}
+    E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><h1>Teacher workspace unavailable</h1><p class="muted">'+esc(e.message)+'</p><button id="teacherRetry" class="primary" style="width:100%">Retry</button><button id="teacherSignIn" class="ghost" style="width:100%;margin-top:8px">Return to sign in</button></div>';
+    E('teacherRetry').onclick=function(){location.reload()};
+    E('teacherSignIn').onclick=function(){location.replace('/login?next='+encodeURIComponent('/teacher'))}
   }
 }
 
