@@ -1541,52 +1541,202 @@ app.get('/api/student/latest-report',async request=>{
   return{term,subjects,comments};
 });
 
+async function createAdmissionApplication(input:{
+  organisationId:string;
+  source:'external'|'internal';
+  actorOsUserId?:string|null;
+  data:any;
+}){
+  const b=input.data;
+  const grade=await maybeOne<any>(db,'SELECT 1 FROM grade_levels WHERE organisation_id=$1 AND code=$2 AND is_active=true',[input.organisationId,b.requestedGradeCode]);
+  if(!grade)throw fail(400,'Requested grade is not available');
+  const applicationNo='ADM-'+new Date().getUTCFullYear()+'-'+randomBytes(3).toString('hex').toUpperCase();
+  const row=await one<any>(db,`INSERT INTO admission_applications(
+      organisation_id,application_no,source,first_name,middle_name,last_name,sex,date_of_birth,requested_grade_code,previous_school,
+      guardian_first_name,guardian_last_name,guardian_phone,guardian_alt_phone,guardian_email,guardian_relationship,address,
+      emergency_contact_name,emergency_contact_phone,notes
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,[
+      input.organisationId,applicationNo,input.source,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,
+      b.requestedGradeCode,b.previousSchool??null,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianAltPhone??null,
+      b.guardianEmail??null,b.guardianRelationship,b.address??null,b.emergencyContactName??null,b.emergencyContactPhone??null,b.notes??null
+    ]);
+  await db.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
+    VALUES($1,$2,NULL,'submitted',$3,$4)`,[input.organisationId,row.id,input.source==='external'?'Application received through public portal':'Application created internally',input.actorOsUserId??null]);
+  const school=await one<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[input.organisationId]);
+  await notifyContact({
+    organisationId:input.organisationId,actorOsUserId:input.actorOsUserId,eventKey:'admission.received',
+    name:b.guardianFirstName+' '+b.guardianLastName,email:b.guardianEmail,phone:b.guardianPhone,
+    subject:'Admission application received',
+    body:`${school.school_name} has received the admission application for ${b.firstName} ${b.lastName}. Application number: ${applicationNo}. You can use this number and the guardian phone number to check the status.`,
+    relatedType:'admission_application',relatedId:row.id
+  });
+  return row;
+}
+
 app.get('/api/public/school',async()=>{
-  const school=await maybeOne<any>(db,'SELECT organisation_id,school_name,short_name,motto,phone,email,address FROM school_profiles ORDER BY created_at LIMIT 1');if(!school)throw fail(404,'School admissions are not configured');
+  const school=await maybeOne<any>(db,'SELECT organisation_id,school_name,short_name,motto,phone,email,address FROM school_profiles ORDER BY created_at LIMIT 1');
+  if(!school)throw fail(404,'School admissions are not configured');
   const grades=(await db.query('SELECT code,name,stage FROM grade_levels WHERE organisation_id=$1 AND is_active=true ORDER BY level_order',[school.organisation_id])).rows;
   return{school,grades};
 });
 app.post('/api/public/admissions',async(request,reply)=>{
-  const school=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');if(!school)throw fail(404,'School admissions are not configured');
-  const b=z.object({firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),guardianPhone:z.string().min(5).max(60),guardianEmail:z.string().email().optional(),guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),notes:z.string().max(5000).optional()}).parse(request.body);
-  const grade=await maybeOne<any>(db,'SELECT 1 FROM grade_levels WHERE organisation_id=$1 AND code=$2 AND is_active=true',[school.organisation_id,b.requestedGradeCode]);if(!grade)throw fail(400,'Requested grade is not available');
-  const applicationNo='ADM-'+new Date().getUTCFullYear()+'-'+randomBytes(3).toString('hex').toUpperCase();
-  const row=await one<any>(db,`INSERT INTO admission_applications(organisation_id,application_no,first_name,middle_name,last_name,sex,date_of_birth,requested_grade_code,previous_school,guardian_first_name,guardian_last_name,guardian_phone,guardian_email,guardian_relationship,address,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id,application_no,status`,[school.organisation_id,applicationNo,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,b.requestedGradeCode,b.previousSchool??null,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianEmail??null,b.guardianRelationship,b.address??null,b.notes??null]);
+  const school=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  if(!school)throw fail(404,'School admissions are not configured');
+  const b=z.object({
+    firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
+    sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
+    previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
+    emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
+  }).parse(request.body);
+  const row=await createAdmissionApplication({organisationId:school.organisation_id,source:'external',data:b});
   return reply.code(201).send({id:row.id,applicationNo:row.application_no,status:row.status});
 });
 app.get('/api/public/admissions/status',async request=>{
   const q=z.object({applicationNo:z.string().min(1).max(40),phone:z.string().min(5).max(60)}).parse(request.query);
-  const row=await maybeOne<any>(db,'SELECT application_no,status,review_note,submitted_at,updated_at FROM admission_applications WHERE application_no=$1 AND guardian_phone=$2',[q.applicationNo,q.phone]);if(!row)throw fail(404,'Application not found');
-  return{applicationNo:row.application_no,status:row.status,reviewNote:row.review_note,submittedAt:row.submitted_at,updatedAt:row.updated_at};
+  const row=await maybeOne<any>(db,`SELECT application_no,status,review_note,submitted_at,updated_at
+    FROM admission_applications WHERE application_no=$1 AND guardian_phone=$2`,[q.applicationNo,q.phone]);
+  if(!row)throw fail(404,'Application not found');
+  const history=(await db.query(`SELECT new_status,note,created_at FROM admission_status_history h
+    JOIN admission_applications a ON a.id=h.application_id
+    WHERE a.application_no=$1 AND a.guardian_phone=$2 ORDER BY h.created_at`,[q.applicationNo,q.phone])).rows;
+  return{applicationNo:row.application_no,status:row.status,reviewNote:row.review_note,submittedAt:row.submitted_at,updatedAt:row.updated_at,history};
 });
 app.get('/api/admissions',async request=>{
-  const a=await authorize(request,db,config,'admissions.view');const q=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined','enrolled']).optional()}).parse(request.query);
-  return (await db.query(`SELECT aa.*,gl.name requested_grade_name FROM admission_applications aa LEFT JOIN grade_levels gl ON gl.organisation_id=aa.organisation_id AND gl.code=aa.requested_grade_code WHERE aa.organisation_id=$1 AND ($2::text IS NULL OR aa.status=$2) ORDER BY aa.submitted_at DESC`,[a.core.organisation_id,q.status??null])).rows;
+  const a=await authorize(request,db,config,'admissions.view');
+  const q=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined','enrolled']).optional(),source:z.enum(['external','internal']).optional(),q:z.string().max(100).optional()}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT aa.*,gl.name requested_grade_name
+    FROM admission_applications aa
+    LEFT JOIN grade_levels gl ON gl.organisation_id=aa.organisation_id AND gl.code=aa.requested_grade_code
+    WHERE aa.organisation_id=$1 AND ($2::text IS NULL OR aa.status=$2) AND ($3::text IS NULL OR aa.source=$3)
+      AND ($4::text IS NULL OR aa.application_no ILIKE $4 OR aa.first_name ILIKE $4 OR aa.last_name ILIKE $4 OR aa.guardian_phone ILIKE $4)
+    ORDER BY aa.submitted_at DESC`,[a.core.organisation_id,q.status??null,q.source??null,like])).rows;
+});
+app.post('/api/admissions/internal',async(request,reply)=>{
+  const a=await authorize(request,db,config,'admissions.manage');
+  const b=z.object({
+    firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
+    sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
+    previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
+    emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
+  }).parse(request.body);
+  const row=await createAdmissionApplication({organisationId:a.core.organisation_id,source:'internal',actorOsUserId:a.core.id,data:b});
+  await audit(a.core.organisation_id,a.core.id,'admission.created_internal','admission_application',row.id);
+  return reply.code(201).send(row);
+});
+app.get('/api/admissions/:id',async request=>{
+  const a=await authorize(request,db,config,'admissions.view');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const application=await one<any>(db,`SELECT aa.*,gl.name requested_grade_name
+    FROM admission_applications aa LEFT JOIN grade_levels gl ON gl.organisation_id=aa.organisation_id AND gl.code=aa.requested_grade_code
+    WHERE aa.id=$1 AND aa.organisation_id=$2`,[id,a.core.organisation_id]);
+  const history=(await db.query('SELECT * FROM admission_status_history WHERE application_id=$1 ORDER BY created_at',[id])).rows;
+  const contacts=(await db.query('SELECT * FROM admission_contacts WHERE application_id=$1 ORDER BY created_at DESC',[id])).rows;
+  return{application,history,contacts};
 });
 app.patch('/api/admissions/:id',async request=>{
-  const a=await authorize(request,db,config,'admissions.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined']),reviewNote:z.string().max(5000).nullable().optional()}).parse(request.body);
-  const row=await one<any>(db,`UPDATE admission_applications SET status=$1,review_note=CASE WHEN $2 THEN $3 ELSE review_note END,reviewed_by_os_user_id=$4,reviewed_at=now(),updated_at=now() WHERE id=$5 AND organisation_id=$6 AND status<>'enrolled' RETURNING *`,[b.status,Object.hasOwn(b,'reviewNote'),b.reviewNote??null,a.core.id,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'admission.reviewed','admission_application',id,{status:b.status});return row;
+  const a=await authorize(request,db,config,'admissions.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    status:z.enum(['submitted','under_review','approved','waitlisted','declined']),
+    reviewNote:z.string().max(5000).nullable().optional(),
+    assignedReviewerOsUserId:z.string().uuid().nullable().optional()
+  }).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(current.status==='enrolled')throw fail(409,'An enrolled application cannot be moved back into review');
+  const row=await one<any>(db,`UPDATE admission_applications SET status=$1,
+      review_note=CASE WHEN $2 THEN $3 ELSE review_note END,
+      assigned_reviewer_os_user_id=CASE WHEN $4 THEN $5 ELSE assigned_reviewer_os_user_id END,
+      reviewed_by_os_user_id=$6,reviewed_at=now(),updated_at=now()
+    WHERE id=$7 AND organisation_id=$8 RETURNING *`,[
+      b.status,Object.hasOwn(b,'reviewNote'),b.reviewNote??null,Object.hasOwn(b,'assignedReviewerOsUserId'),b.assignedReviewerOsUserId??null,
+      a.core.id,id,a.core.organisation_id
+    ]);
+  if(current.status!==row.status){
+    await db.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
+      VALUES($1,$2,$3,$4,$5,$6)`,[a.core.organisation_id,id,current.status,row.status,b.reviewNote??null,a.core.id]);
+    await notifyContact({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'admission.status_changed',
+      name:row.guardian_first_name+' '+row.guardian_last_name,email:row.guardian_email,phone:row.guardian_phone,
+      subject:'Admission application status updated',
+      body:`Admission application ${row.application_no} for ${row.first_name} ${row.last_name} is now ${row.status.replace('_',' ')}.${row.review_note?' Note: '+row.review_note:''}`,
+      relatedType:'admission_application',relatedId:id
+    });
+  }
+  await audit(a.core.organisation_id,a.core.id,'admission.reviewed','admission_application',id,{status:b.status});
+  return row;
+});
+app.post('/api/admissions/:id/contact',async(request,reply)=>{
+  const a=await authorize(request,db,config,'communications.send');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({method:z.enum(['call','email','sms','whatsapp']),subject:z.string().max(300).optional(),message:z.string().max(5000).optional(),note:z.string().max(2000).optional()}).parse(request.body);
+  const application=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const recipient=b.method==='email'?application.guardian_email:application.guardian_phone;
+  if(!recipient)throw fail(409,b.method==='email'?'Guardian email is not available':'Guardian phone number is not available');
+  let status='initiated';
+  if(b.method!=='call'){
+    const result=await deliverCommunication({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:b.method,
+      recipientName:application.guardian_first_name+' '+application.guardian_last_name,recipientAddress:recipient,
+      subject:b.subject||'Admission application '+application.application_no,
+      body:b.message||('Regarding admission application '+application.application_no),
+      templateKey:'admission.contact',relatedType:'admission_application',relatedId:id
+    });
+    status=result.status==='sent'?'sent':result.status==='failed'?'failed':'initiated';
+  }
+  const contact=await one<any>(db,`INSERT INTO admission_contacts(organisation_id,application_id,method,recipient,note,status,actor_os_user_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[a.core.organisation_id,id,b.method,recipient,b.note??b.message??null,status,a.core.id]);
+  await audit(a.core.organisation_id,a.core.id,'admission.contact_'+b.method,'admission_application',id,{recipient});
+  return reply.code(201).send({contact,callUri:b.method==='call'?'tel:'+normalizePhone(recipient):null});
 });
 app.post('/api/admissions/:id/enrol',async(request,reply)=>{
-  const a=await authorize(request,db,config,'admissions.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({admissionNo:z.string().min(1).max(60),classroomId:z.string().uuid().optional()}).parse(request.body);
-  const result=await tx(db,async c=>{
-    const appRow=await one<any>(c,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+  const a=await authorize(request,db,config,'admissions.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({admissionNo:z.string().min(1).max(60).optional(),classroomId:z.string().uuid()}).parse(request.body);
+  const result=await tx(db,async client=>{
+    const appRow=await one<any>(client,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
     if(appRow.status!=='approved')throw fail(409,'Approve the application before enrolling the student');
-    const student=await one<any>(c,`INSERT INTO students(organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,status,notes) VALUES($1,$2,$3,$4,$5,$6,$7,current_date,'active',$8) RETURNING *`,[a.core.organisation_id,b.admissionNo,appRow.first_name,appRow.middle_name,appRow.last_name,appRow.sex,appRow.date_of_birth,appRow.notes]);
-    const guardian=await one<any>(c,`INSERT INTO guardians(organisation_id,first_name,last_name,phone,email,address) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[a.core.organisation_id,appRow.guardian_first_name,appRow.guardian_last_name,appRow.guardian_phone,appRow.guardian_email,appRow.address]);
-    await c.query('INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary) VALUES($1,$2,$3,true)',[student.id,guardian.id,appRow.guardian_relationship]);
-    if(b.classroomId){
-      const classroom=await one<any>(c,'SELECT id,academic_year_id FROM classrooms WHERE id=$1 AND organisation_id=$2',[b.classroomId,a.core.organisation_id]);
-      await c.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status) VALUES($1,$2,$3,$4,'active')`,[a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id]);
+    if(appRow.student_id)throw fail(409,'This application is already linked to a student');
+    const count=await one<any>(client,'SELECT count(*)::int n FROM students WHERE organisation_id=$1',[a.core.organisation_id]);
+    const admissionNo=b.admissionNo||('RX/'+new Date().getUTCFullYear()+'/'+String(Number(count.n)+1).padStart(4,'0'));
+    const student=await one<any>(client,`INSERT INTO students(
+      organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,status,notes
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,current_date,'active',$8) RETURNING *`,[
+      a.core.organisation_id,admissionNo,appRow.first_name,appRow.middle_name,appRow.last_name,appRow.sex,appRow.date_of_birth,appRow.notes
+    ]);
+    let guardian=await maybeOne<any>(client,'SELECT * FROM guardians WHERE organisation_id=$1 AND phone=$2 ORDER BY created_at LIMIT 1',[a.core.organisation_id,appRow.guardian_phone]);
+    if(!guardian){
+      guardian=await one<any>(client,`INSERT INTO guardians(organisation_id,first_name,last_name,phone,email,address)
+        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[
+        a.core.organisation_id,appRow.guardian_first_name,appRow.guardian_last_name,appRow.guardian_phone,appRow.guardian_email,appRow.address
+      ]);
     }
-    await c.query(`UPDATE admission_applications SET status='enrolled',student_id=$1,reviewed_by_os_user_id=$2,reviewed_at=now(),updated_at=now() WHERE id=$3`,[student.id,a.core.id,id]);
-    return{student,guardian};
+    await client.query(`INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary)
+      VALUES($1,$2,$3,true) ON CONFLICT(student_id,guardian_id) DO UPDATE SET relationship=EXCLUDED.relationship,is_primary=true`,
+      [student.id,guardian.id,appRow.guardian_relationship]);
+    const classroom=await one<any>(client,'SELECT id,academic_year_id FROM classrooms WHERE id=$1 AND organisation_id=$2 AND is_active=true',[b.classroomId,a.core.organisation_id]);
+    await client.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status)
+      VALUES($1,$2,$3,$4,'active')`,[a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id]);
+    await client.query(`UPDATE admission_applications SET status='enrolled',student_id=$1,reviewed_by_os_user_id=$2,reviewed_at=now(),updated_at=now()
+      WHERE id=$3`,[student.id,a.core.id,id]);
+    await client.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
+      VALUES($1,$2,'approved','enrolled','Applicant enrolled and student record created',$3)`,[a.core.organisation_id,id,a.core.id]);
+    return{student,guardian,classroom};
   });
-  await audit(a.core.organisation_id,a.core.id,'admission.enrolled','admission_application',id,{studentId:result.student.id});
+  await audit(a.core.organisation_id,a.core.id,'admission.enrolled','admission_application',id,{studentId:result.student.id,classroomId:b.classroomId});
+  await notifyContact({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'admission.status_changed',
+    name:result.guardian.first_name+' '+result.guardian.last_name,email:result.guardian.email,phone:result.guardian.phone,
+    subject:'Admission completed',
+    body:`Admission has been completed for ${result.student.first_name} ${result.student.last_name}. Student admission number: ${result.student.admission_no}.`,
+    relatedType:'admission_application',relatedId:id
+  });
   return reply.code(201).send(result);
 });
-
 
 app.get('/api/roles/capabilities',async request=>{
   const a=await authorize(request,db,config,'roles.view');
