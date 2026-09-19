@@ -13,6 +13,7 @@ const schema = z.object({
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
   PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
   ENABLE_TEST_PORTAL_ACCESS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
+  TEST_ACCESS_PASSWORD: z.preprocess(emptyToUndefined,z.string().min(10).max(200).optional()),
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 
