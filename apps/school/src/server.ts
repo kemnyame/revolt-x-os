@@ -1870,7 +1870,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
   if(setupRes?.ok){
     const setup=await setupRes.json().catch(()=>null) as any;
     const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-    const setupUrl=publicBase+'/teacher?setup='+encodeURIComponent(setup.setupToken);
+    const setupUrl=publicBase+'/login?next='+encodeURIComponent('/teacher')+'&setup='+encodeURIComponent(setup.setupToken);
     const delivered=await deliverCommunication({
       organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
       recipientName:b.firstName+' '+b.lastName,recipientAddress:b.email,
@@ -1882,7 +1882,7 @@ Your teacher account has been created in Revolt-X School.
 Use this secure link to create your password:
 ${setupUrl}
 
-The link expires in 24 hours. After setting your password, sign in through the Teacher Portal using ${b.email}.
+The link expires in 24 hours. After setting your password, sign in through Revolt-X School using ${b.email}.
 
 If you did not expect this invitation, contact your school administrator.`,
       templateKey:'teacher.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
@@ -1941,7 +1941,7 @@ app.post('/api/staff/teachers/:osUserId/send-invitation',async request=>{
   if(!setupRes.ok)throw fail(setupRes.status,setup?.error?.message||'Could not create password setup invitation');
 
   const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-  const setupUrl=publicBase+'/teacher?setup='+encodeURIComponent(setup.setupToken);
+  const setupUrl=publicBase+'/login?next='+encodeURIComponent('/teacher')+'&setup='+encodeURIComponent(setup.setupToken);
   const delivered=await deliverCommunication({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
     recipientName:(teacher.first_name+' '+teacher.last_name).trim(),recipientAddress:teacher.email,
@@ -1953,7 +1953,7 @@ A secure password-setup link has been generated for your Revolt-X School Teacher
 Create your password here:
 ${setupUrl}
 
-This link expires in 24 hours. After setting your password, sign in at ${publicBase}/teacher using ${teacher.email}.
+This link expires in 24 hours. After setting your password, sign in at ${publicBase}/login using ${teacher.email}.
 
 If you did not request or expect this message, contact your school administrator.`,
     templateKey:'teacher.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
