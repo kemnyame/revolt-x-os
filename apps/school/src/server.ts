@@ -246,6 +246,61 @@ async function updateStudentFeeStatus(client:any,studentFeeId:string){
   return{paid,due,status,balance:Math.max(0,due-paid)};
 }
 
+async function financeAccountByCode(client:any,organisationId:string,code:string){
+  return one<any>(client,'SELECT * FROM finance_accounts WHERE organisation_id=$1 AND code=$2 AND is_active=true',[organisationId,code]);
+}
+
+async function postFinanceJournal(client:any,input:{
+  organisationId:string;
+  entryDate?:string|null;
+  description:string;
+  sourceType?:string|null;
+  sourceId?:string|null;
+  reference?:string|null;
+  actorOsUserId?:string|null;
+  lines:{accountId:string;debit?:number;credit?:number;description?:string|null}[];
+}){
+  const debit=input.lines.reduce((s,x)=>s+Number(x.debit||0),0),credit=input.lines.reduce((s,x)=>s+Number(x.credit||0),0);
+  if(Math.abs(debit-credit)>0.005||debit<=0)throw fail(400,'Finance journal must balance');
+  if(input.sourceType&&input.sourceId){
+    const existing=await maybeOne<any>(client,`SELECT * FROM finance_journal_entries
+      WHERE organisation_id=$1 AND source_type=$2 AND source_id=$3 AND status<>'voided'`,
+      [input.organisationId,input.sourceType,input.sourceId]);
+    if(existing)return existing;
+  }
+  const entryNo='JRN-'+new Date().toISOString().slice(0,10).replace(/-/g,'')+'-'+randomBytes(4).toString('hex').toUpperCase();
+  const entry=await one<any>(client,`INSERT INTO finance_journal_entries(
+      organisation_id,entry_no,entry_date,description,source_type,source_id,status,reference,created_by_os_user_id,posted_at
+    ) VALUES($1,$2,COALESCE($3::date,current_date),$4,$5,$6,'posted',$7,$8,now()) RETURNING *`,[
+      input.organisationId,entryNo,input.entryDate??null,input.description,input.sourceType??null,input.sourceId??null,input.reference??null,input.actorOsUserId??null
+    ]);
+  for(const line of input.lines){
+    await client.query(`INSERT INTO finance_journal_lines(journal_entry_id,account_id,description,debit,credit)
+      VALUES($1,$2,$3,$4,$5)`,[entry.id,line.accountId,line.description??null,Number(line.debit||0),Number(line.credit||0)]);
+  }
+  return entry;
+}
+
+async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserId?:string|null){
+  const p=await one<any>(client,`SELECT p.*,s.first_name,s.last_name,s.admission_no,f.name fee_name
+    FROM payments p JOIN students s ON s.id=p.student_id
+    LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    WHERE p.id=$1`,[paymentId]);
+  if(p.voided_at)return null;
+  const debitCode=p.payment_method==='mobile_money'?'1020':p.payment_method==='card'?'1030':p.payment_method==='bank'?'1010':'1000';
+  const debitAccount=await financeAccountByCode(client,p.organisation_id,debitCode);
+  const incomeAccount=await financeAccountByCode(client,p.organisation_id,'4000');
+  return postFinanceJournal(client,{
+    organisationId:p.organisation_id,entryDate:String(p.paid_at||new Date().toISOString()).slice(0,10),
+    description:`School fee payment - ${p.first_name} ${p.last_name} (${p.admission_no})`,
+    sourceType:'student_payment',sourceId:p.id,reference:p.reference??null,actorOsUserId:actorOsUserId??p.received_by_os_user_id??null,
+    lines:[
+      {accountId:debitAccount.id,debit:Number(p.amount),description:p.payment_method+' receipt'},
+      {accountId:incomeAccount.id,credit:Number(p.amount),description:p.fee_name||'School fees income'}
+    ]
+  });
+}
+
 async function assignMandatoryFees(client:any,organisationId:string,studentId:string,academicYearId:string,classroomId:string){
   const classroom=await one<any>(client,'SELECT id,grade_level_id FROM classrooms WHERE id=$1 AND organisation_id=$2',[classroomId,organisationId]);
   const rows=(await client.query(`SELECT id,amount FROM fee_items
@@ -284,6 +339,7 @@ async function settleOnlinePayment(reference:string){
       verified.reference,'Online payment verified by Paystack',locked.initiated_by_type==='guardian'?'parent_online':'school_online',locked.id
     ]);
     if(locked.student_fee_id)await updateStudentFeeStatus(client,locked.student_fee_id);
+    await postStudentPaymentLedger(client,payment.id,null);
     if(locked.payment_request_id)await client.query("UPDATE fee_payment_requests SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1",[locked.payment_request_id]);
     const updated=await one<any>(client,`UPDATE payment_intents SET status='success',settled_payment_id=$1,paid_at=now(),
       provider_payload=$2,updated_at=now() WHERE id=$3 RETURNING *`,[payment.id,JSON.stringify(verified.raw),locked.id]);
