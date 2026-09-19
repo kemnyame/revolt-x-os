@@ -1811,6 +1811,7 @@ app.post('/api/payments',async(request,reply)=>{
       a.core.organisation_id,b.studentId,b.studentFeeId??null,b.amount,b.paymentMethod,b.reference??null,a.core.id,b.note??null
     ]);
     if(b.studentFeeId)await updateStudentFeeStatus(client,b.studentFeeId);
+    await postStudentPaymentLedger(client,p.id,a.core.id);
     return p;
   });
   const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
