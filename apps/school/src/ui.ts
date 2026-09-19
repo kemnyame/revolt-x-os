@@ -56,6 +56,7 @@ var nav=[
 ['timetable','Timetable','T','timetable.view'],
 ['announcements','Communication Centre','N','communications.view'],
 ['staff','Access Management','P','staff.view|roles.view'],
+['systemcheck','System Check','✓','school.manage'],
 ['portals','Portals & Interfaces','◫','portals.manage']
 ];
 function E(id){return document.getElementById(id)}
@@ -611,6 +612,15 @@ async function page(p){
  else if(p==='portals'){
    E('content').innerHTML='<h1>Portals & Interfaces</h1><div class="grid"><div class="panel"><h3>School Administration</h3><p class="muted">Full operational management for administrators, headteachers, registrars and bursars.</p><button class="ghost" disabled>Current interface</button></div><div class="panel"><h3>Teacher Portal</h3><p class="muted">Focused workspace for assigned classes, attendance, homework, assessments, timetable and reports.</p><button class="primary" data-open-portal="/teacher">Open Teacher Portal</button></div><div class="panel"><h3>Parent Portal</h3><p class="muted">Guardians can view children, attendance, fees, homework, announcements and report cards.</p><button class="primary" data-open-portal="/parent">Open Parent Portal</button></div><div class="panel"><h3>Student Portal</h3><p class="muted">Students can view homework, results, timetable and school announcements.</p><button class="primary" data-open-portal="/student">Open Student Portal</button></div><div class="panel"><h3>Public Admissions</h3><p class="muted">Prospective families can apply online and check application status.</p><button class="primary" data-open-portal="/admissions">Open Admissions</button></div></div><div class="notice" style="margin-top:12px">Parent and Student portal PINs are generated from the relevant student record. Production deployment will replace development preview access for staff with the Core OS sign-in flow.</div>';
    E('content').onclick=function(e){var p=e.target.dataset.openPortal;if(p)window.open(p,'_blank')}
+ }
+ else if(p==='systemcheck'){
+   var d=await raw('/api/system/diagnostics');
+   function statusBadge(s){return '<span class="badge '+(s==='fail'?'red':s==='warning'?'warn':'')+'">'+esc(s)+'</span>'}
+   E('content').innerHTML='<div class="section"><div><h1>System Check</h1><p class="muted">Read-only readiness checks across the live School database, workflows and provider connections.</p></div><button id="rerunDiagnostics" class="primary">Run again</button></div>'+
+   '<div class="grid"><div class="panel stat"><span class="muted">Passed</span><b>'+esc(d.summary.passed)+'</b></div><div class="panel stat"><span class="muted">Warnings</span><b>'+esc(d.summary.warnings)+'</b></div><div class="panel stat"><span class="muted">Failed</span><b>'+esc(d.summary.failed)+'</b></div><div class="panel stat"><span class="muted">Checks</span><b>'+esc(d.summary.total)+'</b></div></div>'+
+   '<div class="panel" style="margin-top:12px">'+table(d.checks,[{key:'label',label:'Check',render:function(r){return'<b>'+esc(r.label)+'</b><br><span class="muted">'+esc(r.key)+'</span>'}},{key:'status',render:function(r){return statusBadge(r.status)}},{key:'details',label:'Details',render:function(r){return'<code style="white-space:pre-wrap">'+esc(typeof r.details==='string'?r.details:JSON.stringify(r.details))+'</code>'}}])+'</div>'+
+   '<div class="notice" style="margin-top:12px">Generated '+esc(new Date(d.generatedAt).toLocaleString())+'. Provider warnings mean the School workflow is available but the external provider still needs valid credentials or production approval.</div>';
+   E('rerunDiagnostics').onclick=function(){page('systemcheck')}
  }
  else if(p==='staff'){
    var coreUsersError=null;
