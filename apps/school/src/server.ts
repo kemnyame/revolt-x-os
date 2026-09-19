@@ -1413,8 +1413,10 @@ app.get('/api/report-cards/:studentId',async request=>{
       e.academic_year_id,y.name academic_year
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
+  const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]);
   if(current?.classroom_id){
-    await ensureTeacherScope(a,current.classroom_id,null);
+    const returnedToMe=a.role==='teacher'&&comments?.workflow_status==='returned'&&comments?.submitted_by_os_user_id===a.core.id;
+    if(!returnedToMe)await ensureTeacherScope(a,current.classroom_id,null);
     current.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,q.termId);
   }
   const subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
@@ -1430,7 +1432,6 @@ app.get('/api/report-cards/:studentId',async request=>{
   const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
   for(const r of attendanceRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
   attendance.rate=attendance.total?Math.round(((attendance.present+attendance.late)/attendance.total)*1000)/10:0;
-  const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]);
   const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
   return{
     school,
@@ -2721,10 +2722,13 @@ app.put('/api/report-comments/:studentId',async request=>{
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
-  await ensureTeacherScope(a,current.classroom_id,null);
-  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
-  if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
-  const existing=await maybeOne<any>(db,'SELECT workflow_status FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  const existing=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  const returnedToMe=a.role==='teacher'&&existing?.workflow_status==='returned'&&existing?.submitted_by_os_user_id===a.core.id;
+  if(!returnedToMe){
+    await ensureTeacherScope(a,current.classroom_id,null);
+    const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
+    if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
+  }
   if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
   const row=await one<any>(db,`INSERT INTO report_comments(
       organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id,workflow_status
@@ -2793,15 +2797,18 @@ app.get('/api/teacher/report-worklist',async request=>{
     JOIN enrolments e ON e.student_id=s.id AND e.academic_year_id=t.academic_year_id
     JOIN classrooms c ON c.id=e.classroom_id
     WHERE rc.organisation_id=$1
-      AND COALESCE(
-        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
-         WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
-           AND ta.term_id=rc.term_id ORDER BY ta.created_at DESC LIMIT 1),
-        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
-         WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
-           AND ta.term_id IS NULL ORDER BY ta.created_at DESC LIMIT 1),
-        c.class_teacher_os_user_id
-      )=$2
+      AND (
+        COALESCE(
+          (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+           WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+             AND ta.term_id=rc.term_id ORDER BY ta.created_at DESC LIMIT 1),
+          (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+           WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+             AND ta.term_id IS NULL ORDER BY ta.created_at DESC LIMIT 1),
+          c.class_teacher_os_user_id
+        )=$2
+        OR (rc.workflow_status='returned' AND rc.submitted_by_os_user_id=$2)
+      )
       AND ($3::uuid IS NULL OR rc.term_id=$3)
     ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,rc.updated_at DESC`,
     [a.core.organisation_id,a.core.id,q.termId??null])).rows;
