@@ -341,15 +341,22 @@ async function effectiveClassTeacher(organisationId:string,classroomId:string,te
 
 async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
   if(a.role!=='teacher')return;
-  const row=await maybeOne<any>(db,`SELECT 1 FROM classrooms c
-    WHERE c.id=$1 AND c.organisation_id=$2 AND (
-      c.class_teacher_os_user_id=$3 OR EXISTS(
-        SELECT 1 FROM teacher_assignments ta
-        WHERE ta.classroom_id=c.id AND ta.organisation_id=$2 AND ta.teacher_os_user_id=$3
-          AND ta.is_active=true AND ($4::uuid IS NULL OR ta.subject_id IS NULL OR ta.subject_id=$4)
-      )
-    ) LIMIT 1`,[classroomId,a.core.organisation_id,a.core.id,subjectId??null]);
-  if(!row)throw fail(403,'You are not assigned to this class or subject');
+  const term=await activeTerm(a.core.organisation_id);
+  const row=subjectId
+    ?await maybeOne<any>(db,`SELECT 1 FROM teacher_assignments ta
+      WHERE ta.classroom_id=$1 AND ta.organisation_id=$2 AND ta.teacher_os_user_id=$3
+        AND ta.subject_id=$4 AND ta.is_active=true
+        AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $5::uuid)
+      LIMIT 1`,[classroomId,a.core.organisation_id,a.core.id,subjectId,term?.id??null])
+    :await maybeOne<any>(db,`SELECT 1 FROM classrooms c
+      WHERE c.id=$1 AND c.organisation_id=$2 AND (
+        c.class_teacher_os_user_id=$3 OR EXISTS(
+          SELECT 1 FROM teacher_assignments ta
+          WHERE ta.classroom_id=c.id AND ta.organisation_id=$2 AND ta.teacher_os_user_id=$3
+            AND ta.is_active=true AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $4::uuid)
+        )
+      ) LIMIT 1`,[classroomId,a.core.organisation_id,a.core.id,term?.id??null]);
+  if(!row)throw fail(403,subjectId?'You are not assigned to teach this subject in this class':'You are not assigned to this class');
 }
 
 
@@ -999,8 +1006,13 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
       JOIN classrooms c ON c.id=ta.classroom_id
       WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
         AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4
-      ORDER BY (ta.term_id IS NULL) DESC,ta.created_at LIMIT 1`,
-      [a.core.organisation_id,b.academicYearId,b.classTeacherOsUserId,classroomId]);
+        AND (
+          ($5::uuid IS NULL AND ta.term_id IS NULL)
+          OR
+          ($5::uuid IS NOT NULL AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $5::uuid))
+        )
+      ORDER BY (ta.term_id IS NOT NULL) DESC,ta.created_at DESC LIMIT 1`,
+      [a.core.organisation_id,b.academicYearId,b.classTeacherOsUserId,classroomId,b.termId??null]);
     if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}. Choose a different Class Teacher.`);
   }
 
@@ -1122,8 +1134,14 @@ app.post('/api/teacher-assignments/bulk',async request=>{
     const other=await maybeOne<any>(db,`SELECT c.name classroom_name FROM teacher_assignments ta
       JOIN classrooms c ON c.id=ta.classroom_id
       WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
-        AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4 LIMIT 1`,
-      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,targetClass]);
+        AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4
+        AND (
+          ($5::uuid IS NULL AND ta.term_id IS NULL)
+          OR
+          ($5::uuid IS NOT NULL AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $5::uuid))
+        )
+      LIMIT 1`,
+      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,targetClass,b.termId??null]);
     if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}.`);
     pairs=[{classroomId:targetClass,subjectId:null}];
   }else if(b.mode==='all_subjects'){
@@ -3363,28 +3381,25 @@ app.get('/api/teacher/classes',async request=>{
       FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
     ),
     teaching_scope AS (
-      SELECT c.id classroom_id,cs.subject_id,'class_teacher'::text assignment_type
+      SELECT c.id classroom_id,NULL::uuid subject_id,'class_teacher'::text assignment_type,true is_class_teacher
       FROM classrooms c
       JOIN effective_class_teacher ect ON ect.classroom_id=c.id AND ect.teacher_os_user_id=$2
-      JOIN class_subjects cs ON cs.classroom_id=c.id AND cs.is_active=true
       WHERE c.organisation_id=$1 AND c.is_active=true
-      UNION
-      SELECT ta.classroom_id,ta.subject_id,'subject_teacher'::text assignment_type
+      UNION ALL
+      SELECT ta.classroom_id,ta.subject_id,'subject_teacher'::text assignment_type,false is_class_teacher
       FROM teacher_assignments ta
       WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
         AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ts.subject_id,s.name subject_name,
-      CASE WHEN ect.teacher_os_user_id=$2 THEN 'class_teacher' ELSE ts.assignment_type END assignment_type,
-      (ect.teacher_os_user_id=$2) is_class_teacher,
+      ts.assignment_type,ts.is_class_teacher,
       (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
     FROM teaching_scope ts
     JOIN classrooms c ON c.id=ts.classroom_id
-    JOIN effective_class_teacher ect ON ect.classroom_id=c.id
     JOIN grade_levels g ON g.id=c.grade_level_id
     LEFT JOIN subjects s ON s.id=ts.subject_id
     WHERE c.organisation_id=$1 AND c.is_active=true
-    ORDER BY c.name,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
+    ORDER BY c.name,ts.is_class_teacher DESC,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
 });
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
@@ -3887,13 +3902,19 @@ app.get('/api/teacher/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher timetable access is not enabled for this role');
   const q=z.object({termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
-  const filterTeacher=a.core.id;
+  const currentTerm=q.termId
+    ?await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id])
+    :await activeTerm(a.core.organisation_id);
+  const termId=currentTerm?.id??null;
+  const yearId=q.academicYearId??currentTerm?.academic_year_id??null;
   return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
-    WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.term_id=$2) AND ($3::uuid IS NULL OR tt.academic_year_id=$3)
-      AND ($4::uuid IS NULL OR tt.teacher_os_user_id=$4)
-    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.termId??null,q.academicYearId??null,filterTeacher])).rows;
+    WHERE tt.organisation_id=$1
+      AND tt.teacher_os_user_id=$2
+      AND ($3::uuid IS NULL OR tt.term_id=$3)
+      AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
+    ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,a.core.id,termId,yearId])).rows;
 });
 app.get('/api/student/timetable',async request=>{
   const s=await studentAuth(request);
