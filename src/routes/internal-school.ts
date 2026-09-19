@@ -7,6 +7,7 @@ import type { Db } from '../db/index.js';
 import { one, transaction } from '../db/index.js';
 import { audit, emitEvent } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
+import { buildPreviewContext } from '../auth/preview.js';
 
 function requireSchoolService(request:FastifyRequest,config:Config){
   if(!config.SCHOOL_SERVICE_KEY)throw new AppError(503,'SERVICE_UNAVAILABLE','School service authentication is not configured');
@@ -22,6 +23,11 @@ const scopeSchema=z.object({
 });
 
 export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:Db;config:Config}){
+  app.get('/v1/internal/school/preview-context',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    if(!config.ENABLE_PREVIEW_ACCESS)throw new AppError(403,'PREVIEW_DISABLED','Development preview access is disabled');
+    return buildPreviewContext(db);
+  });
   app.get('/v1/internal/school/users',{config:{rateLimit:{max:1200,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const q=scopeSchema.parse(request.query);
