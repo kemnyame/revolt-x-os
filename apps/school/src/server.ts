@@ -7,7 +7,7 @@ import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeE
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
-import { schoolFrontend } from './ui.js';
+import { schoolFrontend, schoolAppScript } from './ui.js';
 import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
@@ -638,7 +638,8 @@ async function provisionDemoTeachers(){
   }
 }
 
-app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
