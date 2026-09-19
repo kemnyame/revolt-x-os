@@ -183,249 +183,138 @@ async function page(p){
  else if(p==='assignments'){
    var directoryError=null;
    var rr=await Promise.all([
-     raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/subjects'),raw('/api/class-subjects'),
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels'),raw('/api/classes'),
+     raw('/api/subjects'),raw('/api/class-subjects'),raw('/api/teacher-assignments'),
      raw('/api/staff/core-users').catch(function(e){directoryError=e;return[]}),
-     raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),raw('/api/terms')
+     raw('/api/staff/module-memberships')
    ]);
-   var ys=rr[0],gs=rr[1],cls=rr[2],subs=rr[3],classSubs=rr[4],users=rr[5],memberships=rr[6],assignments=rr[7],terms=rr[8];
-   var teacherIds=memberships.filter(function(m){return m.status==='active'&&(m.role==='teacher'||m.role==='headteacher'||m.role==='school_admin')}).map(function(m){return m.os_user_id});
-   var teachers=users.filter(function(u){return teacherIds.indexOf(u.id)>=0});
-   var activeYear=ys.find(function(y){return y.status==='active'})||ys[0];
-   var selectedYear=sessionStorage.getItem('rx_academic_year')||(activeYear?activeYear.id:'');
-   if(!ys.some(function(y){return y.id===selectedYear}))selectedYear=activeYear?activeYear.id:'';
+   var years=rr[0],terms=rr[1],grades=rr[2],classes=rr[3],subjects=rr[4],classSubjects=rr[5],assignments=rr[6],users=rr[7],memberships=rr[8];
+   var activeYear=years.find(function(y){return y.status==='active'})||years[0];
+   var selectedYear=sessionStorage.getItem('rx_manager_year')||(activeYear?activeYear.id:'');
+   if(!years.some(function(y){return y.id===selectedYear}))selectedYear=activeYear?activeYear.id:'';
+   var selectedTerm=sessionStorage.getItem('rx_manager_term')||'';
    var yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});
-   var activeTerm=yearTerms.find(function(t){return t.status==='active'});
-   var selectedSession=sessionStorage.getItem('rx_academic_session');
-   if(selectedSession===null)selectedSession=activeTerm?activeTerm.id:'';
-   if(selectedSession&&!yearTerms.some(function(t){return t.id===selectedSession}))selectedSession=activeTerm?activeTerm.id:'';
-   var selectedClass=sessionStorage.getItem('rx_academic_class')||'';
-   var managerTab=sessionStorage.getItem('rx_academic_tab')||'class';
-   if(['class','coverage','subjects'].indexOf(managerTab)<0)managerTab='class';
-   var draft=null,dirty=false;
+   if(selectedTerm&&!yearTerms.some(function(t){return t.id===selectedTerm}))selectedTerm='';
+   if(!selectedTerm){var at=yearTerms.find(function(t){return t.status==='active'});selectedTerm=at?at.id:''}
+   var selectedClass=sessionStorage.getItem('rx_manager_class')||'';
+   var draft=null;
 
-   function userName(id){var u=users.find(function(x){return x.id===id});return u?u.first_name+' '+u.last_name:'Unknown teacher'}
-   function yearClasses(){return cls.filter(function(x){return x.academic_year_id===selectedYear&&x.is_active})}
-   function sessionName(){if(!selectedSession)return'Whole academic year';var t=terms.find(function(x){return x.id===selectedSession});return t?t.name:'Selected term'}
-   function exactAssignment(classId,subjectId){return assignments.find(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId&&((selectedSession&&a.term_id===selectedSession)||(!selectedSession&&!a.term_id))})||null}
-   function yearAssignment(classId,subjectId){return assignments.find(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId&&!a.term_id})||null}
-   function effectiveAssignment(classId,subjectId){return exactAssignment(classId,subjectId)||yearAssignment(classId,subjectId)}
-   function classTeacherConflict(teacherId,classId){
-     if(!teacherId)return null;
-     var a=assignments.find(function(x){
-       if(!(x.is_active&&x.academic_year_id===selectedYear&&x.subject_id===null&&x.teacher_os_user_id===teacherId&&x.classroom_id!==classId))return false;
-       if(selectedSession)return !x.term_id||x.term_id===selectedSession;
-       return !x.term_id
-     });
-     if(a){var cl=cls.find(function(x){return x.id===a.classroom_id});return cl?cl.name:'another class'}
-     var direct=cls.find(function(x){return x.academic_year_id===selectedYear&&x.is_active&&x.class_teacher_os_user_id===teacherId&&x.id!==classId});
-     return direct?direct.name:null
+   function roleMembership(uid){return memberships.find(function(m){return m.os_user_id===uid&&m.status==='active'})}
+   var teachingUsers=users.filter(function(u){var m=roleMembership(u.id);return m&&m.can_teach});
+   function userName(id){var u=users.find(function(x){return x.id===id});return u?(u.first_name+' '+u.last_name):'Not assigned'}
+   function roleName(uid){var m=roleMembership(uid);return m?(m.role_name||m.role):''}
+   function selectedYearObj(){return years.find(function(y){return y.id===selectedYear})}
+   function selectedTermObj(){return terms.find(function(t){return t.id===selectedTerm})}
+   function yearClasses(){return classes.filter(function(x){return x.academic_year_id===selectedYear&&x.is_active})}
+   function classGrade(x){return grades.find(function(g){return g.id===x.grade_level_id})}
+   function effectiveAssignment(classId,subjectId){
+     var rows=assignments.filter(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId});
+     if(selectedTerm){var exact=rows.find(function(a){return a.term_id===selectedTerm});if(exact)return exact}
+     return rows.find(function(a){return !a.term_id})||null
    }
-   function teacherOptions(selected){
-     return '<option value="">Not assigned</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(t.id===selected?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')
+   function effectiveClassTeacher(classId){return effectiveAssignment(classId,null)}
+   function eligibleSubjects(x){
+     var grade=classGrade(x);
+     return subjects.filter(function(s){return s.is_active&&(s.stage==='both'||s.stage===(grade&&grade.stage))})
    }
-   function classTeacherOptions(selected,classId){
-     return '<option value="">No Class Teacher</option>'+teachers.map(function(t){var conflict=classTeacherConflict(t.id,classId),disabled=conflict&&t.id!==selected;return'<option value="'+t.id+'"'+(t.id===selected?' selected':'')+(disabled?' disabled':'')+'>'+esc(t.first_name+' '+t.last_name)+(conflict?' • Class Teacher: '+esc(conflict):'')+'</option>'}).join('')
+   function teachingUserOptions(selected){
+     return '<option value="">Not assigned</option>'+teachingUsers.map(function(u){
+       var email=u.email?' • '+u.email:'';
+       return '<option value="'+u.id+'"'+(u.id===selected?' selected':'')+'>'+esc(u.first_name+' '+u.last_name)+' • '+esc(roleName(u.id)||u.job_title||'Teaching staff')+esc(email)+'</option>'
+     }).join('')
    }
-   function stageSubjects(x){var grade=gs.find(function(g){return g.id===x.grade_level_id});return subs.filter(function(s){return s.is_active&&(s.stage==='both'||s.stage===(grade&&grade.stage))})}
-   function markDirty(){dirty=true;var b=E('saveClassSetup');if(b){b.textContent='Save changes';b.classList.add('unsaved')}var s=E('classSetupState');if(s)s.textContent='Unsaved changes'}
    function buildDraft(classId){
-     var x=cls.find(function(r){return r.id===classId}),links=classSubs.filter(function(cs){return cs.classroom_id===classId&&cs.academic_year_id===selectedYear&&cs.is_active});
-     var ct=effectiveAssignment(classId,null);
-     draft={classroomId:classId,classTeacherOsUserId:ct?ct.teacher_os_user_id:'',subjects:links.map(function(link){var a=effectiveAssignment(classId,link.subject_id);return{subjectId:link.subject_id,weeklyPeriods:Number(link.weekly_periods||3),creditHours:Number(link.credit_hours||2),teacherOsUserId:a?a.teacher_os_user_id:''}})};
-     dirty=false;return x
+     var x=classes.find(function(r){return r.id===classId});
+     if(!x)return null;
+     var links=classSubjects.filter(function(cs){return cs.classroom_id===classId&&cs.academic_year_id===selectedYear&&cs.is_active!==false});
+     var ct=effectiveClassTeacher(classId);
+     draft={
+       classroomId:classId,
+       classTeacherOsUserId:ct?ct.teacher_os_user_id:'',
+       subjects:links.map(function(link){
+         var ta=effectiveAssignment(classId,link.subject_id);
+         return{
+           subjectId:link.subject_id,
+           weeklyPeriods:Number(link.weekly_periods||3),
+           creditHours:Number(link.credit_hours||2),
+           teacherOsUserId:ta?ta.teacher_os_user_id:''
+         }
+       })
+     };
+     return x
    }
-   function selectedSubject(id){return draft&&draft.subjects.find(function(x){return x.subjectId===id})}
-   function syncSubjectRows(){
-     if(!draft)return;
-     E('classSubjectRows').querySelectorAll('[data-subject-row]').forEach(function(row){
-       var item=selectedSubject(row.dataset.subjectRow);if(!item)return;
-       item.teacherOsUserId=row.querySelector('[data-subject-teacher]').value;
-       item.weeklyPeriods=Math.max(1,Number(row.querySelector('[data-subject-periods]').value||3));
-       item.creditHours=Math.max(.25,Number(row.querySelector('[data-subject-hours]').value||2))
-     })
-   }
-   function subjectRow(item){
-     var sub=subs.find(function(x){return x.id===item.subjectId})||{};
-     return '<div class="class-subject-config" data-subject-row="'+item.subjectId+'"><div class="class-subject-name"><span class="badge info">'+esc(sub.code||'SUB')+'</span><div><b>'+esc(sub.name||'Subject')+'</b><small>'+esc(sub.stage||'')+'</small></div></div><div><label>Subject Teacher</label><select data-subject-teacher>'+teacherOptions(item.teacherOsUserId)+'</select></div><div><label>Periods / week</label><input data-subject-periods type="number" min="1" max="20" value="'+esc(item.weeklyPeriods)+'"></div><div><label>Credit hours</label><input data-subject-hours type="number" min=".25" max="20" step=".25" value="'+esc(item.creditHours)+'"></div><button class="mini danger" data-remove-subject="'+item.subjectId+'" title="Remove subject from this class">Remove</button></div>'
-   }
-   function renderSubjectRows(){
-     E('classSubjectRows').innerHTML=draft.subjects.length?draft.subjects.map(subjectRow).join(''):'<div class="empty">No subjects have been added to this class yet.</div>';
-     E('classSubjectRows').querySelectorAll('select,input').forEach(function(el){el.onchange=function(){syncSubjectRows();markDirty()}})
-   }
-   function openAddSubjects(x){
-     syncSubjectRows();
-     var selectedIds=draft.subjects.map(function(i){return i.subjectId}),available=stageSubjects(x).filter(function(s){return selectedIds.indexOf(s.id)<0});
-     modal('<div class="section compact"><div><h2>Add subjects to '+esc(x.name)+'</h2><p class="muted">Select one or more subjects from the '+esc(x.grade_name)+' catalogue.</p></div></div><input id="addSubjectSearch" placeholder="Search subject or code"><div id="addSubjectChoices" class="simple-subject-picker"></div><div class="actions"><button id="addAllVisibleSubjects" class="ghost">Select all visible</button><button id="confirmAddSubjects" class="primary">Add selected subjects</button></div>');
-     function draw(){var q=E('addSubjectSearch').value.trim().toLowerCase(),rows=q?available.filter(function(s){return(s.code+' '+s.name).toLowerCase().includes(q)}):available;E('addSubjectChoices').innerHTML=rows.length?rows.map(function(s){return'<label class="simple-subject-choice"><input type="checkbox" data-add-subject="'+s.id+'"><span><b>'+esc(s.name)+'</b><small>'+esc(s.code)+' • '+esc(s.stage)+'</small></span></label>'}).join(''):'<div class="empty">No additional subjects are available for this class.</div>'}
-     draw();E('addSubjectSearch').oninput=draw;
-     E('addAllVisibleSubjects').onclick=function(){E('addSubjectChoices').querySelectorAll('[data-add-subject]').forEach(function(i){i.checked=true})};
-     E('confirmAddSubjects').onclick=function(){var ids=[];E('addSubjectChoices').querySelectorAll('[data-add-subject]:checked').forEach(function(i){ids.push(i.dataset.addSubject)});if(!ids.length)return toast('Select at least one subject',true);ids.forEach(function(id){if(!selectedSubject(id))draft.subjects.push({subjectId:id,weeklyPeriods:3,creditHours:2,teacherOsUserId:''})});markDirty();close();renderSubjectRows()}
-   }
-   function classCard(x){
-     var ct=effectiveAssignment(x.id,null),name=ct?userName(ct.teacher_os_user_id):'Not assigned';
-     return '<button class="compact-class-card'+(selectedClass===x.id?' selected':'')+'" data-pick-class="'+x.id+'"><div><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name)+' • '+esc(x.student_count||0)+' students</small><small>Class Teacher: '+esc(name)+'</small></div><span>'+esc(x.subject_count||0)+'<small>subjects</small></span></button>'
+   function draftSubject(id){return draft&&draft.subjects.find(function(x){return x.subjectId===id})}
+   function classSearchRows(){
+     var rows=yearClasses(),q=(E('managerClassSearch')?E('managerClassSearch').value:'').trim().toLowerCase();
+     if(q)rows=rows.filter(function(x){var ct=effectiveClassTeacher(x.id);return (x.name+' '+(x.grade_name||'')+' '+(ct?userName(ct.teacher_os_user_id):'')).toLowerCase().includes(q)});
+     return rows
    }
    function renderClassList(){
-     var rows=yearClasses(),q=E('academicClassSearch')?E('academicClassSearch').value.trim().toLowerCase():'';
-     if(q)rows=rows.filter(function(x){var ct=effectiveAssignment(x.id,null);return(x.name+' '+x.grade_name+' '+(x.stream||'')+' '+(ct?userName(ct.teacher_os_user_id):'')).toLowerCase().includes(q)});
-     E('classCards').innerHTML=rows.length?rows.map(classCard).join(''):'<div class="empty">No matching classes.</div>'
+     var rows=classSearchRows();
+     E('managerClassList').innerHTML=rows.length?rows.map(function(x){
+       var ct=effectiveClassTeacher(x.id),links=classSubjects.filter(function(cs){return cs.classroom_id===x.id&&cs.academic_year_id===selectedYear&&cs.is_active!==false});
+       return '<button class="compact-class-card'+(selectedClass===x.id?' selected':'')+'" data-manager-class="'+x.id+'"><div><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name||'')+' • '+esc(x.student_count||0)+' students</small><small>Class Teacher: '+esc(ct?userName(ct.teacher_os_user_id):'Not assigned')+'</small></div><span>'+links.length+'<small>subjects</small></span></button>'
+     }).join(''):'<div class="empty">No classes found for this academic year.</div>'
    }
-   function renderClassDetail(id){
-     var x=buildDraft(id);if(!x)return E('classDetail').innerHTML='<div class="empty">Choose a class.</div>';
-     selectedClass=id;sessionStorage.setItem('rx_academic_class',id);
-     var conflict=draft.classTeacherOsUserId?classTeacherConflict(draft.classTeacherOsUserId,id):null;
-     E('classDetail').innerHTML='<div class="class-detail-head"><div><span class="badge">'+esc(x.grade_name)+'</span><h2>'+esc(x.name)+'</h2><p class="muted">'+esc(x.student_count||0)+' students • '+esc(sessionName())+'</p></div><button class="mini" data-edit-class="'+x.id+'">Edit class</button></div>'+
-       '<div class="class-teacher-strip"><div><span class="eyebrow">Class responsibility</span><h3>Class Teacher</h3><p class="muted">Assignment applies to <b>'+esc(sessionName())+'</b>. A Class Teacher does not automatically become Subject Teacher for every subject.</p></div><div><label>Class Teacher for this session</label><select id="classTeacherDraft">'+classTeacherOptions(draft.classTeacherOsUserId,id)+'</select>'+(conflict?'<div class="notice warn">This teacher is already Class Teacher for '+esc(conflict)+' in this assignment period.</div>':'')+'</div></div>'+
-       '<div class="class-subject-section"><div class="section compact"><div><span class="eyebrow">Curriculum & teaching</span><h3>Subjects in '+esc(x.name)+'</h3><p class="muted">Subjects belong to this class for the academic year. Subject Teacher assignments follow <b>'+esc(sessionName())+'</b>.</p></div><button id="addSubjectsToClass" class="primary">+ Add subjects</button></div><div class="class-subject-head"><span>Subject</span><span>Subject Teacher</span><span>Periods / week</span><span>Credit hours</span><span></span></div><div id="classSubjectRows"></div></div>'+
-       '<div class="compact-savebar"><div><b id="classSetupState">Class setup ready</b><small>Changes are saved together for '+esc(sessionName())+'.</small></div><div class="actions"><button id="openClassSchedule" class="ghost">Preview timetable</button><button id="saveClassSetup" class="primary">Save changes</button></div></div>';
-     renderSubjectRows();
-     E('classTeacherDraft').onchange=function(){draft.classTeacherOsUserId=this.value;markDirty()};
-     E('addSubjectsToClass').onclick=function(){openAddSubjects(x)};
-     E('saveClassSetup').onclick=async function(){
-       syncSubjectRows();var btn=E('saveClassSetup'),conf=draft.classTeacherOsUserId?classTeacherConflict(draft.classTeacherOsUserId,draft.classroomId):null;
-       if(conf)return toast('This teacher is already Class Teacher for '+conf+'.',true);
-       btn.disabled=true;btn.textContent='Saving...';
-       try{
-         var saved=await raw('/api/academic-manager/classes/'+draft.classroomId+'/setup',{method:'PUT',body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,classTeacherOsUserId:draft.classTeacherOsUserId||null,subjects:draft.subjects.map(function(i){return{subjectId:i.subjectId,weeklyPeriods:Number(i.weeklyPeriods),creditHours:Number(i.creditHours),teacherOsUserId:i.teacherOsUserId||null}})})});
-         sessionStorage.setItem('rx_academic_class',draft.classroomId);
-         await page('assignments');
-         successDialog('Class setup saved',x.name+' now has '+saved.subjectCount+' active subject'+(saved.subjectCount===1?'':'s')+'.'+(saved.removedTimetablePeriods?' '+saved.removedTimetablePeriods+' old timetable period(s) were cleared.':''))
-       }catch(err){btn.disabled=false;btn.textContent='Save changes'}
+   function subjectRow(item){
+     var s=subjects.find(function(x){return x.id===item.subjectId})||{};
+     return '<div class="class-subject-config" data-manager-subject="'+item.subjectId+'">'+
+       '<div class="class-subject-name"><span class="badge info">'+esc(s.code||'SUB')+'</span><div><b>'+esc(s.name||'Subject')+'</b><small>'+esc(s.stage||'')+'</small></div></div>'+
+       '<div><label>Subject Teacher</label><select data-manager-teacher>'+teachingUserOptions(item.teacherOsUserId)+'</select></div>'+
+       '<div><label>Periods / week</label><input data-manager-periods type="number" min="1" max="20" value="'+esc(item.weeklyPeriods)+'"></div>'+
+       '<div><label>Credit hours</label><input data-manager-hours type="number" min=".25" max="20" step=".25" value="'+esc(item.creditHours)+'"></div>'+
+       '<button class="mini danger" data-manager-remove="'+item.subjectId+'">Remove</button></div>'
+   }
+   function syncDraft(){
+     if(!draft)return;
+     draft.classTeacherOsUserId=E('managerClassTeacher')?E('managerClassTeacher').value:draft.classTeacherOsUserId;
+     E('managerSubjectRows').querySelectorAll('[data-manager-subject]').forEach(function(row){
+       var item=draftSubject(row.dataset.managerSubject);if(!item)return;
+       item.teacherOsUserId=row.querySelector('[data-manager-teacher]').value;
+       item.weeklyPeriods=Math.max(1,Number(row.querySelector('[data-manager-periods]').value||3));
+       item.creditHours=Math.max(.25,Number(row.querySelector('[data-manager-hours]').value||2))
+     })
+   }
+   function renderClassSetup(){
+     var box=E('managerSetup');
+     if(!selectedClass){box.innerHTML='<div class="panel empty">Choose a class to configure its Class Teacher, subjects and Subject Teachers.</div>';return}
+     var x=buildDraft(selectedClass);if(!x){selectedClass='';return renderClassSetup()}
+     var y=selectedYearObj(),t=selectedTermObj();
+     box.innerHTML='<div class="panel clean-class-panel">'+
+       '<div class="class-detail-head"><div><span class="eyebrow">Academic Manager</span><h2>'+esc(x.name)+'</h2><p class="muted">'+esc(x.grade_name||'')+' • '+esc(y?y.name:'')+' • '+esc(t?t.name:'Whole academic year')+'</p></div><div class="academic-readiness"><span class="badge">'+esc(draft.subjects.length)+' subjects</span><span class="badge '+(draft.classTeacherOsUserId?'':'warn')+'">'+(draft.classTeacherOsUserId?'Class Teacher assigned':'Class Teacher missing')+'</span></div></div>'+
+       '<div class="notice" style="margin-top:12px"><b>How this works:</b> choose the Class Teacher for the selected session, add the subjects taught in this class, then assign a Subject Teacher to each subject. Subject Teachers enter their own scores. The Class Teacher remains responsible for the complete report card and overall Class Teacher remark.</div>'+
+       '<div class="class-teacher-strip"><div><span class="eyebrow">1. Class responsibility</span><h3>Class Teacher</h3><p class="muted">Responsible for attendance oversight, full student report and Class Teacher remark.</p></div><div><label>Class Teacher for '+esc(t?t.name:'the academic year')+'</label><select id="managerClassTeacher">'+teachingUserOptions(draft.classTeacherOsUserId)+'</select></div></div>'+
+       '<div class="class-subject-section"><div class="section compact"><div><span class="eyebrow">2. Curriculum & teaching</span><h3>Subjects and Subject Teachers</h3><p class="muted">Only subjects added here can be assigned, assessed and scheduled for this class.</p></div><button id="managerAddSubjects" class="primary">Add subjects</button></div>'+
+       '<div class="class-subject-head"><span>Subject</span><span>Subject Teacher</span><span>Periods</span><span>Hours</span><span></span></div><div id="managerSubjectRows">'+(draft.subjects.length?draft.subjects.map(subjectRow).join(''):'<div class="empty">No subjects added to this class yet.</div>')+'</div></div>'+
+       '<div class="compact-savebar"><div><b>Save class setup</b><small>Applies to '+esc(t?t.name:'the whole academic year')+'. Timetable and assessment assignment use this setup.</small></div><button id="managerSave" class="primary">Save Class Setup</button></div></div>';
+     E('managerClassTeacher').onchange=syncDraft;
+     E('managerSubjectRows').querySelectorAll('select,input').forEach(function(el){el.onchange=syncDraft});
+     E('managerAddSubjects').onclick=function(){
+       syncDraft();var selected=draft.subjects.map(function(v){return v.subjectId}),available=eligibleSubjects(x).filter(function(s){return selected.indexOf(s.id)<0});
+       modal('<h2>Add subjects to '+esc(x.name)+'</h2><p class="muted">Select subjects for this class. You can assign the Subject Teacher after adding them.</p><input id="managerSubjectSearch" placeholder="Search subject or code"><div id="managerSubjectPicker" class="simple-subject-picker"></div><button id="managerConfirmSubjects" class="primary" style="width:100%">Add selected subjects</button>');
+       function draw(){var q=E('managerSubjectSearch').value.trim().toLowerCase(),rows=q?available.filter(function(s){return (s.code+' '+s.name).toLowerCase().includes(q)}):available;E('managerSubjectPicker').innerHTML=rows.length?rows.map(function(s){return'<label class="simple-subject-choice"><input type="checkbox" data-pick-manager-subject="'+s.id+'"><span><b>'+esc(s.name)+'</b><small>'+esc(s.code)+' • '+esc(s.stage)+'</small></span></label>'}).join(''):'<div class="empty">No more subjects are available for this class.</div>'}
+       draw();E('managerSubjectSearch').oninput=draw;
+       E('managerConfirmSubjects').onclick=function(){var ids=[];E('managerSubjectPicker').querySelectorAll('[data-pick-manager-subject]:checked').forEach(function(i){ids.push(i.dataset.pickManagerSubject)});if(!ids.length)return toast('Select at least one subject',true);ids.forEach(function(id){if(!draftSubject(id))draft.subjects.push({subjectId:id,weeklyPeriods:3,creditHours:2,teacherOsUserId:''})});close();renderClassSetup()}
      };
-     E('openClassSchedule').onclick=async function(){
-       if(dirty)return toast('Save the class setup before previewing the timetable.',true);
-       try{
-         var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,classroomId:draft.classroomId,regenerateAuto:false,dryRun:true})});
-         modal('<h2>Timetable preview • '+esc(x.name)+'</h2><div class="grid"><div class="panel stat"><span class="muted">Periods proposed</span><b>'+esc(plan.created)+'</b></div><div class="panel stat"><span class="muted">Needs attention</span><b>'+esc(plan.unscheduled.length)+'</b></div></div>'+(plan.unscheduled.length?'<div class="notice warn">'+plan.unscheduled.map(function(v){return'<b>'+esc(v.subjectName||'Subject')+':</b> '+esc(v.reason)}).join('<br>')+'</div>':'<div class="notice">This class can be scheduled with the current setup.</div>')+'<div class="actions"><button id="goTimetable" class="ghost">Open timetable</button><button id="applyClassSchedule" class="primary">Apply schedule</button></div>');
-         E('goTimetable').onclick=function(){sessionStorage.setItem('rx_timetable_year',selectedYear);sessionStorage.setItem('rx_timetable_term',selectedSession||'');sessionStorage.setItem('rx_timetable_class',draft.classroomId);close();page('timetable')};
-         E('applyClassSchedule').onclick=async function(){var b=E('applyClassSchedule');b.disabled=true;try{var result=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,classroomId:draft.classroomId,regenerateAuto:true,dryRun:false})});close();successDialog('Timetable updated',result.created+' period(s) scheduled.')}catch(err){b.disabled=false}}
-       }catch(err){toast(err.message,true)}
+     E('managerSubjectRows').onclick=function(e){var id=e.target.dataset.managerRemove;if(!id)return;syncDraft();draft.subjects=draft.subjects.filter(function(s){return s.subjectId!==id});renderClassSetup()};
+     E('managerSave').onclick=async function(){
+       syncDraft();
+       var payload={academicYearId:selectedYear,termId:selectedTerm||null,classTeacherOsUserId:draft.classTeacherOsUserId||null,subjects:draft.subjects.map(function(s){return{subjectId:s.subjectId,weeklyPeriods:s.weeklyPeriods,creditHours:s.creditHours,teacherOsUserId:s.teacherOsUserId||null}})};
+       try{await raw('/api/academic-manager/classes/'+selectedClass+'/setup',{method:'PUT',body:JSON.stringify(payload)});assignments=await raw('/api/teacher-assignments');classSubjects=await raw('/api/class-subjects?academicYearId='+encodeURIComponent(selectedYear));toast('Class setup saved');renderClassList();renderClassSetup()}catch(err){toast(err.message,true)}
      }
    }
-   function renderClassWorkspace(){
-     var list=yearClasses();if(!selectedClass||!list.some(function(x){return x.id===selectedClass}))selectedClass=list[0]?list[0].id:'';
-     E('managerPane').innerHTML='<div class="panel class-selector-panel"><div class="class-selector-toolbar"><div><h3>Choose Class</h3><p class="muted">Select a class, then assign its Class Teacher, subjects and Subject Teachers for '+esc(sessionName())+'.</p></div><button id="addClass" class="primary">+ New class</button></div><input id="academicClassSearch" placeholder="Search class, grade or Class Teacher"><div id="classCards" class="class-selector-grid"></div></div><div id="classDetail" class="panel class-setup-panel clean-class-panel"></div>';
-     renderClassList();if(selectedClass)renderClassDetail(selectedClass);else E('classDetail').innerHTML='<div class="empty">Create or select a class to begin.</div>';
-     E('academicClassSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(renderClassList,120)};
-     E('addClass').onclick=function(){form('Create class',[{key:'academicYearId',label:'Academic year',type:'select',options:ys.map(function(y){return{value:y.id,label:y.name}})},{key:'gradeLevelId',label:'Grade level',type:'select',options:gs.filter(function(g){return g.is_active}).map(function(g){return{value:g.id,label:g.name}})},{key:'name',label:'Class name'},{key:'stream',label:'Stream / Section'},{key:'capacity',label:'Capacity',type:'number'}],{academicYearId:selectedYear},function(v){return raw('/api/classes',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,gradeLevelId:v.gradeLevelId,name:v.name,stream:v.stream||undefined,capacity:v.capacity?Number(v.capacity):undefined})})})}
-   }
-   function renderCoverage(){
-     var classRows=yearClasses(),availableSubjects=subs.filter(function(s){return s.is_active});
-     E('managerPane').innerHTML='<div class="panel clean-coverage"><div class="section compact"><div><h2>Subject Teacher Coverage</h2><p class="muted">Use this only when the same Subject Teacher teaches one subject across several classes. Class Teachers are assigned from Class Setup.</p></div></div><div class="three"><div><label>Teacher</label><select id="coverageTeacher"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name)+'</option>'}).join('')+'</select></div><div><label>Subject</label><select id="coverageSubject">'+availableSubjects.map(function(s){return'<option value="'+s.id+'">'+esc(s.name)+' • '+esc(s.code)+'</option>'}).join('')+'</select></div><div><label>Search classes</label><input id="coverageSearch" placeholder="Class or grade"></div></div><div id="coverageClasses" class="coverage-class-grid"></div><div class="compact-savebar"><div><b>Subject Teacher assignment</b><small>Only classes already containing the selected subject can be assigned.</small></div><button id="saveCoverage" class="primary">Assign teacher</button></div></div>';
-     function draw(){
-       var subjectId=E('coverageSubject').value,q=E('coverageSearch').value.trim().toLowerCase(),eligible=classRows.filter(function(cl){return classSubs.some(function(cs){return cs.is_active&&cs.classroom_id===cl.id&&cs.subject_id===subjectId})});
-       if(q)eligible=eligible.filter(function(x){return(x.name+' '+x.grade_name).toLowerCase().includes(q)});
-       E('coverageClasses').innerHTML=eligible.length?eligible.map(function(x){var a=effectiveAssignment(x.id,subjectId);return'<label class="coverage-class-card"><input type="checkbox" data-coverage-class="'+x.id+'"><span><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name)+(a?' • Current: '+esc(userName(a.teacher_os_user_id)):' • No teacher')+'</small></span></label>'}).join(''):'<div class="empty">No classes currently contain this subject.</div>'
-     }
-     draw();E('coverageSubject').onchange=draw;E('coverageSearch').oninput=draw;
-     E('saveCoverage').onclick=async function(){var teacher=E('coverageTeacher').value,subject=E('coverageSubject').value,ids=[];E('coverageClasses').querySelectorAll('[data-coverage-class]:checked').forEach(function(i){ids.push(i.dataset.coverageClass)});if(!teacher)return toast('Choose a teacher',true);if(!ids.length)return toast('Select at least one class',true);var btn=E('saveCoverage');btn.disabled=true;try{var r=await raw('/api/teacher-assignments/bulk',{method:'POST',body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,teacherOsUserId:teacher,mode:'subject_across_classes',classroomIds:ids,subjectId:subject})});await page('assignments');successDialog('Subject Teacher assigned',r.saved+' class assignment'+(r.saved===1?'':'s')+' saved.')}catch(err){btn.disabled=false}}
-   }
-   function renderSubjectCatalogue(){
-     E('managerPane').innerHTML='<div class="panel"><div class="section compact"><div><h2>Subject Catalogue</h2><p class="muted">Create subjects once, then add them to individual classes from Class Setup.</p></div><button id="addSubjectCatalogue" class="primary">New subject</button></div><input id="subjectCatalogueSearch" placeholder="Search subject or code"><div id="subjectCatalogueTable"></div></div>';
-     function draw(){var q=E('subjectCatalogueSearch').value.trim().toLowerCase(),rows=q?subs.filter(function(s){return(s.code+' '+s.name+' '+s.stage).toLowerCase().includes(q)}):subs;E('subjectCatalogueTable').innerHTML=table(rows,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}},{key:'id',label:'Active classes',render:function(r){return esc(classSubs.filter(function(x){return x.subject_id===r.id&&x.is_active}).length)}}],function(r){return'<button class="mini" data-edit-subject="'+r.id+'">Edit</button><button class="mini danger" data-delete-subject="'+r.id+'">Delete</button>'})}
-     draw();E('subjectCatalogueSearch').oninput=draw;E('addSubjectCatalogue').onclick=function(){form('Add subject',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify(v)})})}
-   }
-   function renderManager(){
-     yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});
-     E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">Set up each class in one place: session, Class Teacher, subjects, Subject Teachers and weekly teaching load.</p></div></div>'+(directoryError?'<div class="notice warn">Teacher names are temporarily unavailable because the Core staff directory could not be reached.</div>':'')+
-       '<div class="panel academic-controlbar compact-controlbar"><div><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div><div><label>Teaching session</label><select id="academicSessionFilter"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedSession?' selected':'')+'>'+esc(t.name)+(t.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div></div>'+
-       '<div class="academic-tabs clean-tabs"><button class="'+(managerTab==='class'?'active':'')+'" data-manager-tab="class">Class Setup</button><button class="'+(managerTab==='coverage'?'active':'')+'" data-manager-tab="coverage">Subject Teacher Coverage</button><button class="'+(managerTab==='subjects'?'active':'')+'" data-manager-tab="subjects">Subject Catalogue</button></div><div id="managerPane"></div>';
-     E('academicYearFilter').onchange=function(){if(dirty&&!confirm('Discard unsaved changes?')){this.value=selectedYear;return}selectedYear=this.value;sessionStorage.setItem('rx_academic_year',selectedYear);var ts=terms.filter(function(t){return t.academic_year_id===selectedYear}),at=ts.find(function(t){return t.status==='active'});selectedSession=at?at.id:'';sessionStorage.setItem('rx_academic_session',selectedSession);selectedClass='';renderManager()};
-     E('academicSessionFilter').onchange=function(){if(dirty&&!confirm('Discard unsaved changes?')){this.value=selectedSession;return}selectedSession=this.value;sessionStorage.setItem('rx_academic_session',selectedSession);renderManager()};
-     E('content').querySelectorAll('[data-manager-tab]').forEach(function(b){b.onclick=function(){if(dirty&&!confirm('Discard unsaved changes?'))return;managerTab=b.dataset.managerTab;sessionStorage.setItem('rx_academic_tab',managerTab);dirty=false;renderManager()}});
-     if(managerTab==='coverage')renderCoverage();else if(managerTab==='subjects')renderSubjectCatalogue();else renderClassWorkspace()
-   }
-   renderManager();
-   E('content').onclick=function(e){
-     var target=e.target.closest('[data-pick-class],[data-edit-class],[data-remove-subject],[data-edit-subject],[data-delete-subject]');if(!target)return;
-     var id=target.dataset.pickClass;if(id){if(dirty&&!confirm('Discard unsaved changes and open another class?'))return;selectedClass=id;sessionStorage.setItem('rx_academic_class',id);renderClassList();return renderClassDetail(id)}
-     id=target.dataset.editClass;if(id){var x=cls.find(function(r){return r.id===id});return form('Edit class',[{key:'name',label:'Class name'},{key:'stream',label:'Stream / Section'},{key:'capacity',label:'Capacity',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{name:x.name,stream:x.stream||'',capacity:x.capacity||'',isActive:String(x.is_active)},function(v){return raw('/api/classes/'+id,{method:'PATCH',body:JSON.stringify({name:v.name,stream:v.stream||null,capacity:v.capacity?Number(v.capacity):null,isActive:v.isActive==='true'})})})}
-     id=target.dataset.removeSubject;if(id){syncSubjectRows();var sub=subs.find(function(s){return s.id===id});if(!confirm('Remove '+(sub?sub.name:'this subject')+' from this class? Existing historical assessment records will be kept, but its current timetable periods and teacher assignment will be cleared when you save.'))return;draft.subjects=draft.subjects.filter(function(i){return i.subjectId!==id});markDirty();renderSubjectRows();return}
-     id=target.dataset.editSubject;if(id){var sub=subs.find(function(r){return r.id===id});return form('Edit subject',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{code:sub.code,name:sub.name,stage:sub.stage,isActive:String(sub.is_active)},function(v){return raw('/api/subjects/'+id,{method:'PATCH',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,isActive:v.isActive==='true'})})})}
-     id=target.dataset.deleteSubject;if(id)return confirmDo('Delete this subject from the catalogue? Use Class Setup if you only want to remove it from one class.',function(){return raw('/api/subjects/'+id,{method:'DELETE'})})
-   }
+   E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">One screen for each class: select the academic year and session, choose a class, assign its Class Teacher, add subjects and assign Subject Teachers.</p></div></div>'+
+   (directoryError?'<div class="notice warn">The Core staff directory is temporarily unavailable. Class and subject setup can be viewed, but teacher assignment needs the directory.</div>':'')+
+   '<div class="panel"><div class="academic-controlbar"><div><label>Academic year</label><select id="managerYear">'+years.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+'</option>'}).join('')+'</select></div><div><label>Session / Term</label><select id="managerTerm"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedTerm?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div></div></div>'+
+   '<div class="panel class-selector-panel"><div class="class-selector-toolbar"><div><h3>Choose Class</h3><p class="muted">Search and select the class you want to configure.</p></div><input id="managerClassSearch" placeholder="Search class, grade or Class Teacher"></div><div id="managerClassList" class="class-selector-grid"></div></div>'+
+   '<div id="managerSetup"></div>';
+   renderClassList();if(selectedClass&&!yearClasses().some(function(x){return x.id===selectedClass}))selectedClass='';renderClassSetup();
+   E('managerClassSearch').oninput=renderClassList;
+   E('managerYear').onchange=function(){selectedYear=this.value;sessionStorage.setItem('rx_manager_year',selectedYear);yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});selectedTerm='';selectedClass='';sessionStorage.removeItem('rx_manager_term');sessionStorage.removeItem('rx_manager_class');page('assignments')};
+   E('managerTerm').onchange=function(){selectedTerm=this.value;sessionStorage.setItem('rx_manager_term',selectedTerm);renderClassList();renderClassSetup()};
+   E('managerClassList').onclick=function(e){var b=e.target.closest('[data-manager-class]');if(!b)return;selectedClass=b.dataset.managerClass;sessionStorage.setItem('rx_manager_class',selectedClass);renderClassList();renderClassSetup()}
  }
- else if(p==='admissions'){
-   var rr=await Promise.all([raw('/api/admissions'),raw('/api/classes'),raw('/api/grade-levels')]);var apps=rr[0],classes=rr[1],grades=rr[2];
-   E('content').innerHTML='<div class="section"><div><h1>Admissions</h1><p class="muted">External applications and walk-in/internal applications are managed in one workflow.</p></div><div class="actions"><button id="newInternalApp" class="ghost">New internal application</button><button id="publicAdmissions" class="primary">Open public admissions</button></div></div>'+
-   '<div class="grid"><div class="panel stat"><span class="muted">New applications</span><b>'+apps.filter(function(x){return x.status==='submitted'}).length+'</b></div><div class="panel stat"><span class="muted">Under review</span><b>'+apps.filter(function(x){return x.status==='under_review'}).length+'</b></div><div class="panel stat"><span class="muted">Approved</span><b>'+apps.filter(function(x){return x.status==='approved'}).length+'</b></div><div class="panel stat"><span class="muted">Enrolled</span><b>'+apps.filter(function(x){return x.status==='enrolled'}).length+'</b></div></div>'+
-   '<div class="panel" style="margin-top:12px"><div class="toolbar"><input id="admissionSearch" placeholder="Search application, student or guardian phone"><select id="admissionStatus"><option value="">All statuses</option><option>submitted</option><option>under_review</option><option>approved</option><option>waitlisted</option><option>declined</option><option>enrolled</option></select><select id="admissionSource"><option value="">All sources</option><option value="external">External</option><option value="internal">Internal</option></select></div><div id="admissionTable">'+table(apps,[{key:'application_no',label:'Application No.'},{key:'first_name',label:'Applicant',render:function(r){return'<b>'+esc(r.first_name+' '+r.last_name)+'</b><br><span class="muted">'+esc(r.source)+'</span>'}},{key:'requested_grade_name',label:'Requested Grade'},{key:'guardian_phone',label:'Guardian Phone'},{key:'submitted_at',label:'Received',render:function(r){return esc(new Date(r.submitted_at).toLocaleString())}},{key:'status',render:function(r){return badge(r.status)}}],function(r){return '<button class="mini primary-lite" data-view-app="'+r.id+'">View record</button>'+(r.status==='approved'?'<button class="mini" data-enrol-app="'+r.id+'">Enrol</button>':'')})+'</div></div>';
-   E('publicAdmissions').onclick=function(){window.open('/admissions','_blank')};
-   E('newInternalApp').onclick=function(){form('Create internal admission application',[
-     {key:'firstName',label:'Student first name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},
-     {key:'sex',label:'Sex',type:'select',options:[{value:'',label:'Not specified'},'male','female']},{key:'dateOfBirth',label:'Date of birth',type:'date'},
-     {key:'requestedGradeCode',label:'Requested grade',type:'select',options:grades.map(function(g){return{value:g.code,label:g.name}})},
-     {key:'previousSchool',label:'Previous school'},{key:'guardianFirstName',label:'Guardian first name'},{key:'guardianLastName',label:'Guardian last name'},
-     {key:'guardianPhone',label:'Guardian phone'},{key:'guardianAltPhone',label:'Alternate phone'},{key:'guardianEmail',label:'Guardian email',type:'email'},
-     {key:'guardianRelationship',label:'Relationship'},{key:'address',label:'Address',type:'textarea'},{key:'emergencyContactName',label:'Emergency contact name'},
-     {key:'emergencyContactPhone',label:'Emergency contact phone'},{key:'notes',label:'Notes',type:'textarea'}
-   ],{},function(v){var b={firstName:v.firstName,lastName:v.lastName,requestedGradeCode:v.requestedGradeCode,guardianFirstName:v.guardianFirstName,guardianLastName:v.guardianLastName,guardianPhone:v.guardianPhone,guardianRelationship:v.guardianRelationship};['middleName','sex','dateOfBirth','previousSchool','guardianAltPhone','guardianEmail','address','emergencyContactName','emergencyContactPhone','notes'].forEach(function(k){if(v[k])b[k]=v[k]});return raw('/api/admissions/internal',{method:'POST',body:JSON.stringify(b)})})};
-   async function filterAdmissions(){var q=E('admissionSearch').value.trim(),status=E('admissionStatus').value,source=E('admissionSource').value,path='/api/admissions?';if(q)path+='q='+encodeURIComponent(q)+'&';if(status)path+='status='+encodeURIComponent(status)+'&';if(source)path+='source='+encodeURIComponent(source);apps=await raw(path);E('admissionTable').innerHTML=table(apps,[{key:'application_no',label:'Application No.'},{key:'first_name',label:'Applicant',render:function(r){return'<b>'+esc(r.first_name+' '+r.last_name)+'</b><br><span class="muted">'+esc(r.source)+'</span>'}},{key:'requested_grade_name',label:'Requested Grade'},{key:'guardian_phone',label:'Guardian Phone'},{key:'submitted_at',label:'Received',render:function(r){return esc(new Date(r.submitted_at).toLocaleString())}},{key:'status',render:function(r){return badge(r.status)}}],function(r){return '<button class="mini primary-lite" data-view-app="'+r.id+'">View record</button>'+(r.status==='approved'?'<button class="mini" data-enrol-app="'+r.id+'">Enrol</button>':'')})}
-   E('admissionSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(filterAdmissions,220)};E('admissionStatus').onchange=filterAdmissions;E('admissionSource').onchange=filterAdmissions;
-   async function openAdmission(id){
-     var d=await raw('/api/admissions/'+id),a=d.application;
-     modal('<div class="section compact"><div><span class="badge">'+esc(a.status)+'</span><h2 style="margin-top:6px">'+esc(a.first_name+' '+a.last_name)+'</h2><p class="muted">'+esc(a.application_no)+' • '+esc(a.source)+' application</p></div></div>'+
-       '<div class="info-grid"><div><span>Requested grade</span><b>'+esc(a.requested_grade_name||a.requested_grade_code)+'</b></div><div><span>Date of birth</span><b>'+esc(a.date_of_birth?String(a.date_of_birth).slice(0,10):'—')+'</b></div><div><span>Sex</span><b>'+esc(a.sex||'—')+'</b></div><div><span>Previous school</span><b>'+esc(a.previous_school||'—')+'</b></div><div><span>Guardian</span><b>'+esc(a.guardian_first_name+' '+a.guardian_last_name)+'</b></div><div><span>Relationship</span><b>'+esc(a.guardian_relationship)+'</b></div><div><span>Phone</span><b>'+esc(a.guardian_phone)+'</b></div><div><span>Alternate phone</span><b>'+esc(a.guardian_alt_phone||'—')+'</b></div><div><span>Email</span><b>'+esc(a.guardian_email||'—')+'</b></div><div><span>Address</span><b>'+esc(a.address||'—')+'</b></div><div><span>Emergency contact</span><b>'+esc(a.emergency_contact_name||'—')+'</b></div><div><span>Emergency phone</span><b>'+esc(a.emergency_contact_phone||'—')+'</b></div></div>'+
-       (a.notes?'<div class="notice" style="margin-top:12px">'+esc(a.notes)+'</div>':'')+
-       '<div class="section"><h3>Contact guardian</h3></div><div class="actions"><button id="callGuardian" class="ghost">Call</button><button data-contact="sms" class="ghost">SMS</button><button data-contact="whatsapp" class="ghost">WhatsApp</button><button data-contact="email" class="ghost">Email</button></div>'+
-       '<div class="section"><h3>Review & Status</h3></div><label>Status</label><select id="appStatus"><option>submitted</option><option>under_review</option><option>approved</option><option>waitlisted</option><option>declined</option></select><label>Review note</label><textarea id="appNote">'+esc(a.review_note||'')+'</textarea><button id="saveAppStatus" class="primary">Save status</button>'+
-       (a.status==='approved'?'<button id="enrolApproved" class="primary" style="margin-left:8px">Enrol approved applicant</button>':'')+
-       '<div class="section"><h3>Status History</h3></div>'+table(d.history,[{key:'new_status',label:'Status',render:function(x){return badge(x.new_status)}},{key:'note'},{key:'created_at',label:'Date',render:function(x){return esc(new Date(x.created_at).toLocaleString())}}])+
-       '<div class="section"><h3>Contact History</h3></div>'+table(d.contacts,[{key:'method'},{key:'recipient'},{key:'status',render:function(x){return badge(x.status)}},{key:'note'},{key:'created_at',label:'Date',render:function(x){return esc(new Date(x.created_at).toLocaleString())}}]));
-     E('appStatus').value=a.status==='enrolled'?'approved':a.status;
-     E('saveAppStatus').onclick=async function(){await raw('/api/admissions/'+id,{method:'PATCH',body:JSON.stringify({status:E('appStatus').value,reviewNote:E('appNote').value||null})});close();toast('Application updated');page('admissions')};
-     var enrol=E('enrolApproved');if(enrol)enrol.onclick=function(){close();openEnrol(id)};
-     E('callGuardian').onclick=async function(){var x=await raw('/api/admissions/'+id+'/contact',{method:'POST',body:JSON.stringify({method:'call',note:'Call initiated from admissions record'})});if(x.callUri)window.location.href=x.callUri};
-     E('modalBody').querySelectorAll('[data-contact]').forEach(function(btn){btn.onclick=function(){var method=btn.dataset.contact;form('Send '+method,[{key:'subject',label:'Subject'},{key:'message',label:'Message',type:'textarea'}],{subject:'Admission application '+a.application_no,message:'Hello '+a.guardian_first_name+', regarding the admission application for '+a.first_name+' '+a.last_name+'.'},function(v){return raw('/api/admissions/'+id+'/contact',{method:'POST',body:JSON.stringify({method:method,subject:v.subject||undefined,message:v.message})})})}});
-   }
-   function openEnrol(id){form('Enrol approved applicant',[{key:'admissionNo',label:'Admission number (leave blank to generate)'},{key:'classroomId',label:'Class',type:'select',options:classes.map(function(x){return{value:x.id,label:x.name}})}],{},function(v){var body={classroomId:v.classroomId};if(v.admissionNo)body.admissionNo=v.admissionNo;return raw('/api/admissions/'+id+'/enrol',{method:'POST',body:JSON.stringify(body)})})}
-   E('content').onclick=function(e){var id=e.target.dataset.viewApp;if(id)return openAdmission(id);id=e.target.dataset.enrolApp;if(id)return openEnrol(id)}
- }
- else if(p==='students'){
-   var rr=await Promise.all([raw('/api/students'),raw('/api/academic-years'),raw('/api/classes')]);var students=rr[0],years=rr[1],classes=rr[2],current360=null;
-   function studentActions(r){return '<button class="mini primary-lite" data-view-student="'+r.id+'">360 View</button><button class="mini" data-student-pin="'+r.id+'">Student PIN</button><button class="mini" data-edit-student="'+r.id+'">Edit</button><button class="mini danger" data-delete-student="'+r.id+'">Delete</button>'}
-   function renderStudentTable(){return table(students,[{key:'admission_no',label:'Admission No.'},{key:'first_name',label:'Student',render:function(r){return '<b>'+esc(r.first_name+' '+r.last_name)+'</b>'}},{key:'grade_name',label:'Grade'},{key:'classroom_name',label:'Class'},{key:'status',render:function(r){return badge(r.status)}}],studentActions)}
-   function renderList(){E('content').innerHTML='<div class="section"><div><h1>Students</h1><p class="muted">Open the 360 View for a complete academic, attendance, finance and family profile.</p></div><button id="addStudent" class="primary">Admit student</button></div><div class="toolbar"><input id="studentSearch" placeholder="Search name or admission number"><button id="searchStudent" class="ghost">Search</button></div><div class="panel" id="studentTable">'+renderStudentTable()+'</div>';
-     E('addStudent').onclick=function(){form('Admit student',[{key:'admissionNo',label:'Admission number'},{key:'firstName',label:'First name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},{key:'sex',label:'Sex',type:'select',options:[{value:'',label:'Not set'},'male','female']},{key:'dateOfBirth',label:'Date of birth',type:'date'}],{},function(v){var b={admissionNo:v.admissionNo,firstName:v.firstName,lastName:v.lastName};if(v.middleName)b.middleName=v.middleName;if(v.sex)b.sex=v.sex;if(v.dateOfBirth)b.dateOfBirth=v.dateOfBirth;return raw('/api/students',{method:'POST',body:JSON.stringify(b)})})};
-     async function search(){var q=E('studentSearch').value.trim();students=await raw('/api/students'+(q?'?q='+encodeURIComponent(q):''));E('studentTable').innerHTML=renderStudentTable()}E('searchStudent').onclick=search;E('studentSearch').onkeydown=function(e){if(e.key==='Enter')search()};
-   }
-   async function show360(id){
-     E('content').innerHTML='<p class="muted">Loading complete student profile...</p>';
-     var d=await raw('/api/students/'+id+'/360');current360=d;var s=d.student,perf=d.performance||{},att=d.attendance||{},fees=d.fees||{};
-     var initials=(String(s.first_name||'').charAt(0)+String(s.last_name||'').charAt(0)).toUpperCase();
-     var pos=perf.classPosition?(perf.classPosition+(perf.classPosition===1?'st':perf.classPosition===2?'nd':perf.classPosition===3?'rd':'th')+' of '+perf.classSize):'—';
-     E('content').innerHTML='<div class="student360-head"><button class="ghost" data-back-students="1">← Students</button><div class="student360-identity"><div class="student-avatar">'+esc(initials)+'</div><div><span class="badge">'+esc(s.status)+'</span><h1>'+esc(s.first_name+' '+(s.middle_name||'')+' '+s.last_name)+'</h1><p class="muted">'+esc(s.admission_no)+' • '+esc(s.grade_name||'No grade')+' • '+esc(s.classroom_name||'No class')+' • '+esc(s.academic_year||'')+'</p></div></div><div class="actions"><button class="ghost" data-edit-student="'+s.id+'">Edit profile</button><button class="ghost" data-student-pin="'+s.id+'">Portal PIN</button><button class="primary" data-open-student-report="'+s.id+'">Report Card</button></div></div>'+
-     '<div class="grid student360-stats"><div class="panel stat"><span class="muted">Attendance rate</span><b>'+esc(att.rate||0)+'%</b><small>'+esc(att.present||0)+' present • '+esc(att.late||0)+' late</small></div><div class="panel stat"><span class="muted">Overall average</span><b>'+(perf.overallAverage==null?'—':esc(perf.overallAverage)+'%')+'</b><small>'+esc(d.term?d.term.name:'No active term')+'</small></div><div class="panel stat"><span class="muted">Class position</span><b>'+esc(pos)+'</b><small>Based on recorded assessments</small></div><div class="panel stat"><span class="muted">Outstanding fees</span><b>GHS '+Number(fees.outstanding||0).toFixed(2)+'</b><small>Paid GHS '+Number(fees.paid||0).toFixed(2)+'</small></div></div>'+
-     '<div class="two student360-columns"><div>'+
-       '<div class="panel"><div class="section compact"><h3>Student Information</h3><button class="mini" data-enrol-student="'+s.id+'">Move / Enrol</button></div><div class="info-grid"><div><span>Admission No.</span><b>'+esc(s.admission_no)+'</b></div><div><span>Date of birth</span><b>'+esc(s.date_of_birth?String(s.date_of_birth).slice(0,10):'—')+'</b></div><div><span>Sex</span><b>'+esc(s.sex||'—')+'</b></div><div><span>Admission date</span><b>'+esc(s.admission_date?String(s.admission_date).slice(0,10):'—')+'</b></div><div><span>Current class</span><b>'+esc(s.classroom_name||'—')+'</b></div><div><span>Grade</span><b>'+esc(s.grade_name||'—')+'</b></div></div>'+(s.notes?'<div class="notice" style="margin-top:12px">'+esc(s.notes)+'</div>':'')+'</div>'+
-       '<div class="panel"><div class="section compact"><h3>Guardians & Family</h3><button class="mini" data-add-guardian="'+s.id+'">Add guardian</button></div>'+table(d.guardians,[{key:'first_name',label:'Guardian',render:function(g){return '<b>'+esc(g.first_name+' '+g.last_name)+'</b><br><span class="muted">'+esc(g.relationship)+(g.is_primary?' • Primary':'')+'</span>'}},{key:'phone'},{key:'email'},{key:'portal_active',label:'Portal',render:function(g){return badge(g.portal_active?'active':'not set')}}],function(g){return '<button class="mini" data-edit-guardian="'+g.id+'" data-student-id="'+s.id+'">Edit</button><button class="mini" data-parent-pin="'+g.id+'">PIN</button><button class="mini danger" data-delete-guardian="'+g.id+'" data-student-id="'+s.id+'">Delete</button>'})+'</div>'+
-       '<div class="panel"><h3>Academic Performance</h3><p class="muted">'+esc(d.term?d.term.name:'Current term')+'</p>'+table(d.subjects,[{key:'subject_name',label:'Subject'},{key:'percentage',label:'Average %'},{key:'grade'},{key:'remark'},{key:'assessment_count',label:'Assessments'}])+'</div>'+
-       '<div class="panel"><h3>Homework</h3>'+table(d.homework,[{key:'subject_name',label:'Subject'},{key:'title'},{key:'due_at',label:'Due',render:function(h){return esc(h.due_at?new Date(h.due_at).toLocaleDateString():'—')}},{key:'submission_status',label:'Status',render:function(h){return badge(h.submission_status)}},{key:'score'}])+'</div>'+
-     '</div><div>'+
-       '<div class="panel"><h3>Attendance</h3><div class="mini-stats"><span><b>'+esc(att.present||0)+'</b> Present</span><span><b>'+esc(att.absent||0)+'</b> Absent</span><span><b>'+esc(att.late||0)+'</b> Late</span><span><b>'+esc(att.excused||0)+'</b> Excused</span></div>'+table(d.recentAttendance,[{key:'attendance_date',label:'Date',render:function(r){return esc(String(r.attendance_date).slice(0,10))}},{key:'status',render:function(r){return badge(r.status)}},{key:'note'}])+'</div>'+
-       '<div class="panel"><h3>Fees & Payments</h3><div class="mini-stats"><span><b>GHS '+Number(fees.billed||0).toFixed(2)+'</b> Billed</span><span><b>GHS '+Number(fees.paid||0).toFixed(2)+'</b> Paid</span><span><b>GHS '+Number(fees.outstanding||0).toFixed(2)+'</b> Balance</span></div>'+table(d.payments,[{key:'paid_at',label:'Date',render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:'fee_name',label:'Fee'},{key:'amount',render:function(r){return 'GHS '+Number(r.amount).toFixed(2)}},{key:'payment_method',label:'Method'}])+'</div>'+
-       '<div class="panel"><h3>Academic History</h3>'+table(d.enrolments,[{key:'academic_year',label:'Year'},{key:'grade_name',label:'Grade'},{key:'classroom_name',label:'Class'},{key:'status',render:function(r){return badge(r.status)}}])+'</div>'+
-       '<div class="panel"><h3>Promotion History</h3>'+table(d.promotions,[{key:'from_year',label:'From'},{key:'from_class',label:'Class'},{key:'to_year',label:'To'},{key:'to_class',label:'Class'},{key:'outcome',render:function(r){return badge(r.outcome)}}])+'</div>'+
-       '<div class="panel"><h3>Recent Student Activity</h3>'+(d.activity.length?'<div class="timeline">'+d.activity.map(function(a){return'<div><b>'+esc(a.action.replace(/\./g,' '))+'</b><span>'+esc(new Date(a.created_at).toLocaleString())+'</span></div>'}).join('')+'</div>':'<p class="muted">No recent activity logged.</p>')+'</div>'+
-     '</div></div>';
-   }
-   renderList();
-   E('content').onclick=async function(e){
-     var id=e.target.dataset.backStudents;if(id){current360=null;return renderList()}
-     id=e.target.dataset.viewStudent;if(id){try{return await show360(id)}catch(err){return toast(err.message,true)}}
-     id=e.target.dataset.openStudentReport;if(id){sessionStorage.setItem('rx_report_student',id);return page('reports')}
-     id=e.target.dataset.studentPin;if(id){return raw('/api/students/'+id+'/portal-reset',{method:'POST',body:'{}'}).then(function(x){modal('<h2>Student Portal PIN</h2><p class="muted">Give this PIN to the student securely. Resetting it signs out older student sessions.</p><div class="panel"><b style="font-size:28px">'+esc(x.pin)+'</b></div><p><a href="/student" target="_blank" style="color:#45ddb2">Open Student Portal</a></p>')}).catch(function(err){toast(err.message,true)})}
-     id=e.target.dataset.editStudent;if(id){var st=students.find(function(x){return x.id===id})||(current360&&current360.student);return form('Edit student',[{key:'firstName',label:'First name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},{key:'status',label:'Status',type:'select',options:['active','graduated','transferred','withdrawn']},{key:'notes',label:'Notes',type:'textarea'}],{firstName:st.first_name,middleName:st.middle_name||'',lastName:st.last_name,status:st.status,notes:st.notes||''},function(v){return raw('/api/students/'+id,{method:'PATCH',body:JSON.stringify({firstName:v.firstName,middleName:v.middleName||null,lastName:v.lastName,status:v.status,notes:v.notes||null})})})}
-     id=e.target.dataset.deleteStudent;if(id){return confirmDo('Permanently delete this student and all linked school records? This cannot be undone.',function(){return raw('/api/students/'+id,{method:'DELETE'})})}
-     id=e.target.dataset.enrolStudent;if(id){var y=years.find(function(x){return x.status==='active'})||years[0];var opts=classes.filter(function(c){return !y||c.academic_year_id===y.id});return form('Move / enrol student',[{key:'classroomId',label:'Class',type:'select',options:opts.map(function(c){return{value:c.id,label:c.name+' • '+c.grade_name}})}],{},function(v){return raw('/api/enrolments',{method:'POST',body:JSON.stringify({studentId:id,academicYearId:y.id,classroomId:v.classroomId})})})}
-     id=e.target.dataset.addGuardian;if(id){return form('Add guardian',[{key:'firstName',label:'First name'},{key:'lastName',label:'Last name'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'relationship',label:'Relationship'},{key:'isPrimary',label:'Primary guardian',type:'select',options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]}],{isPrimary:'false'},function(v){return raw('/api/students/'+id+'/guardians',{method:'POST',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,phone:v.phone,email:v.email||undefined,relationship:v.relationship,isPrimary:v.isPrimary==='true'})})})}
-     var gid=e.target.dataset.parentPin;if(gid){return raw('/api/guardians/'+gid+'/portal-reset',{method:'POST',body:'{}'}).then(function(x){modal('<h2>Parent Portal PIN</h2><p class="muted">Give this PIN to the guardian securely.</p><div class="panel"><b style="font-size:28px">'+esc(x.pin)+'</b></div><p><a href="/parent" target="_blank" style="color:#45ddb2">Open Parent Portal</a></p>')}).catch(function(err){toast(err.message,true)})}
-     gid=e.target.dataset.editGuardian;if(gid){var sid=e.target.dataset.studentId;var g=current360&&current360.guardians.find(function(x){return x.id===gid});if(!g)return;return form('Edit guardian',[{key:'firstName',label:'First name'},{key:'lastName',label:'Last name'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'relationship',label:'Relationship'},{key:'isPrimary',label:'Primary guardian',type:'select',options:[{value:'true',label:'Yes'},{value:'false',label:'No'}]}],{firstName:g.first_name,lastName:g.last_name,phone:g.phone,email:g.email||'',relationship:g.relationship,isPrimary:String(g.is_primary)},function(v){return raw('/api/students/'+sid+'/guardians/'+gid,{method:'PATCH',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,phone:v.phone,email:v.email||null,relationship:v.relationship,isPrimary:v.isPrimary==='true'})})})}
-     gid=e.target.dataset.deleteGuardian;if(gid){var sid=e.target.dataset.studentId;return confirmDo('Remove this guardian from the student?',function(){return raw('/api/students/'+sid+'/guardians/'+gid,{method:'DELETE'})})}
-   }
-   var searchedStudent=sessionStorage.getItem('rx_open_student');if(searchedStudent){sessionStorage.removeItem('rx_open_student');setTimeout(function(){show360(searchedStudent)},0)}
- }
- else if(p==='attendance'){
+else if(p==='attendance'){
    var classes=await raw('/api/classes');
    E('content').innerHTML='<h1>Attendance</h1><div class="toolbar"><select id="attClass">'+classes.map(function(c){return'<option value="'+c.id+'">'+esc(c.name)+'</option>'}).join('')+'</select><input id="attDate" type="date" value="'+new Date().toISOString().slice(0,10)+'"><button id="loadAtt" class="primary">Load class</button></div><div id="attPanel" class="panel"><div class="empty">Choose a class and date.</div></div>';
    E('loadAtt').onclick=async function(){
