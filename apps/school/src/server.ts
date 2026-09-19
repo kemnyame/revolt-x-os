@@ -821,7 +821,44 @@ app.get('/api/fees/student/:studentId',async request=>{
   const a=await authorize(request,db,config);const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
 });
 app.post('/api/payments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'fees.record');const b=z.object({studentId:z.string().uuid(),studentFeeId:z.string().uuid().optional(),amount:z.number().positive(),paymentMethod:z.enum(['cash','mobile_money','bank','card','other']),reference:z.string().max(120).optional(),note:z.string().max(500).optional()}).parse(request.body);const row=await tx(db,async c=>{const p=await one<any>(c,'INSERT INTO payments(organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[a.core.organisation_id,b.studentId,b.studentFeeId??null,b.amount,b.paymentMethod,b.reference??null,a.core.id,b.note??null]);if(b.studentFeeId){const calc=await one<any>(c,`SELECT sf.id,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount),0) paid FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.id=$1 GROUP BY sf.id`,[b.studentFeeId]);const status=Number(calc.paid)>=Number(calc.due)?'paid':Number(calc.paid)>0?'part_paid':'unpaid';await c.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,b.studentFeeId])}return p});await audit(a.core.organisation_id,a.core.id,'payment.recorded','payment',row.id,{amount:b.amount});return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'fees.record');
+  const b=z.object({
+    studentId:z.string().uuid(),
+    studentFeeId:z.string().uuid().optional(),
+    amount:z.number().positive(),
+    paymentMethod:z.enum(['cash','mobile_money','bank','card','other']),
+    reference:z.string().max(120).optional(),
+    note:z.string().max(500).optional()
+  }).parse(request.body);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
+  const row=await tx(db,async client=>{
+    if(b.studentFeeId){
+      const fee=await one<any>(client,`SELECT (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+        FROM student_fees sf WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[b.studentFeeId,b.studentId,a.core.organisation_id]);
+      if(b.amount>Number(fee.balance)+0.001)throw fail(400,'Payment cannot exceed the outstanding fee balance');
+    }
+    const p=await one<any>(client,`INSERT INTO payments(
+      organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note,source
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'school_manual') RETURNING *`,[
+      a.core.organisation_id,b.studentId,b.studentFeeId??null,b.amount,b.paymentMethod,b.reference??null,a.core.id,b.note??null
+    ]);
+    if(b.studentFeeId)await updateStudentFeeStatus(client,b.studentFeeId);
+    return p;
+  });
+  const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
+    WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[b.studentId]);
+  if(guardian){
+    const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+    await notifyContact({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_received',
+      name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
+      subject:'School fee payment received',
+      body:`${school.school_name} has recorded a payment of ${school.currency||'GHS'} ${Number(b.amount).toFixed(2)} for ${student.first_name} ${student.last_name}. Method: ${b.paymentMethod.replace('_',' ')}.${b.reference?' Reference: '+b.reference+'.':''}`,
+      relatedType:'payment',relatedId:row.id
+    });
+  }
+  await audit(a.core.organisation_id,a.core.id,'payment.recorded','payment',row.id,{amount:b.amount,method:b.paymentMethod});
+  return reply.code(201).send(row);
 });
 
 app.get('/api/timetable',async request=>{const a=await authorize(request,db,config);const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2) AND ($3::uuid IS NULL OR tt.term_id=$3) ORDER BY tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null])).rows});
