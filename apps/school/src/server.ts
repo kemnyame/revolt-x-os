@@ -208,11 +208,188 @@ app.post('/api/staff/module-memberships',async(request,reply)=>{
   const a=await authorize(request,db,config,'school.manage');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
 });
 
+
+app.patch('/api/academic-years/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(4).max(40).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
+  if(end<=start)throw fail(400,'Academic year end date must be after start date');
+  const row=await one<any>(db,'UPDATE academic_years SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.startDate??null,b.endDate??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'academic_year.updated','academic_year',id);
+  return row;
+});
+app.delete('/api/academic-years/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const y=await one<any>(db,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(y.status==='active')throw fail(409,'Close or activate another academic year before deleting this one');
+  const count=await one<any>(db,'SELECT count(*)::int n FROM enrolments WHERE academic_year_id=$1',[id]);
+  if(count.n>0)throw fail(409,'This academic year has student enrolments and cannot be deleted');
+  await db.query('DELETE FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'academic_year.deleted','academic_year',id,{name:y.name});
+  return reply.code(204).send();
+});
+
+app.patch('/api/terms/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(80).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
+  if(end<=start)throw fail(400,'Term end date must be after start date');
+  const row=await one<any>(db,'UPDATE terms SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.startDate??null,b.endDate??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'term.updated','term',id);return row;
+});
+app.delete('/api/terms/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const t=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(t.status==='active')throw fail(409,'An active term cannot be deleted');
+  await db.query('DELETE FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'term.deleted','term',id,{name:t.name});return reply.code(204).send();
+});
+
+app.patch('/api/grade-levels/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(80).optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,'UPDATE grade_levels SET name=COALESCE($1,name),is_active=COALESCE($2,is_active) WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.name??null,b.isActive??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'grade_level.updated','grade_level',id);return row;
+});
+
+app.patch('/api/classes/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:z.string().uuid().nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,`UPDATE classrooms SET name=COALESCE($1,name),stream=CASE WHEN $2 THEN $3 ELSE stream END,capacity=CASE WHEN $4 THEN $5 ELSE capacity END,class_teacher_os_user_id=CASE WHEN $6 THEN $7 ELSE class_teacher_os_user_id END,is_active=COALESCE($8,is_active) WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.name??null,Object.hasOwn(b,'stream'),b.stream??null,Object.hasOwn(b,'capacity'),b.capacity??null,Object.hasOwn(b,'classTeacherOsUserId'),b.classTeacherOsUserId??null,b.isActive??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'class.updated','classroom',id);return row;
+});
+app.delete('/api/classes/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const count=await one<any>(db,'SELECT count(*)::int n FROM enrolments WHERE classroom_id=$1',[id]);
+  if(count.n>0)throw fail(409,'Move or remove enrolled students before deleting this class');
+  await db.query('DELETE FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'class.deleted','classroom',id,{name:row.name});return reply.code(204).send();
+});
+
+app.patch('/api/subjects/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({code:z.string().min(1).max(30).optional(),name:z.string().min(2).max(120).optional(),stage:z.enum(['primary','jhs','both']).optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,'UPDATE subjects SET code=COALESCE($1,code),name=COALESCE($2,name),stage=COALESCE($3,stage),is_active=COALESCE($4,is_active) WHERE id=$5 AND organisation_id=$6 RETURNING *',[b.code?.toUpperCase()??null,b.name??null,b.stage??null,b.isActive??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'subject.updated','subject',id);return row;
+});
+app.delete('/api/subjects/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await db.query('DELETE FROM subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'subject.deleted','subject',id,{name:row.name});return reply.code(204).send();
+});
+
+app.delete('/api/students/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'students.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await tx(db,async c=>{
+    const guardians=(await c.query('SELECT guardian_id FROM student_guardians WHERE student_id=$1',[id])).rows.map((x:any)=>x.guardian_id);
+    await c.query('DELETE FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    for(const gid of guardians)await c.query('DELETE FROM guardians g WHERE g.id=$1 AND g.organisation_id=$2 AND NOT EXISTS(SELECT 1 FROM student_guardians sg WHERE sg.guardian_id=g.id)',[gid,a.core.organisation_id]);
+  });
+  await audit(a.core.organisation_id,a.core.id,'student.deleted','student',id,{admissionNo:student.admission_no,name:`${student.first_name} ${student.last_name}`});return reply.code(204).send();
+});
+app.patch('/api/students/:studentId/guardians/:guardianId',async request=>{
+  const a=await authorize(request,db,config,'students.manage');const p=z.object({studentId:z.string().uuid(),guardianId:z.string().uuid()}).parse(request.params);
+  const b=z.object({firstName:z.string().min(1).max(100).optional(),lastName:z.string().min(1).max(100).optional(),phone:z.string().min(5).max(60).optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),relationship:z.string().min(2).max(60).optional(),isPrimary:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const linked=await maybeOne<any>(db,'SELECT 1 FROM student_guardians WHERE student_id=$1 AND guardian_id=$2',[p.studentId,p.guardianId]);if(!linked)throw fail(404,'Guardian link not found');
+  if(b.isPrimary===true)await db.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[p.studentId]);
+  await db.query(`UPDATE guardians SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),phone=COALESCE($3,phone),email=CASE WHEN $4 THEN $5 ELSE email END,address=CASE WHEN $6 THEN $7 ELSE address END,updated_at=now() WHERE id=$8 AND organisation_id=$9`,[b.firstName??null,b.lastName??null,b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,p.guardianId,a.core.organisation_id]);
+  await db.query('UPDATE student_guardians SET relationship=COALESCE($1,relationship),is_primary=COALESCE($2,is_primary) WHERE student_id=$3 AND guardian_id=$4',[b.relationship??null,b.isPrimary??null,p.studentId,p.guardianId]);
+  await audit(a.core.organisation_id,a.core.id,'guardian.updated','guardian',p.guardianId,{studentId:p.studentId});
+  return one<any>(db,`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE g.id=$1 AND sg.student_id=$2`,[p.guardianId,p.studentId]);
+});
+app.delete('/api/students/:studentId/guardians/:guardianId',async(request,reply)=>{
+  const a=await authorize(request,db,config,'students.manage');const p=z.object({studentId:z.string().uuid(),guardianId:z.string().uuid()}).parse(request.params);
+  await db.query('DELETE FROM student_guardians WHERE student_id=$1 AND guardian_id=$2',[p.studentId,p.guardianId]);
+  await db.query('DELETE FROM guardians g WHERE g.id=$1 AND g.organisation_id=$2 AND NOT EXISTS(SELECT 1 FROM student_guardians sg WHERE sg.guardian_id=g.id)',[p.guardianId,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'guardian.unlinked','guardian',p.guardianId,{studentId:p.studentId});return reply.code(204).send();
+});
+app.delete('/api/enrolments/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'students.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'DELETE FROM enrolments WHERE id=$1 AND organisation_id=$2 RETURNING *',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'enrolment.deleted','enrolment',id,{studentId:row.student_id});return reply.code(204).send();
+});
+
+app.delete('/api/attendance',async(request,reply)=>{
+  const a=await authorize(request,db,config,'attendance.manage');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);
+  const result=await db.query('DELETE FROM attendance_records WHERE organisation_id=$1 AND classroom_id=$2 AND attendance_date=$3',[a.core.organisation_id,q.classroomId,q.date]);
+  await audit(a.core.organisation_id,a.core.id,'attendance.cleared','classroom',q.classroomId,{date:q.date,count:result.rowCount??0});return reply.code(200).send({deleted:result.rowCount??0});
+});
+
+app.patch('/api/assessments/:id',async request=>{
+  const a=await authorize(request,db,config,'assessment.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(160).optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),maxScore:z.number().positive().optional(),weight:z.number().positive().max(100).optional(),assessmentDate:z.string().date().nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,`UPDATE assessments SET name=COALESCE($1,name),assessment_type=COALESCE($2,assessment_type),max_score=COALESCE($3,max_score),weight=COALESCE($4,weight),assessment_date=CASE WHEN $5 THEN $6::date ELSE assessment_date END WHERE id=$7 AND organisation_id=$8 RETURNING *`,[b.name??null,b.assessmentType??null,b.maxScore??null,b.weight??null,Object.hasOwn(b,'assessmentDate'),b.assessmentDate??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment.updated','assessment',id);return row;
+});
+app.delete('/api/assessments/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'assessment.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'DELETE FROM assessments WHERE id=$1 AND organisation_id=$2 RETURNING id,name',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment.deleted','assessment',id,{name:row.name});return reply.code(204).send();
+});
+
+app.patch('/api/fee-items/:id',async request=>{
+  const a=await authorize(request,db,config,'fees.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(160).optional(),amount:z.number().min(0).optional(),mandatory:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,'UPDATE fee_items SET name=COALESCE($1,name),amount=COALESCE($2,amount),mandatory=COALESCE($3,mandatory) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.amount??null,b.mandatory??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'fee_item.updated','fee_item',id);return row;
+});
+app.delete('/api/fee-items/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'fees.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const paid=await one<any>(db,'SELECT count(*)::int n FROM payments p JOIN student_fees sf ON sf.id=p.student_fee_id WHERE sf.fee_item_id=$1 AND p.voided_at IS NULL',[id]);
+  if(paid.n>0)throw fail(409,'This fee has payments and cannot be deleted');
+  await db.query('DELETE FROM fee_items WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'fee_item.deleted','fee_item',id,{name:row.name});return reply.code(204).send();
+});
+app.get('/api/payments',async request=>{
+  const a=await authorize(request,db,config);const q=z.object({studentId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,f.name fee_name FROM payments p JOIN students s ON s.id=p.student_id LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id WHERE p.organisation_id=$1 AND ($2::uuid IS NULL OR p.student_id=$2) ORDER BY p.paid_at DESC LIMIT $3`,[a.core.organisation_id,q.studentId??null,q.limit])).rows;
+});
+app.post('/api/payments/:id/void',async request=>{
+  const a=await authorize(request,db,config,'fees.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({reason:z.string().min(2).max(500)}).parse(request.body);
+  const row=await one<any>(db,'UPDATE payments SET voided_at=now(),voided_by_os_user_id=$1,void_reason=$2 WHERE id=$3 AND organisation_id=$4 AND voided_at IS NULL RETURNING *',[a.core.id,b.reason,id,a.core.organisation_id]);
+  if(row.student_fee_id){const calc=await one<any>(db,`SELECT sf.id,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.id=$1 GROUP BY sf.id`,[row.student_fee_id]);const status=Number(calc.paid)>=Number(calc.due)?'paid':Number(calc.paid)>0?'part_paid':'unpaid';await db.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,row.student_fee_id])}
+  await audit(a.core.organisation_id,a.core.id,'payment.voided','payment',id,{reason:b.reason});return row;
+});
+
+app.patch('/api/timetable/:id',async request=>{
+  const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({subjectId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().nullable().optional(),dayOfWeek:z.number().int().min(1).max(5).optional(),startTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),endTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),room:z.string().max(80).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,`UPDATE timetable_entries SET subject_id=COALESCE($1,subject_id),teacher_os_user_id=CASE WHEN $2 THEN $3 ELSE teacher_os_user_id END,day_of_week=COALESCE($4,day_of_week),start_time=COALESCE($5::time,start_time),end_time=COALESCE($6::time,end_time),room=CASE WHEN $7 THEN $8 ELSE room END WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.subjectId??null,Object.hasOwn(b,'teacherOsUserId'),b.teacherOsUserId??null,b.dayOfWeek??null,b.startTime??null,b.endTime??null,Object.hasOwn(b,'room'),b.room??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.updated','timetable_entry',id);return row;
+});
+app.delete('/api/timetable/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await one<any>(db,'DELETE FROM timetable_entries WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'timetable.deleted','timetable_entry',id);return reply.code(204).send();
+});
+
+app.patch('/api/staff/module-memberships/:id',async request=>{
+  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']).optional(),status:z.enum(['active','suspended']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,'UPDATE school_memberships SET role=COALESCE($1,role),status=COALESCE($2,status),updated_at=now() WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.role??null,b.status??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'school_staff.updated','school_membership',id,{role:row.role,status:row.status});return row;
+});
+app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(row.os_user_id===a.core.id)throw fail(409,'You cannot remove your own School access');
+  await db.query('DELETE FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'school_staff.removed','school_membership',id,{osUserId:row.os_user_id});return reply.code(204).send();
+});
+
 app.get('/api/audit',async request=>{const a=await authorize(request,db,config,'reports.read');return (await db.query('SELECT * FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id])).rows});
 
 app.setErrorHandler((error:any,_request,reply)=>{
-  const status=Number(error.statusCode)||400;
-  reply.code(status>=400&&status<600?status:500).send({error:{message:error.message||'Unexpected school service error'}});
+  let status=Number(error.statusCode)||400;
+  if(error.code==='23505')status=409;
+  if(error.code==='23503')status=409;
+  const message=error.code==='23505'?'A record with the same unique value already exists':error.code==='23503'?'This record is still in use and cannot be deleted':(error.message||'Unexpected school service error');
+  reply.code(status>=400&&status<600?status:500).send({error:{message}});
 });
 
 let shutting=false;
