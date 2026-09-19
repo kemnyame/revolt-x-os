@@ -507,6 +507,9 @@ app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend)
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
+app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
+app.get('/bursar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/registrar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
 app.get('/student',async(_r,p)=>p.type('text/html; charset=utf-8').send(studentFrontend));
 app.get('/admissions',async(_r,p)=>p.type('text/html; charset=utf-8').send(admissionsFrontend));
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
@@ -600,7 +603,10 @@ async function handleSchoolStaffLogin(request:any,reply:any){
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
 
-  const redirectTo=membership.role==='teacher'?'/teacher':'/';
+  const redirectTo=membership.role==='teacher'?'/teacher':
+    membership.role==='headteacher'?'/headteacher':
+    membership.role==='bursar'?'/bursar':
+    membership.role==='registrar'?'/registrar':'/';
   await audit(coreContext.organisation_id,coreContext.id,'school.authenticated','school_session',null,{role:membership.role});
 
   return reply.send({
@@ -1162,7 +1168,8 @@ app.get('/api/assessments',async request=>{
   }).parse(request.query);
   let rows=(await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name,
       ac.name category_name,ac.code category_code,ac.weight_percent category_weight,ac.default_max_score,
-      (SELECT count(*)::int FROM assessment_scores sc WHERE sc.assessment_id=a.id) scored_students
+      (SELECT count(*)::int FROM assessment_scores sc WHERE sc.assessment_id=a.id) scored_students,
+      (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=a.classroom_id AND e.status='active') student_count
     FROM assessments a
     JOIN subjects s ON s.id=a.subject_id
     JOIN classrooms c ON c.id=a.classroom_id
@@ -1179,7 +1186,12 @@ app.get('/api/assessments',async request=>{
   if(a.role==='teacher'){
     rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
   }
-  return rows;
+  return rows.map((r:any)=>{
+    const total=Number(r.student_count||0),done=Number(r.scored_students||0);
+    const progressPercent=total?Math.min(100,Math.round((done/total)*100)):0;
+    const progressStatus=done===0?'pending':done<total?'in_progress':'complete';
+    return{...r,progress_percent:progressPercent,progress_status:progressStatus,pending:progressStatus!=='complete'};
+  });
 });
 app.post('/api/assessments',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.create');
@@ -1209,11 +1221,17 @@ app.post('/api/assessments',async(request,reply)=>{
   if(!category)throw fail(400,'Select a valid assessment category for this term');
   const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';
   const maxScore=b.maxScore??Number(category.default_max_score);
+  const cleanName=b.name.trim();
+  const duplicate=await maybeOne<any>(db,`SELECT id FROM assessments
+    WHERE organisation_id=$1 AND term_id=$2 AND classroom_id=$3 AND subject_id=$4 AND teacher_os_user_id=$5
+      AND lower(trim(name))=lower($6) AND assessment_date IS NOT DISTINCT FROM $7::date LIMIT 1`,
+    [a.core.organisation_id,b.termId,b.classroomId,b.subjectId,teacherId,cleanName,b.assessmentDate??null]);
+  if(duplicate)throw fail(409,'This teacher already has an assessment with the same name and date for this class and subject');
   const row=await one<any>(db,`INSERT INTO assessments(
       organisation_id,academic_year_id,term_id,classroom_id,subject_id,category_id,name,assessment_type,max_score,weight,
       assessment_date,created_by_os_user_id,teacher_os_user_id
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-    [a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,category.id,b.name,type,maxScore,
+    [a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,category.id,cleanName,type,maxScore,
       category.weight_percent,b.assessmentDate??null,a.core.id,teacherId]);
   await audit(a.core.organisation_id,a.core.id,'assessment.created','assessment',row.id,{categoryId:category.id,teacherOsUserId:teacherId});
   return reply.code(201).send(row);
@@ -1577,13 +1595,16 @@ app.post('/api/timetable/auto-schedule/apply',async request=>{
 app.get('/api/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
   const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
-  return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+  const rows=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
     WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2)
       AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
       AND ($5::uuid IS NULL OR tt.teacher_os_user_id=$5)
     ORDER BY tt.day_of_week,tt.start_time,c.name`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null,q.teacherOsUserId??null])).rows;
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const names=new Map(users.map((u:any)=>[u.id,(u.first_name+' '+u.last_name).trim()]));
+  return rows.map((r:any)=>({...r,teacher_name:names.get(r.teacher_os_user_id)||'Unassigned'}));
 });
 app.get('/api/timetable/export.csv',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.view');
@@ -1713,14 +1734,19 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
 
   const slots:any[]=[];
   for(let day=1;day<=5;day++){
-    for(let start=schoolStart;start+periodMinutes<=schoolEnd;start+=periodMinutes){
+    let start=schoolStart;
+    while(start+periodMinutes<=schoolEnd){
       const end=start+periodMinutes;
-      const blocked=breaks.some((br:any)=>{
-        if(br.day_of_week!=null&&Number(br.day_of_week)!==day)return false;
-        const bs=toMinutes(br.start_time),be=toMinutes(br.end_time);
-        return start<be&&end>bs;
-      });
-      if(!blocked)slots.push({day,start,end});
+      const blocked=breaks
+        .filter((br:any)=>br.day_of_week==null||Number(br.day_of_week)===day)
+        .map((br:any)=>({start:toMinutes(br.start_time),end:toMinutes(br.end_time)}))
+        .find((br:any)=>start<br.end&&end>br.start);
+      if(blocked){
+        start=Math.max(start+1,blocked.end);
+        continue;
+      }
+      slots.push({day,start,end});
+      start=end;
     }
   }
 
@@ -2311,7 +2337,7 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
 
   if(existingSame){
     const row=await one<any>(db,'UPDATE teacher_assignments SET is_active=true WHERE id=$1 RETURNING *',[existingSame.id]);
-    if(!b.subjectId)await db.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2',[b.teacherOsUserId,b.classroomId]);
+    if(!b.subjectId&&!b.termId)await db.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2',[b.teacherOsUserId,b.classroomId]);
     await audit(a.core.organisation_id,a.core.id,'teacher_assignment.reactivated','teacher_assignment',row.id,{teacherOsUserId:b.teacherOsUserId});
     return reply.code(200).send({...row,reused:true});
   }
@@ -2322,7 +2348,7 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
       AND is_active=true AND teacher_os_user_id<>$6`,
     [a.core.organisation_id,b.academicYearId,b.classroomId,b.subjectId??null,b.termId??null,b.teacherOsUserId])).rows;
 
-  if(!b.subjectId&&validated.classroom.class_teacher_os_user_id&&validated.classroom.class_teacher_os_user_id!==b.teacherOsUserId&&!b.replaceExisting){
+  if(!b.subjectId&&!b.termId&&validated.classroom.class_teacher_os_user_id&&validated.classroom.class_teacher_os_user_id!==b.teacherOsUserId&&!b.replaceExisting){
     throw fail(409,'This class already has a class teacher. Choose Replace existing teacher to reassign it.');
   }
   if(conflicts.length&&!b.replaceExisting){
@@ -2336,7 +2362,7 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
           AND subject_id IS NOT DISTINCT FROM $4::uuid AND term_id IS NOT DISTINCT FROM $5::uuid AND is_active=true`,
         [a.core.organisation_id,b.academicYearId,b.classroomId,b.subjectId??null,b.termId??null]);
     }
-    if(!b.subjectId){
+    if(!b.subjectId&&!b.termId){
       await client.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2 AND organisation_id=$3',
         [b.teacherOsUserId,b.classroomId,a.core.organisation_id]);
     }
@@ -2365,7 +2391,7 @@ app.patch('/api/teacher-assignments/:id',async request=>{
   const b=z.object({isActive:z.boolean()}).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const row=await one<any>(db,'UPDATE teacher_assignments SET is_active=$1 WHERE id=$2 AND organisation_id=$3 RETURNING *',[b.isActive,id,a.core.organisation_id]);
-  if(!current.subject_id){
+  if(!current.subject_id&&!current.term_id){
     await db.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2 AND organisation_id=$3',
       [b.isActive?current.teacher_os_user_id:null,current.classroom_id,a.core.organisation_id]);
   }
@@ -2425,7 +2451,11 @@ app.get('/api/homework',async request=>{
     classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),
     status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:z.string().uuid().optional()
   }).parse(request.query);
-  let rows=(await db.query(`SELECT h.*,c.name classroom_name,s.name subject_name,t.name term_name
+  let rows=(await db.query(`SELECT h.*,c.name classroom_name,s.name subject_name,t.name term_name,
+      (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=h.classroom_id AND e.status='active') student_count,
+      (SELECT count(*)::int FROM homework_submissions hs WHERE hs.homework_id=h.id) tracked_students,
+      (SELECT count(*)::int FROM homework_submissions hs WHERE hs.homework_id=h.id AND hs.status IN('submitted','late','graded')) submitted_students,
+      (SELECT count(*)::int FROM homework_submissions hs WHERE hs.homework_id=h.id AND hs.status='graded') graded_students
     FROM homework_assignments h JOIN classrooms c ON c.id=h.classroom_id JOIN subjects s ON s.id=h.subject_id
     JOIN terms t ON t.id=h.term_id
     WHERE h.organisation_id=$1 AND ($2::uuid IS NULL OR h.classroom_id=$2)
@@ -2435,7 +2465,19 @@ app.get('/api/homework',async request=>{
       a.core.organisation_id,q.classroomId??null,q.termId??null,q.status??null,q.teacherOsUserId??null
     ])).rows;
   if(a.role==='teacher')rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
-  return rows;
+  return rows.map((r:any)=>{
+    const total=Number(r.student_count||r.tracked_students||0),submitted=Number(r.submitted_students||0),graded=Number(r.graded_students||0);
+    let progressStatus='pending',progressPercent=0;
+    if(r.status==='draft'){progressStatus='pending_publish';progressPercent=0}
+    else if(r.status==='closed'){progressStatus='complete';progressPercent=100}
+    else if(total===0){progressStatus='pending';progressPercent=0}
+    else if(r.max_score!=null&&graded>=total){progressStatus='complete';progressPercent=100}
+    else if(r.max_score!=null&&submitted>=total&&graded<total){progressStatus='grading_pending';progressPercent=Math.round((graded/total)*100)}
+    else if(submitted===0){progressStatus=(r.due_at&&new Date(r.due_at).getTime()<Date.now())?'overdue':'pending_submissions';progressPercent=0}
+    else if(submitted<total){progressStatus=(r.due_at&&new Date(r.due_at).getTime()<Date.now())?'overdue':'in_progress';progressPercent=Math.round((submitted/total)*100)}
+    else {progressStatus='complete';progressPercent=100}
+    return{...r,progress_percent:progressPercent,progress_status:progressStatus,pending:progressStatus!=='complete'};
+  });
 });
 app.post('/api/homework',async(request,reply)=>{
   const a=await authorize(request,db,config,'homework.create');
@@ -2450,10 +2492,16 @@ app.post('/api/homework',async(request,reply)=>{
     organisationId:a.core.organisation_id,academicYearId:b.academicYearId,termId:b.termId,
     classroomId:b.classroomId,subjectId:b.subjectId,teacherOsUserId:teacherId
   });
+  const cleanTitle=b.title.trim();
+  const duplicate=await maybeOne<any>(db,`SELECT id FROM homework_assignments
+    WHERE organisation_id=$1 AND term_id=$2 AND classroom_id=$3 AND subject_id=$4 AND teacher_os_user_id=$5
+      AND lower(trim(title))=lower($6) AND due_at IS NOT DISTINCT FROM $7::timestamptz LIMIT 1`,
+    [a.core.organisation_id,b.termId,b.classroomId,b.subjectId,teacherId,cleanTitle,b.dueAt??null]);
+  if(duplicate)throw fail(409,'This teacher already has homework with the same title and due date for this class and subject');
   const row=await one<any>(db,`INSERT INTO homework_assignments(
     organisation_id,academic_year_id,term_id,classroom_id,subject_id,title,instructions,due_at,max_score,created_by_os_user_id,teacher_os_user_id
   ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
-    a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,b.title,b.instructions,b.dueAt??null,b.maxScore??null,a.core.id,teacherId
+    a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,cleanTitle,b.instructions,b.dueAt??null,b.maxScore??null,a.core.id,teacherId
   ]);
   await audit(a.core.organisation_id,a.core.id,'homework.created','homework',row.id,{teacherOsUserId:teacherId});
   return reply.code(201).send(row);
@@ -2463,6 +2511,7 @@ app.patch('/api/homework/:id',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
+  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   const b=z.object({
     title:z.string().min(2).max(200).optional(),instructions:z.string().min(1).max(10000).optional(),
     dueAt:z.string().datetime().nullable().optional(),maxScore:z.number().positive().nullable().optional(),
@@ -2491,6 +2540,7 @@ app.post('/api/homework/:id/publish',async request=>{
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
     WHERE h.id=$1 AND h.organisation_id=$2`,[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
+  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   if(h.status==='closed')throw fail(409,'Closed homework cannot be published again');
   const wasPublished=h.status==='published';
   const row=await tx(db,async client=>{
@@ -2524,6 +2574,7 @@ app.get('/api/homework/:id/submissions',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
+  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   return (await db.query(`SELECT hs.*,s.admission_no,s.first_name,s.last_name
     FROM homework_submissions hs JOIN students s ON s.id=hs.student_id
     WHERE hs.homework_id=$1 ORDER BY s.last_name,s.first_name`,[id])).rows;
@@ -2682,6 +2733,24 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   await audit(a.core.organisation_id,a.core.id,'report.submitted','report_comment',report.id,{studentId,termId:b.termId,classroomId:current.classroom_id});
   return updated;
 });
+app.get('/api/teacher/report-worklist',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher report worklist is not available for this role');
+  const q=z.object({termId:z.string().uuid().optional()}).parse(request.query);
+  return (await db.query(`SELECT rc.*,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,
+      t.name term_name,y.name academic_year
+    FROM report_comments rc
+    JOIN students s ON s.id=rc.student_id
+    JOIN terms t ON t.id=rc.term_id
+    JOIN academic_years y ON y.id=t.academic_year_id
+    JOIN enrolments e ON e.student_id=s.id AND e.academic_year_id=t.academic_year_id
+    JOIN classrooms c ON c.id=e.classroom_id
+    WHERE rc.organisation_id=$1 AND c.class_teacher_os_user_id=$2
+      AND ($3::uuid IS NULL OR rc.term_id=$3)
+    ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,rc.updated_at DESC`,
+    [a.core.organisation_id,a.core.id,q.termId??null])).rows;
+});
+
 app.get('/api/report-review-queue',async request=>{
   const a=await authorize(request,db,config,'reports.approve');
   const q=z.object({status:z.enum(['submitted','approved','returned']).optional(),termId:z.string().uuid().optional()}).parse(request.query);
@@ -2715,6 +2784,7 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[b.termId]);
   const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
+  if(current.class_teacher_os_user_id===a.core.id&&a.role!=='school_admin')throw fail(403,'The Class Teacher cannot approve and release their own report');
   if(a.role!=='school_admin'&&a.role!=='headteacher'){
     const assignment=await maybeOne<any>(db,'SELECT 1 FROM report_reviewer_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND reviewer_os_user_id=$3 AND is_active=true',[a.core.organisation_id,current.classroom_id,a.core.id]);
     if(!assignment)throw fail(403,'You are not assigned to review reports for this class');
@@ -3636,6 +3706,7 @@ app.post('/api/lesson-notes/:id/review',async request=>{
   const a=await authorize(request,db,config,'lesson_notes.review');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({action:z.enum(['approve','return']),note:z.string().max(4000).nullable().optional()}).parse(request.body);
   const current=await one<any>(db,"SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2 AND status='submitted'",[id,a.core.organisation_id]);
+  if(current.teacher_os_user_id===a.core.id)throw fail(403,'You cannot approve or return your own lesson note');
   if(b.action==='return'&&!b.note)throw fail(400,'Enter a review note before returning the lesson note');
   const status=b.action==='approve'?'approved':'returned';
   const row=await one<any>(db,`UPDATE lesson_notes SET status=$1,review_note=$2,reviewed_by_os_user_id=$3,reviewed_at=now(),updated_at=now()
@@ -3653,6 +3724,69 @@ app.post('/api/lesson-notes/:id/teaching-log',async request=>{
     taught_at=COALESCE(taught_at,now()),updated_at=now() WHERE id=$3 RETURNING *`,[b.teachingLog,b.teacherReflection??null,id]);
   await audit(a.core.organisation_id,a.core.id,'lesson_note.taught','lesson_note',id);
   return row;
+});
+
+app.get('/api/lesson-notes/:id/attachments',async request=>{
+  const a=await authorize(request,db,config,'lesson_notes.view');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const note=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(a.role==='teacher'&&note.teacher_os_user_id!==a.core.id)throw fail(403,'You can only view attachments for your own lesson notes');
+  return (await db.query(`SELECT id,lesson_note_id,file_name,mime_type,file_size,uploaded_by_os_user_id,created_at
+    FROM lesson_note_attachments WHERE organisation_id=$1 AND lesson_note_id=$2 ORDER BY created_at`,
+    [a.core.organisation_id,id])).rows;
+});
+app.post('/api/lesson-notes/:id/attachments',async(request,reply)=>{
+  const a=await authorize(request,db,config,'lesson_notes.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const note=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(note.teacher_os_user_id!==a.core.id&&a.role!=='school_admin')throw fail(403,'Only the lesson-note owner can upload attachments');
+  if(!['draft','returned'].includes(note.status))throw fail(409,'Attachments can only be changed while the lesson note is draft or returned');
+  const b=z.object({
+    fileName:z.string().min(1).max(260),
+    mimeType:z.string().min(3).max(160),
+    dataBase64:z.string().min(4)
+  }).parse(request.body);
+  const allowed=new Set([
+    'application/pdf','text/plain',
+    'application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'image/jpeg','image/png','image/webp'
+  ]);
+  if(!allowed.has(b.mimeType))throw fail(400,'Unsupported attachment type');
+  const data=Buffer.from(b.dataBase64,'base64');
+  if(!data.length||data.length>5*1024*1024)throw fail(400,'Attachment must be between 1 byte and 5 MB');
+  const row=await one<any>(db,`INSERT INTO lesson_note_attachments(
+      organisation_id,lesson_note_id,file_name,mime_type,file_size,file_data,uploaded_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7)
+    RETURNING id,lesson_note_id,file_name,mime_type,file_size,uploaded_by_os_user_id,created_at`,
+    [a.core.organisation_id,id,b.fileName.trim(),b.mimeType,data.length,data,a.core.id]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.attachment_uploaded','lesson_note_attachment',row.id,{lessonNoteId:id,fileName:row.file_name,fileSize:row.file_size});
+  return reply.code(201).send(row);
+});
+app.get('/api/lesson-note-attachments/:attachmentId/download',async(request,reply)=>{
+  const a=await authorize(request,db,config,'lesson_notes.view');
+  const {attachmentId}=z.object({attachmentId:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,`SELECT lna.*,ln.teacher_os_user_id FROM lesson_note_attachments lna
+    JOIN lesson_notes ln ON ln.id=lna.lesson_note_id
+    WHERE lna.id=$1 AND lna.organisation_id=$2`,[attachmentId,a.core.organisation_id]);
+  if(a.role==='teacher'&&row.teacher_os_user_id!==a.core.id)throw fail(403,'You can only download attachments for your own lesson notes');
+  reply.header('content-type',row.mime_type);
+  reply.header('content-length',String(row.file_size));
+  reply.header('content-disposition','attachment; filename="'+String(row.file_name).replace(/["\\]/g,'_')+'"');
+  return reply.send(row.file_data);
+});
+app.delete('/api/lesson-note-attachments/:attachmentId',async(request,reply)=>{
+  const a=await authorize(request,db,config,'lesson_notes.edit');
+  const {attachmentId}=z.object({attachmentId:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,`SELECT lna.id,lna.file_name,ln.id lesson_note_id,ln.teacher_os_user_id,ln.status
+    FROM lesson_note_attachments lna JOIN lesson_notes ln ON ln.id=lna.lesson_note_id
+    WHERE lna.id=$1 AND lna.organisation_id=$2`,[attachmentId,a.core.organisation_id]);
+  if(row.teacher_os_user_id!==a.core.id&&a.role!=='school_admin')throw fail(403,'Only the lesson-note owner can remove attachments');
+  if(!['draft','returned'].includes(row.status))throw fail(409,'Attachments cannot be removed after the lesson note is submitted');
+  await db.query('DELETE FROM lesson_note_attachments WHERE id=$1',[attachmentId]);
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.attachment_deleted','lesson_note_attachment',attachmentId,{lessonNoteId:row.lesson_note_id,fileName:row.file_name});
+  return reply.code(204).send();
 });
 
 app.get('/api/search',async request=>{
