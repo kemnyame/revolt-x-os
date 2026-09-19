@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
-import { authorize } from './auth.js';
+import { authorize, effectiveCapabilities } from './auth.js';
 import { schoolFrontend } from './ui.js';
 import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
@@ -407,7 +407,8 @@ app.post('/api/auth/preview',async(_r,p)=>{
 app.get('/api/context',async request=>{
   const a=await authorize(request,db,config);
   const profile=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
-  return {core:a.core,schoolRole:a.role,profile};
+  const capabilities=await effectiveCapabilities(db,a.role);
+  return {core:a.core,schoolRole:a.role,profile,capabilities};
 });
 
 app.post('/api/school/bootstrap',async(request,reply)=>{
@@ -459,7 +460,7 @@ app.get('/api/dashboard',async request=>{
   return {...q.rows[0],activeYear:y,activeTerm:t};
 });
 
-app.get('/api/academic-years',async request=>{const a=await authorize(request,db,config);return (await db.query('SELECT * FROM academic_years WHERE organisation_id=$1 ORDER BY start_date DESC',[a.core.organisation_id])).rows});
+app.get('/api/academic-years',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM academic_years WHERE organisation_id=$1 ORDER BY start_date DESC',[a.core.organisation_id])).rows});
 app.post('/api/academic-years',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
   const b=z.object({name:z.string().min(4).max(40),startDate:z.string().date(),endDate:z.string().date()}).parse(request.body);
@@ -473,7 +474,7 @@ app.post('/api/academic-years/:id/activate',async request=>{
   return tx(db,async c=>{await c.query("UPDATE academic_years SET status='closed' WHERE organisation_id=$1 AND status='active' AND id<>$2",[a.core.organisation_id,id]);const row=await one<any>(c,"UPDATE academic_years SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'academic_year.activated','academic_year',id);return row});
 });
 
-app.get('/api/terms',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
+app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/terms',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
   const b=z.object({
@@ -490,8 +491,8 @@ app.post('/api/terms/:id/activate',async request=>{
   return tx(db,async c=>{const target=await one<any>(c,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await c.query("UPDATE terms SET status='closed' WHERE organisation_id=$1 AND academic_year_id=$2 AND status='active' AND id<>$3",[a.core.organisation_id,target.academic_year_id,id]);return one(c,"UPDATE terms SET status='active' WHERE id=$1 RETURNING *",[id])});
 });
 
-app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config);return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
-app.get('/api/classes',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT c.*,g.code grade_code,g.name grade_name,
+app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
+app.get('/api/classes',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT c.*,g.code grade_code,g.name grade_name,
   (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count,
   (SELECT count(*)::int FROM class_subjects cs WHERE cs.classroom_id=c.id AND cs.is_active=true) subject_count
   FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
@@ -502,14 +503,14 @@ app.post('/api/classes',async(request,reply)=>{
   const row=await one<any>(db,'INSERT INTO classrooms(organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.gradeLevelId,b.name,b.stream??null,b.capacity??null,b.classTeacherOsUserId??null]);
   await audit(a.core.organisation_id,a.core.id,'class.created','classroom',row.id);return reply.code(201).send(row);
 });
-app.get('/api/subjects',async request=>{const a=await authorize(request,db,config);return (await db.query('SELECT * FROM subjects WHERE organisation_id=$1 ORDER BY name',[a.core.organisation_id])).rows});
+app.get('/api/subjects',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM subjects WHERE organisation_id=$1 ORDER BY name',[a.core.organisation_id])).rows});
 app.post('/api/subjects',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');const b=z.object({code:z.string().min(1).max(30),name:z.string().min(2).max(120),stage:z.enum(['primary','jhs','both']).default('both')}).parse(request.body);
   const row=await one<any>(db,'INSERT INTO subjects(organisation_id,code,name,stage) VALUES($1,$2,$3,$4) RETURNING *',[a.core.organisation_id,b.code.toUpperCase(),b.name,b.stage]);await audit(a.core.organisation_id,a.core.id,'subject.created','subject',row.id);return reply.code(201).send(row);
 });
 
 app.get('/api/class-subjects',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'academic.view');
   const q=z.object({academicYearId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);
   return (await db.query(`SELECT cs.*,c.name classroom_name,c.class_teacher_os_user_id,g.name grade_name,g.code grade_code,
       s.code subject_code,s.name subject_name,s.stage,
@@ -553,17 +554,17 @@ app.delete('/api/class-subjects/:id',async(request,reply)=>{
 });
 
 app.get('/api/students',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
+  const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
   return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
 });
 app.post('/api/students',async(request,reply)=>{
   const a=await authorize(request,db,config,'students.create');const b=z.object({admissionNo:z.string().min(1).max(60),firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),admissionDate:z.string().date().optional(),notes:z.string().max(5000).optional()}).parse(request.body);
   const row=await one<any>(db,'INSERT INTO students(organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,notes) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8::date,current_date),$9) RETURNING *',[a.core.organisation_id,b.admissionNo,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,b.admissionDate??null,b.notes??null]);await audit(a.core.organisation_id,a.core.id,'student.created','student',row.id);return reply.code(201).send(row);
 });
-app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
+app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
 
 app.get('/api/students/:id/360',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'students.view');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,`SELECT s.*,e.id enrolment_id,e.academic_year_id,c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,
       g.id grade_level_id,g.code grade_code,g.name grade_name,y.name academic_year
@@ -647,7 +648,7 @@ app.post('/api/enrolments',async(request,reply)=>{
 });
 
 app.get('/api/attendance',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null);
+  const a=await authorize(request,db,config,'attendance.view');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null);
   return (await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,COALESCE(ar.status,'unmarked') attendance_status,ar.note FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN attendance_records ar ON ar.student_id=s.id AND ar.classroom_id=e.classroom_id AND ar.attendance_date=$3 WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.classroomId,q.date])).rows;
 });
 app.post('/api/attendance/mark',async request=>{
@@ -839,7 +840,7 @@ app.get('/api/report-cards/:studentId',async request=>{
   };
 });
 
-app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
+app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config,'fees.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/fee-items',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.create');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),name:z.string().min(2).max(160),amount:z.number().min(0),mandatory:z.boolean().default(true)}).parse(request.body);const row=await one<any>(db,'INSERT INTO fee_items(organisation_id,academic_year_id,term_id,grade_level_id,name,amount,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId??null,b.gradeLevelId??null,b.name,b.amount,b.mandatory]);await audit(a.core.organisation_id,a.core.id,'fee_item.created','fee_item',row.id);return reply.code(201).send(row);
 });
@@ -847,7 +848,7 @@ app.post('/api/fees/assign',async request=>{
   const a=await authorize(request,db,config,'fees.create');const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);const fee=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);let students:string[]=[];if(b.studentId)students=[b.studentId];else students=(await db.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND status='active'",[a.core.organisation_id,b.classroomId])).rows.map((x:any)=>x.student_id);for(const sid of students)await db.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due) VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,[a.core.organisation_id,sid,fee.id,fee.amount]);await audit(a.core.organisation_id,a.core.id,'fees.assigned','fee_item',fee.id,{count:students.length});return{assigned:students.length};
 });
 app.get('/api/fees/student/:studentId',async request=>{
-  const a=await authorize(request,db,config);const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
+  const a=await authorize(request,db,config,'fees.view');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
 });
 app.post('/api/payments',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.record');
@@ -1180,11 +1181,11 @@ app.delete('/api/fee-items/:id',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'fee_item.deleted','fee_item',id,{name:row.name});return reply.code(204).send();
 });
 app.get('/api/fees/open-items',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({studentId:z.string().uuid().optional()}).parse(request.query);
+  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:z.string().uuid().optional()}).parse(request.query);
   return (await db.query(`SELECT sf.id student_fee_id,sf.student_id,s.admission_no,s.first_name,s.last_name,f.name fee_name,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid,((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0)) balance,sf.status FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.organisation_id=$1 AND ($2::uuid IS NULL OR sf.student_id=$2) GROUP BY sf.id,s.id,f.id HAVING ((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0))>0 ORDER BY s.last_name,s.first_name,f.name`,[a.core.organisation_id,q.studentId??null])).rows;
 });
 app.get('/api/payments',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({studentId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
   return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,f.name fee_name FROM payments p JOIN students s ON s.id=p.student_id LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id WHERE p.organisation_id=$1 AND ($2::uuid IS NULL OR p.student_id=$2) ORDER BY p.paid_at DESC LIMIT $3`,[a.core.organisation_id,q.studentId??null,q.limit])).rows;
 });
 app.post('/api/payments/:id/void',async request=>{
@@ -1288,7 +1289,7 @@ app.delete('/api/teacher-assignments/:id',async(request,reply)=>{
 });
 
 app.get('/api/grading-bands',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'assessment.view');
   return (await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 ORDER BY sort_order,min_percentage DESC',[a.core.organisation_id])).rows;
 });
 app.post('/api/grading-bands',async(request,reply)=>{
@@ -1311,7 +1312,7 @@ app.delete('/api/grading-bands/:id',async(request,reply)=>{
 });
 
 app.get('/api/homework',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),status:z.enum(['draft','published','closed']).optional()}).parse(request.query);
+  const a=await authorize(request,db,config,'assessment.view');const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),status:z.enum(['draft','published','closed']).optional()}).parse(request.query);
   let rows=(await db.query(`SELECT h.*,c.name classroom_name,s.name subject_name FROM homework_assignments h JOIN classrooms c ON c.id=h.classroom_id JOIN subjects s ON s.id=h.subject_id WHERE h.organisation_id=$1 AND ($2::uuid IS NULL OR h.classroom_id=$2) AND ($3::uuid IS NULL OR h.term_id=$3) AND ($4::text IS NULL OR h.status=$4) ORDER BY h.created_at DESC`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.status??null])).rows;
   if(a.role==='teacher'){
     const allowed=(await db.query(`SELECT DISTINCT classroom_id,subject_id FROM teacher_assignments WHERE organisation_id=$1 AND teacher_os_user_id=$2 AND is_active=true UNION SELECT id,NULL::uuid FROM classrooms WHERE organisation_id=$1 AND class_teacher_os_user_id=$2`,[a.core.organisation_id,a.core.id])).rows;
@@ -1337,7 +1338,7 @@ app.post('/api/homework/:id/publish',async request=>{
   return tx(db,async c=>{const row=await one<any>(c,"UPDATE homework_assignments SET status='published',updated_at=now() WHERE id=$1 RETURNING *",[id]);await c.query(`INSERT INTO homework_submissions(homework_id,student_id) SELECT $1,e.student_id FROM enrolments e WHERE e.classroom_id=$2 AND e.status='active' ON CONFLICT(homework_id,student_id) DO NOTHING`,[id,h.classroom_id]);await audit(a.core.organisation_id,a.core.id,'homework.published','homework',id);return row});
 });
 app.get('/api/homework/:id/submissions',async request=>{
-  const a=await authorize(request,db,config);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,h.classroom_id,h.subject_id);
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,h.classroom_id,h.subject_id);
   return (await db.query(`SELECT hs.*,s.admission_no,s.first_name,s.last_name FROM homework_submissions hs JOIN students s ON s.id=hs.student_id WHERE hs.homework_id=$1 ORDER BY s.last_name,s.first_name`,[id])).rows;
 });
 app.post('/api/homework/:id/submissions',async request=>{
@@ -1352,7 +1353,7 @@ app.delete('/api/homework/:id',async(request,reply)=>{
 });
 
 app.get('/api/announcements',async request=>{
-  const a=await authorize(request,db,config);return (await db.query(`SELECT a.*,c.name classroom_name FROM school_announcements a LEFT JOIN classrooms c ON c.id=a.classroom_id WHERE a.organisation_id=$1 ORDER BY a.created_at DESC`,[a.core.organisation_id])).rows;
+  const a=await authorize(request,db,config,'communications.view');return (await db.query(`SELECT a.*,c.name classroom_name FROM school_announcements a LEFT JOIN classrooms c ON c.id=a.classroom_id WHERE a.organisation_id=$1 ORDER BY a.created_at DESC`,[a.core.organisation_id])).rows;
 });
 app.post('/api/announcements',async(request,reply)=>{
   const a=await authorize(request,db,config,'communications.manage');const b=z.object({audience:z.enum(['all','staff','parents','students','class']),classroomId:z.string().uuid().nullable().optional(),title:z.string().min(2).max(200),body:z.string().min(1).max(10000),status:z.enum(['draft','published']).default('draft')}).parse(request.body);
@@ -1696,7 +1697,8 @@ app.get('/api/teacher/context',async request=>{
   const a=await authorize(request,db,config);
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   const school=await one<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
-  return{core:a.core,schoolRole:a.role,school};
+  const capabilities=await effectiveCapabilities(db,a.role);
+  return{core:a.core,schoolRole:a.role,school,capabilities};
 });
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config);
@@ -2293,7 +2295,17 @@ app.get('/api/search',async request=>{
       type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
     }));
   }
-  return[...rows,...staff].slice(0,q.limit);
+  const caps=await effectiveCapabilities(db,a.role);
+  const allowed=(section:string)=>a.role==='school_admin'||(
+    section==='students'?caps.includes('students.view'):
+    section==='admissions'?caps.includes('admissions.view'):
+    section==='classes'?caps.includes('academic.view'):
+    section==='lessonnotes'?caps.includes('lesson_notes.view'):
+    section==='fees'?caps.includes('fees.view'):
+    section==='announcements'?caps.includes('communications.view'):
+    section==='staff'?caps.includes('staff.view'):false
+  );
+  return[...rows,...staff].filter((x:any)=>allowed(x.section)).slice(0,q.limit);
 });
 
 app.get('/api/communications/status',async request=>{
