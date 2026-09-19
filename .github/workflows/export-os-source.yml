@@ -1,0 +1,33 @@
+name: Export Revolt-X OS Source
+
+on:
+  push:
+    paths:
+      - ".github/workflows/export-os-source.yml"
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+
+      - name: Create source ZIP
+        run: |
+          mkdir -p export/source
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='.env' ./ export/source/revolt-x-os/
+          cd export/source
+          zip -r ../revolt-x-os-source.zip revolt-x-os
+          cd ..
+          printf "Repository: kemnyame/revolt-x-os\nBranch: main\nCommit: %s\nGenerated: %s\n" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > BUILD_INFO.txt
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: revolt-x-os-source
+          path: |
+            export/revolt-x-os-source.zip
+            export/BUILD_INFO.txt
+          if-no-files-found: error
+          retention-days: 7
