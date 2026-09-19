@@ -2133,6 +2133,103 @@ app.get('/api/staff/core-users',async request=>{
   return fetchCoreUsers(a.core.organisation_id);
 });
 
+app.post('/api/staff/users',async(request,reply)=>{
+  const a=await authorize(request,db,config,'staff.create');
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const b=z.object({
+    firstName:z.string().trim().min(1).max(100),
+    lastName:z.string().trim().min(1).max(100),
+    email:z.string().trim().toLowerCase().email().optional(),
+    jobTitle:z.string().trim().max(160).optional(),
+    employeeNumber:z.string().trim().max(80).optional(),
+    schoolRole:z.string().min(1).max(40)
+  }).parse(request.body);
+
+  const role=await one<any>(db,'SELECT * FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',
+    [a.core.organisation_id,b.schoolRole]);
+
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const created=await fetch(base+'/v1/internal/school/users',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({
+      organisationId:a.core.organisation_id,
+      actorUserId:a.core.id,
+      firstName:b.firstName,
+      lastName:b.lastName,
+      ...(b.email?{email:b.email}:{}),
+      jobTitle:b.jobTitle||role.name,
+      employeeNumber:b.employeeNumber||undefined,
+      roleKey:'member'
+    }),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!created)throw fail(503,'Core OS could not be reached');
+  const payload=await created.json().catch(()=>null) as any;
+  if(!created.ok)throw fail(created.status,payload?.error?.message||'Could not create user in Core OS');
+
+  const activated=await fetch(base+'/v1/internal/school/users/'+payload.id+'/status',{
+    method:'PATCH',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,status:'active'}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!activated?.ok)throw fail(activated?.status||503,'User was created but Core membership could not be activated');
+
+  const schoolMembership=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+    VALUES($1,$2,$3,'active')
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()
+    RETURNING *`,[a.core.organisation_id,payload.user_id,b.schoolRole]);
+
+  let invitation:any={status:b.email?'not_started':'email_not_set'};
+  if(b.email){
+    const setupRes=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-setup',{
+      method:'POST',
+      headers:{...coreServiceHeaders(),'content-type':'application/json'},
+      body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id}),
+      signal:AbortSignal.timeout(15000)
+    }).catch(()=>null);
+    if(setupRes?.ok){
+      const setup=await setupRes.json().catch(()=>null) as any;
+      const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+      const next=role.portal_mode==='teacher'?'/teacher':'/';
+      const setupUrl=publicBase+'/login?next='+encodeURIComponent(next)+'&setup='+encodeURIComponent(setup.setupToken);
+      const delivered=await deliverCommunication({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
+        recipientName:b.firstName+' '+b.lastName,recipientAddress:b.email,
+        subject:'Set up your Revolt-X School account',
+        body:`Hello ${b.firstName},
+
+Your Revolt-X School account has been created with the role ${role.name}.
+
+Use this secure link to create your password:
+${setupUrl}
+
+The link expires in 24 hours.`,
+        templateKey:'staff.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
+      });
+      invitation={status:delivered.status,expiresInHours:setup.expiresInHours,error:delivered.last_error??null};
+    }else{
+      const x=await setupRes?.json().catch(()=>null) as any;
+      invitation={status:'failed',error:x?.error?.message||'Could not create password setup invitation'};
+    }
+  }
+
+  coreUsersCache.delete(a.core.organisation_id);
+  await audit(a.core.organisation_id,a.core.id,'school_user.created','school_membership',schoolMembership.id,{
+    osUserId:payload.user_id,schoolRole:b.schoolRole,emailConfigured:Boolean(b.email)
+  });
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'school_user.created',
+    resourceType:'school_user',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
+    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:b.employeeNumber??null,emailConfigured:Boolean(b.email),status:'active'}
+  });
+  return reply.code(201).send({
+    osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
+    email:b.email??null,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,invitation
+  });
+});
+
 app.post('/api/staff/teachers',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.create');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
