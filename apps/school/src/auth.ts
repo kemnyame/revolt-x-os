@@ -21,17 +21,6 @@ export type CoreContext={
 
 export type SchoolRole='school_admin'|'headteacher'|'teacher'|'bursar'|'registrar';
 
-const capabilityRoles:Record<string,SchoolRole[]>={
-  'school.manage':['school_admin','headteacher'],
-  'academic.manage':['school_admin','headteacher','registrar'],
-  'students.manage':['school_admin','headteacher','registrar'],
-  'attendance.manage':['school_admin','headteacher','teacher'],
-  'assessment.manage':['school_admin','headteacher','teacher'],
-  'fees.manage':['school_admin','bursar'],
-  'reports.read':['school_admin','headteacher','teacher','bursar','registrar'],
-  'timetable.manage':['school_admin','headteacher','registrar']
-};
-
 async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Promise<CoreContext>{
   const auth=request.headers.authorization;
   if(!auth) throw Object.assign(new Error('Authentication required'),{statusCode:401});
@@ -51,6 +40,7 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
     'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
     [core.organisation_id,core.id]
   );
+
   if(!membership && core.permissions.includes('organisation.manage')){
     membership=await maybeOne<{role:SchoolRole;status:string}>(
       db,
@@ -61,9 +51,23 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
       [core.organisation_id,core.id]
     );
   }
-  if(!membership || membership.status!=='active') throw Object.assign(new Error('School module access is not active for this user'),{statusCode:403});
-  if(capability && !(capabilityRoles[capability]||[]).includes(membership.role)){
-    throw Object.assign(new Error(`School permission required: ${capability}`),{statusCode:403});
+
+  if(!membership || membership.status!=='active'){
+    throw Object.assign(new Error('School module access is not active for this user'),{statusCode:403});
   }
+
+  if(capability && membership.role!=='school_admin'){
+    const allowed=await maybeOne<{allowed:boolean}>(
+      db,
+      `SELECT allowed
+       FROM school_role_capabilities
+       WHERE role=$1 AND capability_key=$2`,
+      [membership.role,capability]
+    );
+    if(!allowed?.allowed){
+      throw Object.assign(new Error(`School permission required: ${capability}`),{statusCode:403});
+    }
+  }
+
   return {core,role:membership.role};
 }
