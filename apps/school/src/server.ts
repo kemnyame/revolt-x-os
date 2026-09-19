@@ -943,14 +943,7 @@ app.get('/api/assessments',async request=>{
     ORDER BY ac.sort_order NULLS LAST,a.assessment_date DESC NULLS LAST,a.created_at DESC`,
     [a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,q.categoryId??null,q.teacherOsUserId??null])).rows;
   if(a.role==='teacher'){
-    const allowed=(await db.query(`SELECT DISTINCT c.id classroom_id,cs.subject_id
-      FROM classrooms c JOIN class_subjects cs ON cs.classroom_id=c.id AND cs.is_active=true
-      WHERE c.organisation_id=$1 AND c.class_teacher_os_user_id=$2
-      UNION
-      SELECT ta.classroom_id,ta.subject_id FROM teacher_assignments ta
-      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL`,
-      [a.core.organisation_id,a.core.id])).rows;
-    rows=rows.filter((r:any)=>allowed.some((x:any)=>x.classroom_id===r.classroom_id&&x.subject_id===r.subject_id));
+    rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
   }
   return rows;
 });
@@ -992,10 +985,10 @@ app.post('/api/assessments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.get('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 app.get('/api/report-cards/:studentId',async request=>{
@@ -1874,10 +1867,10 @@ app.post('/api/homework/:id/submissions',async request=>{
   await tx(db,async client=>{
     for(const r of b.records){
       await client.query(`INSERT INTO homework_submissions(homework_id,student_id,status,submitted_at,score,teacher_comment)
-        VALUES($1,$2,$3,CASE WHEN $3 IN('submitted','late','graded') THEN now() ELSE NULL END,$4,$5)
+        VALUES($1::uuid,$2::uuid,$3::varchar,CASE WHEN $3::varchar IN('submitted','late','graded') THEN now() ELSE NULL END,$4::numeric,$5::varchar)
         ON CONFLICT(homework_id,student_id) DO UPDATE SET
           status=EXCLUDED.status,
-          submitted_at=CASE WHEN EXCLUDED.status IN('submitted','late','graded') THEN COALESCE(homework_submissions.submitted_at,now()) ELSE homework_submissions.submitted_at END,
+          submitted_at=CASE WHEN EXCLUDED.status::text IN('submitted','late','graded') THEN COALESCE(homework_submissions.submitted_at,now()) ELSE homework_submissions.submitted_at END,
           score=EXCLUDED.score,teacher_comment=EXCLUDED.teacher_comment,updated_at=now()`,
         [id,r.studentId,r.status,r.score??null,r.teacherComment??null]);
     }
@@ -2049,14 +2042,13 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   }
   if(b.action==='return'&&!b.returnNote)throw fail(400,'Give the class teacher a reason for returning the report');
   const status=b.action==='approve'?'approved':'returned';
-  const updated=await one<any>(db,`UPDATE report_comments SET workflow_status=$1,
-      headteacher_comment=CASE WHEN $1='approved' THEN $2 ELSE headteacher_comment END,
-      next_term_begins=$3::date,
-      return_note=CASE WHEN $1='returned' THEN $4 ELSE NULL END,
-      reviewed_by_os_user_id=$5,reviewed_at=now(),updated_at=now()
-    WHERE id=$6 RETURNING *`,[
-      status,b.headteacherComment??null,term.next_term_begins??null,b.returnNote??null,a.core.id,report.id
-    ]);
+  const updated=status==='approved'
+    ?await one<any>(db,`UPDATE report_comments SET workflow_status='approved',headteacher_comment=$1::text,
+        next_term_begins=$2::date,return_note=NULL,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),updated_at=now()
+      WHERE id=$4::uuid RETURNING *`,[b.headteacherComment??null,term.next_term_begins??null,a.core.id,report.id])
+    :await one<any>(db,`UPDATE report_comments SET workflow_status='returned',next_term_begins=$1::date,
+        return_note=$2::text,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),updated_at=now()
+      WHERE id=$4::uuid RETURNING *`,[term.next_term_begins??null,b.returnNote??null,a.core.id,report.id]);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1',[studentId]);
   const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
     WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[studentId]);
