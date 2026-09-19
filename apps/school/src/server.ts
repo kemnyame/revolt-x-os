@@ -542,6 +542,38 @@ app.post('/api/timetable',async(request,reply)=>{
 app.get('/api/staff/core-users',async request=>{
   const a=await authorize(request,db,config,'school.manage');const auth=request.headers.authorization!;const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(10000)});if(!res.ok)throw fail(res.status,'Could not load Core OS users');return res.json();
 });
+
+app.post('/api/staff/teachers',async(request,reply)=>{
+  const a=await authorize(request,db,config,'school.manage');
+  const auth=request.headers.authorization!;
+  const b=z.object({
+    email:z.string().email(),
+    firstName:z.string().min(1).max(100),
+    lastName:z.string().min(1).max(100),
+    jobTitle:z.string().min(2).max(160).default('Teacher'),
+    employeeNumber:z.string().max(80).optional()
+  }).parse(request.body);
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const created=await fetch(base+'/v1/users',{
+    method:'POST',
+    headers:{authorization:auth,'content-type':'application/json'},
+    body:JSON.stringify({...b,roleKey:'member'}),
+    signal:AbortSignal.timeout(10000)
+  });
+  const payload=await created.json().catch(()=>null) as any;
+  if(!created.ok)throw fail(created.status,payload?.error?.message||'Could not create teacher in Core OS');
+  await fetch(base+'/v1/users/'+payload.id+'/status',{
+    method:'PATCH',
+    headers:{authorization:auth,'content-type':'application/json'},
+    body:JSON.stringify({status:'active'}),
+    signal:AbortSignal.timeout(10000)
+  }).catch(()=>null);
+  await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+    VALUES($1,$2,'teacher','active')
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()`,[a.core.organisation_id,payload.user_id]);
+  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',payload.id,{email:b.email,osUserId:payload.user_id});
+  return reply.code(201).send({osUserId:payload.user_id,membershipId:payload.id,email:b.email,firstName:b.firstName,lastName:b.lastName,jobTitle:b.jobTitle});
+});
 app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'school.manage');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
 app.post('/api/staff/module-memberships',async(request,reply)=>{
   const a=await authorize(request,db,config,'school.manage');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
