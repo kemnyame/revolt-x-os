@@ -2964,6 +2964,108 @@ app.post('/api/payments/paystack/webhook',async(request,reply)=>{
   return reply.code(200).send({ok:true});
 });
 
+
+app.get('/api/system/diagnostics',async request=>{
+  const a=await authorize(request,db,config,'school.manage');
+  const org=a.core.organisation_id;
+  const checks:any[]=[];
+  const add=(key:string,label:string,ok:boolean,details:any,severity:'critical'|'warning'|'info'='critical')=>{
+    checks.push({key,label,status:ok?'pass':severity==='warning'?'warning':'fail',details});
+  };
+
+  const profile=await maybeOne<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[org]);
+  add('school_profile','School profile',Boolean(profile),profile?profile.school_name:'Missing school profile');
+
+  const years=await one<any>(db,`SELECT count(*)::int total,count(*) FILTER(WHERE status='active')::int active FROM academic_years WHERE organisation_id=$1`,[org]);
+  add('academic_year','Academic year',Number(years.active)===1,{total:years.total,active:years.active});
+
+  const terms=await one<any>(db,`SELECT count(*)::int total,count(*) FILTER(WHERE status='active')::int active FROM terms WHERE organisation_id=$1`,[org]);
+  add('term','Academic term',Number(terms.active)===1,{total:terms.total,active:terms.active});
+
+  const classData=await one<any>(db,`SELECT count(*) FILTER(WHERE is_active)::int active_classes FROM classrooms WHERE organisation_id=$1`,[org]);
+  const subjectData=await one<any>(db,`SELECT count(*) FILTER(WHERE is_active)::int active_subjects FROM subjects WHERE organisation_id=$1`,[org]);
+  add('academic_structure','Classes and subjects',Number(classData.active_classes)>0&&Number(subjectData.active_subjects)>0,{classes:classData.active_classes,subjects:subjectData.active_subjects});
+
+  const curriculum=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE cs.is_active)::int active_links,
+    count(*) FILTER(WHERE cs.is_active AND NOT EXISTS(
+      SELECT 1 FROM teacher_assignments ta WHERE ta.organisation_id=cs.organisation_id
+      AND ta.classroom_id=cs.classroom_id AND ta.subject_id=cs.subject_id AND ta.is_active=true
+    ))::int without_teacher
+    FROM class_subjects cs WHERE cs.organisation_id=$1`,[org]);
+  add('curriculum_teachers','Curriculum teacher coverage',Number(curriculum.active_links)>0&&Number(curriculum.without_teacher)===0,curriculum);
+
+  const students=await one<any>(db,`SELECT count(*) FILTER(WHERE status='active')::int active_students,
+    count(*) FILTER(WHERE status='active' AND NOT EXISTS(
+      SELECT 1 FROM enrolments e WHERE e.student_id=students.id AND e.status='active'
+    ))::int without_enrolment FROM students WHERE organisation_id=$1`,[org]);
+  add('student_enrolment','Active student enrolment',Number(students.without_enrolment)===0&&Number(students.active_students)>0,students);
+
+  const guardianLinks=await one<any>(db,`SELECT count(*)::int links FROM student_guardians sg JOIN students s ON s.id=sg.student_id WHERE s.organisation_id=$1`,[org]);
+  add('guardians','Student guardian links',Number(guardianLinks.links)>0,guardianLinks,'warning');
+
+  const scheme=(await db.query(`SELECT t.id,t.name,COALESCE(sum(ac.weight_percent) FILTER(WHERE ac.is_active),0)::numeric total_weight
+    FROM terms t LEFT JOIN assessment_categories ac ON ac.term_id=t.id
+    WHERE t.organisation_id=$1 GROUP BY t.id,t.name,t.term_no ORDER BY t.term_no`,[org])).rows;
+  const badScheme=scheme.filter((x:any)=>Math.abs(Number(x.total_weight)-100)>0.001);
+  add('assessment_scheme','Assessment schemes total 100%',scheme.length>0&&badScheme.length===0,{terms:scheme,badTerms:badScheme.length});
+
+  const scores=await one<any>(db,`SELECT count(*)::int invalid_scores FROM assessment_scores sc JOIN assessments a ON a.id=sc.assessment_id
+    WHERE a.organisation_id=$1 AND (sc.score<0 OR sc.score>a.max_score)`,[org]);
+  add('assessment_scores','Assessment score validation',Number(scores.invalid_scores)===0,scores);
+
+  const fees=await one<any>(db,`SELECT
+      count(*)::int assigned_fees,
+      count(*) FILTER(WHERE e.status='active' AND f.mandatory=true AND sf.id IS NULL)::int missing_mandatory
+    FROM enrolments e
+    JOIN classrooms c ON c.id=e.classroom_id
+    LEFT JOIN fee_items f ON f.organisation_id=e.organisation_id AND f.academic_year_id=e.academic_year_id
+      AND f.mandatory=true AND (f.grade_level_id IS NULL OR f.grade_level_id=c.grade_level_id)
+    LEFT JOIN student_fees sf ON sf.student_id=e.student_id AND sf.fee_item_id=f.id
+    WHERE e.organisation_id=$1`,[org]);
+  add('fees','Mandatory fee assignment',Number(fees.missing_mandatory)===0,fees);
+
+  const negativeBalances=await one<any>(db,`SELECT count(*)::int negative_balances FROM (
+    SELECT sf.id,(sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) balance
+    FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id
+    WHERE sf.organisation_id=$1 GROUP BY sf.id
+  ) x WHERE balance < -0.01`,[org]);
+  add('payments','Fee ledger balances',Number(negativeBalances.negative_balances)===0,negativeBalances);
+
+  const admissions=await one<any>(db,`SELECT count(*)::int total,
+    count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM admission_status_history h WHERE h.application_id=admission_applications.id))::int without_history
+    FROM admission_applications WHERE organisation_id=$1`,[org]);
+  add('admissions','Admission tracking history',Number(admissions.without_history)===0,admissions);
+
+  const timetable=await one<any>(db,`SELECT count(*)::int entries,
+    count(*) FILTER(WHERE end_time<=start_time)::int invalid_times FROM timetable_entries WHERE organisation_id=$1`,[org]);
+  add('timetable','Timetable entries',Number(timetable.invalid_times)===0&&Number(timetable.entries)>0,timetable,'warning');
+
+  const reportWorkflow=await one<any>(db,`SELECT count(*)::int reports,
+    count(*) FILTER(WHERE workflow_status='approved' AND headteacher_comment IS NULL)::int invalid_approved
+    FROM report_comments WHERE organisation_id=$1`,[org]);
+  add('reports','Report approval workflow',Number(reportWorkflow.invalid_approved)===0,reportWorkflow);
+
+  const portal=await one<any>(db,`SELECT
+    (SELECT count(*) FROM guardian_portal_access gpa JOIN guardians g ON g.id=gpa.guardian_id WHERE g.organisation_id=$1 AND gpa.is_active=true)::int guardian_access,
+    (SELECT count(*) FROM student_portal_access spa JOIN students s ON s.id=spa.student_id WHERE s.organisation_id=$1 AND spa.is_active=true)::int student_access`,[org]);
+  add('portals','Portal access provisioned',Number(portal.guardian_access)>0&&Number(portal.student_access)>0,portal,'warning');
+
+  const providers=providerStatus(config);
+  add('email_provider','Email provider',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
+  add('sms_provider','SMS provider',providers.sms.configured,providers.sms,providers.sms.configured?'info':'warning');
+  add('whatsapp_provider','WhatsApp provider',providers.whatsapp.configured,providers.whatsapp,providers.whatsapp.configured?'info':'warning');
+  add('payments_provider','Online payment provider',providers.payments.configured,providers.payments,providers.payments.configured?'info':'warning');
+
+  const summary={
+    passed:checks.filter(x=>x.status==='pass').length,
+    warnings:checks.filter(x=>x.status==='warning').length,
+    failed:checks.filter(x=>x.status==='fail').length,
+    total:checks.length
+  };
+  return{generatedAt:new Date().toISOString(),summary,checks};
+});
+
 app.get('/api/audit',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query('SELECT * FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id])).rows});
 
 app.setErrorHandler((error:any,_request,reply)=>{
