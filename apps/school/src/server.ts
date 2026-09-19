@@ -3,7 +3,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { z } from 'zod';
-import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities } from './auth.js';
@@ -3053,11 +3053,47 @@ app.get('/api/teacher/dashboard',async request=>{
 });
 
 
-app.get('/api/test-access/status',async()=>{
-  return{enabled:config.ENABLE_TEST_PORTAL_ACCESS};
-});
-app.get('/api/test-access/students',async()=>{
+function testAccessCookieValue(request:any){
+  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_test_access='));
+  return cookie?decodeURIComponent(cookie.slice('rx_test_access='.length)):'';
+}
+function verifyTestAccessCookie(request:any){
+  if(!config.ENABLE_TEST_PORTAL_ACCESS||!config.TEST_ACCESS_PASSWORD)return false;
+  const value=testAccessCookieValue(request);
+  const [expRaw,sig]=value.split('.');
+  const exp=Number(expRaw);
+  if(!exp||!sig||Date.now()>exp)return false;
+  const expected=createHmac('sha256',config.TEST_ACCESS_PASSWORD).update('revolt-x-school-demo|'+expRaw).digest('base64url');
+  const a=Buffer.from(expected),b=Buffer.from(sig);
+  return a.length===b.length&&timingSafeEqual(a,b);
+}
+function requireTestAccess(request:any){
   if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  if(!config.TEST_ACCESS_PASSWORD)throw fail(503,'Test access password is not configured');
+  if(!verifyTestAccessCookie(request))throw fail(401,'Demo access password required');
+}
+app.get('/api/test-access/status',async request=>{
+  return{enabled:config.ENABLE_TEST_PORTAL_ACCESS,unlocked:verifyTestAccessCookie(request)};
+});
+app.post('/api/test-access/unlock',async(request,reply)=>{
+  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  if(!config.TEST_ACCESS_PASSWORD)throw fail(503,'Test access password is not configured');
+  const b=z.object({password:z.string().min(1).max(200)}).parse(request.body);
+  const expected=Buffer.from(config.TEST_ACCESS_PASSWORD),provided=Buffer.from(b.password);
+  if(expected.length!==provided.length||!timingSafeEqual(expected,provided))throw fail(401,'Invalid demo access password');
+  const exp=Date.now()+8*60*60*1000;
+  const sig=createHmac('sha256',config.TEST_ACCESS_PASSWORD).update('revolt-x-school-demo|'+String(exp)).digest('base64url');
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_test_access='+encodeURIComponent(String(exp)+'.'+sig)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  return{unlocked:true,expiresIn:28800};
+});
+app.post('/api/test-access/lock',async(_request,reply)=>{
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_test_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+  return{unlocked:false};
+});
+app.get('/api/test-access/students',async request=>{
+  requireTestAccess(request);
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
   return (await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,c.name classroom_name,g.name grade_name
     FROM students s
@@ -3068,7 +3104,7 @@ app.get('/api/test-access/students',async()=>{
     ORDER BY c.name NULLS LAST,s.last_name,s.first_name`,[school.organisation_id])).rows;
 });
 app.post('/api/test-access/student-login',async request=>{
-  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  requireTestAccess(request);
   const b=z.object({studentId:z.string().uuid()}).parse(request.body);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND status=\'active\'',[b.studentId]);
   const token=randomBytes(48).toString('base64url');
@@ -3076,24 +3112,23 @@ app.post('/api/test-access/student-login',async request=>{
     VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
   return{token,expiresIn:28800,testAccess:true};
 });
-app.get('/api/test-access/teachers',async()=>{
-  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+app.get('/api/test-access/teachers',async request=>{
+  requireTestAccess(request);
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
   const memberships=(await db.query(`SELECT os_user_id,role FROM school_memberships
     WHERE organisation_id=$1 AND status='active' AND role IN('teacher','headteacher','school_admin')
     ORDER BY role,created_at`,[school.organisation_id])).rows;
   const users=await fetchCoreUsers(school.organisation_id);
-  const rows=memberships.map((m:any)=>{
+  return memberships.map((m:any)=>{
     const u=users.find((x:any)=>x.id===m.os_user_id)||{};
     return{
       id:m.os_user_id,role:m.role,email:u.email||'',first_name:u.first_name||'Teacher',
       last_name:u.last_name||'',job_title:u.job_title||'Teacher'
     };
   });
-  return rows;
 });
 app.post('/api/test-access/teacher-login',async(request,reply)=>{
-  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  requireTestAccess(request);
   const b=z.object({osUserId:z.string().uuid()}).parse(request.body);
   const school=await one<any>(db,'SELECT organisation_id,school_name FROM school_profiles ORDER BY created_at LIMIT 1');
   const membership=await one<any>(db,`SELECT * FROM school_memberships
