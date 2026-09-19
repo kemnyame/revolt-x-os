@@ -4586,7 +4586,23 @@ app.get('/api/search',async request=>{
       SELECT 'payment',p.id::text,(s.first_name||' '||s.last_name),('Payment • GHS '||p.amount::text||COALESCE(' • '||p.reference,'')),'fees',8
       FROM payments p JOIN students s ON s.id=p.student_id WHERE p.organisation_id=$1 AND (COALESCE(p.reference,'') ILIKE $2 OR s.admission_no ILIKE $2 OR (s.first_name||' '||s.last_name) ILIKE $2)
       UNION ALL
-      SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',9
+      SELECT 'finance_expense',e.id::text,e.description,(e.expense_no||' • GHS '||e.amount::text||COALESCE(' • '||e.reference,'')),'finance',9
+      FROM finance_expenses e WHERE e.organisation_id=$1 AND (e.description ILIKE $2 OR e.expense_no ILIKE $2 OR COALESCE(e.reference,'') ILIKE $2)
+      UNION ALL
+      SELECT 'finance_journal',je.id::text,je.description,(je.entry_no||COALESCE(' • '||je.reference,'')),'finance',10
+      FROM finance_journal_entries je WHERE je.organisation_id=$1 AND (je.description ILIKE $2 OR je.entry_no ILIKE $2 OR COALESCE(je.reference,'') ILIKE $2)
+      UNION ALL
+      SELECT 'vendor',v.id::text,v.name,(COALESCE(v.tax_id,'')||COALESCE(' • '||v.phone,'')),'finance',11
+      FROM finance_vendors v WHERE v.organisation_id=$1 AND (v.name ILIKE $2 OR COALESCE(v.tax_id,'') ILIKE $2 OR COALESCE(v.phone,'') ILIKE $2)
+      UNION ALL
+      SELECT 'tax',o.id::text,t.name,(t.code||' • '||o.status||' • GHS '||o.amount_due::text),'finance',12
+      FROM finance_tax_obligations o JOIN finance_tax_types t ON t.id=o.tax_type_id
+      WHERE o.organisation_id=$1 AND (t.name ILIKE $2 OR t.code ILIKE $2 OR COALESCE(o.filing_reference,'') ILIKE $2)
+      UNION ALL
+      SELECT 'leave',lr.id::text,replace(lr.leave_type,'_',' ')||' leave',(lr.start_date::text||' to '||lr.end_date::text||' • '||lr.status),'leave',13
+      FROM staff_leave_requests lr WHERE lr.organisation_id=$1 AND (lr.leave_type ILIKE $2 OR lr.reason ILIKE $2 OR lr.status ILIKE $2)
+      UNION ALL
+      SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',14
       FROM communication_outbox co WHERE co.organisation_id=$1 AND (COALESCE(co.subject,'') ILIKE $2 OR co.recipient_address ILIKE $2 OR COALESCE(co.recipient_name,'') ILIKE $2)
     ) x ORDER BY rank,title LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
   let staff:any[]=[];
@@ -4604,6 +4620,8 @@ app.get('/api/search',async request=>{
     section==='assignments'?(caps.includes('teaching_assignments.view')||caps.includes('academic.view')):
     section==='lessonnotes'?caps.includes('lesson_notes.view'):
     section==='fees'?caps.includes('fees.view'):
+    section==='finance'?caps.includes('finance.view'):
+    section==='leave'?caps.includes('leave.view'):
     section==='announcements'?caps.includes('communications.view'):
     section==='staff'?caps.includes('staff.view'):false
   );
