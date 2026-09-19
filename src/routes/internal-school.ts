@@ -32,7 +32,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     requireSchoolService(request,config);
     const q=scopeSchema.parse(request.query);
     return (await db.query(
-      `SELECT u.id,u.email,u.first_name,u.last_name,u.status,
+      `SELECT u.id,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,u.first_name,u.last_name,u.status,
               m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
@@ -51,7 +51,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const b=z.object({
       organisationId:z.string().uuid(),
       actorUserId:z.string().uuid(),
-      email:z.string().email(),
+      email:z.string().trim().toLowerCase().email().optional(),
       firstName:z.string().min(1).max(100),
       lastName:z.string().min(1).max(100),
       jobTitle:z.string().max(160).optional(),
@@ -62,13 +62,14 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     try{
       const result=await transaction(db,async c=>{
         const generated=randomBytes(24).toString('base64url');
+        const internalEmail=b.email||('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local');
         const user=await one<{id:string}>(
           c,
           `INSERT INTO users(email,password_hash,first_name,last_name,status)
            VALUES($1,$2,$3,$4,'invited')
            ON CONFLICT(email) DO UPDATE SET first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,updated_at=now()
            RETURNING id`,
-          [b.email.toLowerCase(),await bcrypt.hash(generated,12),b.firstName,b.lastName]
+          [internalEmail,await bcrypt.hash(generated,12),b.firstName,b.lastName]
         );
         const existing=await c.query(
           'SELECT id FROM organisation_memberships WHERE organisation_id=$1 AND user_id=$2',
@@ -96,9 +97,9 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         await audit(c,{
           organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
           action:'school_service.user_invited',resourceType:'membership',resourceId:membership.id,
-          afterState:{email:b.email,role:b.roleKey}
+          afterState:{email:b.email??null,role:b.roleKey,emailPending:!b.email}
         });
-        await emitEvent(c,b.organisationId,'core.user.invited.v1','membership',membership.id,{membershipId:membership.id,email:b.email});
+        await emitEvent(c,b.organisationId,'core.user.invited.v1','membership',membership.id,{membershipId:membership.id,email:b.email??null,emailPending:!b.email});
         return membership;
       });
       return reply.code(201).send(result);
@@ -119,13 +120,14 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     return transaction(db,async c=>{
       const membership=await one<any>(
         c,
-        `SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
+        `SELECT m.*,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,u.first_name,u.last_name,u.status user_status
          FROM organisation_memberships m
          JOIN users u ON u.id=m.user_id
          WHERE m.id=$1 AND m.organisation_id=$2
          FOR UPDATE OF m,u`,
         [p.membershipId,b.organisationId]
       );
+      if(!membership.email)throw conflict('Add a real email address before creating a password setup invitation');
       await c.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1",[membership.user_id]);
       const token=randomBytes(32).toString('base64url');
       const tokenHash=createHash('sha256').update(token).digest('hex');
