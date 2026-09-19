@@ -1118,13 +1118,14 @@ app.post('/api/teacher-assignments/bulk',async request=>{
   let pairs:{classroomId:string;subjectId:string|null}[]=[];
   if(b.mode==='class_teacher'){
     if(uniqueClasses.length!==1)throw fail(409,'A teacher can be Class Teacher for only one class. Select one class only.');
+    const targetClass=uniqueClasses[0]!;
     const other=await maybeOne<any>(db,`SELECT c.name classroom_name FROM teacher_assignments ta
       JOIN classrooms c ON c.id=ta.classroom_id
       WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
         AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4 LIMIT 1`,
-      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,uniqueClasses[0]]);
+      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,targetClass]);
     if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}.`);
-    pairs=[{classroomId:uniqueClasses[0],subjectId:null}];
+    pairs=[{classroomId:targetClass,subjectId:null}];
   }else if(b.mode==='all_subjects'){
     pairs=(await db.query(`SELECT classroom_id,subject_id FROM class_subjects
       WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true AND classroom_id=ANY($3::uuid[])
