@@ -5,7 +5,7 @@ type Deps={
   db:any;
   config:any;
   authorize:(request:any,db:any,config:any,capability?:string)=>Promise<any>;
-  maybeOne:<T=any>(db:any,sql:string,params?:any[])=>Promise<T|null>;
+  maybeOne:<T=any>(db:any,sql:string,params?:any[])=>Promise<T|undefined>;
   one:<T=any>(db:any,sql:string,params?:any[])=>Promise<T>;
   tx:(db:any,fn:(client:any)=>Promise<any>)=>Promise<any>;
   fail:(status:number,message:string)=>any;
