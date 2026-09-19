@@ -1002,9 +1002,10 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
     ...b.subjects.map(x=>x.teacherOsUserId).filter(Boolean)
   ] as string[])];
   if(teacherIds.length){
-    const valid=(await db.query(`SELECT os_user_id FROM school_memberships
-      WHERE organisation_id=$1 AND status='active' AND role IN('teacher','headteacher','school_admin')
-        AND os_user_id=ANY($2::uuid[])`,[a.core.organisation_id,teacherIds])).rows.map((x:any)=>x.os_user_id);
+    const valid=(await db.query(`SELECT sm.os_user_id FROM school_memberships sm
+      JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+      WHERE sm.organisation_id=$1 AND sm.status='active' AND sr.is_active=true AND sr.can_teach=true
+        AND sm.os_user_id=ANY($2::uuid[])`,[a.core.organisation_id,teacherIds])).rows.map((x:any)=>x.os_user_id);
     const missing=teacherIds.filter(id=>!valid.includes(id));
     if(missing.length)throw fail(409,'One or more selected teachers do not have active teaching access');
   }
@@ -1122,8 +1123,9 @@ app.post('/api/teacher-assignments/bulk',async request=>{
     subjectId:z.string().uuid().nullable().optional()
   }).parse(request.body);
 
-  await one<any>(db,`SELECT os_user_id FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+  await one<any>(db,`SELECT sm.os_user_id FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true AND sr.can_teach=true`,
     [a.core.organisation_id,b.teacherOsUserId]);
   if(b.termId)await one<any>(db,'SELECT id FROM terms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',
     [b.termId,a.core.organisation_id,b.academicYearId]);
@@ -2349,8 +2351,9 @@ app.post('/api/staff/teachers/:osUserId/send-invitation',async request=>{
   const a=await authorize(request,db,config,'staff.edit');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   const {osUserId}=z.object({osUserId:z.string().uuid()}).parse(request.params);
-  const schoolMembership=await one<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+  const schoolMembership=await one<any>(db,`SELECT sm.* FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true AND sr.can_teach=true`,
     [a.core.organisation_id,osUserId]);
   const users=await fetchCoreUsers(a.core.organisation_id);
   const teacher=users.find((u:any)=>u.id===osUserId);
@@ -4101,7 +4104,7 @@ app.put('/api/roles/:role/capabilities',async request=>{
 
 app.get('/api/teacher/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher timetable access is not enabled for this role');
+  await ensureTeachingRole(a);
   const q=z.object({termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
   const currentTerm=q.termId
     ?await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id])
