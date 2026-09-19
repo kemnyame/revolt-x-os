@@ -14,6 +14,7 @@ import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend } from './login-ui.js';
 import { initializePaystack, providerStatus, sendMessage, verifyPaystack, type MessageChannel } from './providers.js';
+import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -5022,6 +5023,12 @@ app.patch('/api/system/errors/:id',async request=>{
     [b.resolved,a.core.id,b.resolutionNote??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,b.resolved?'system_error.resolved':'system_error.reopened','system_error',id,{resolutionNote:b.resolutionNote??null});
   return row;
+});
+
+await registerFinanceLeaveRoutes(app,{
+  db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,
+  postFinanceJournal,postStudentPaymentLedger,
+  clearCoreUsersCache:(organisationId:string)=>coreUsersCache.delete(organisationId)
 });
 
 app.setErrorHandler(async(error:any,request,reply)=>{
