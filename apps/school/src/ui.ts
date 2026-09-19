@@ -54,7 +54,8 @@ var nav=[
 ['promotions','Promotion & Rollover','⇧','promotion.manage'],
 ['grading','Grading Setup','G','assessment.view'],
 ['fees','Fees & Payments','₵','fees.view'],
-['timetable','Timetable','T','timetable.view'],
+['timetable','Timetable & Scheduling','T','timetable.view'],
+['teacherschedule','Teacher Scheduling','↔','teaching_assignments.view|timetable.view'],
 ['announcements','Communication Centre','N','communications.view'],
 ['staff','Access Management','P','staff.view|roles.view'],
 ['systemcheck','System & Audit Logs','✓','system.logs.view|school.manage'],
@@ -688,14 +689,21 @@ async function page(p){
    E('ttYear').onchange=refreshTT;E('ttTerm').onchange=refreshTT;E('ttClass').onchange=refreshTT;E('ttTeacher').onchange=refreshTT;E('ttSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(refreshTT,150)};
    E('autoSchedule').onclick=async function(){
      try{
-       var y=E('ttYear').value,t=E('ttTerm').value||null;
-       var plan=await raw('/api/timetable/auto-schedule/preview',{method:'POST',body:JSON.stringify({academicYearId:y,termId:t})});
-       var previewRows=plan.suggestions.slice(0,80);
-       modal('<h2>Auto Schedule Preview</h2><p class="muted">Auto Schedule fills only missing weekly periods. Existing manual timetable entries are preserved.</p><div class="grid"><div class="panel stat"><span class="muted">Periods to create</span><b>'+plan.suggestions.length+'</b></div><div class="panel stat"><span class="muted">Items needing attention</span><b>'+plan.unscheduled.length+'</b></div></div>'+
+       var y=E('ttYear').value,t=E('ttTerm').value||null,teacher=E('ttTeacher').value||null;
+       var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,regenerateAuto:false,dryRun:true})});
+       var previewRows=(plan.suggestions||[]).slice(0,100);
+       modal('<h2>Auto Schedule Preview</h2><p class="muted">The scheduler uses credit hours, minimum weekly periods, Monday to Friday availability, teacher workload, school-day rules, breaks, class conflicts and teacher conflicts. Manual changes are preserved.</p>'+
+         '<div class="grid"><div class="panel stat"><span class="muted">Periods proposed</span><b>'+plan.created+'</b></div><div class="panel stat"><span class="muted">Items needing attention</span><b>'+plan.unscheduled.length+'</b></div><div class="panel stat"><span class="muted">Period length</span><b>'+plan.periodMinutes+' min</b></div><div class="panel stat"><span class="muted">Manual periods preserved</span><b>'+plan.preservedManual+'</b></div></div>'+
          (previewRows.length?'<h3 style="margin-top:16px">Proposed periods</h3>'+table(previewRows,[{key:'day_of_week',label:'Day',render:function(r){return['','Monday','Tuesday','Wednesday','Thursday','Friday'][r.day_of_week]}},{key:'start_time',label:'Start'},{key:'end_time',label:'End'},{key:'classroom_name',label:'Class'},{key:'subject_name',label:'Subject'},{key:'teacher_os_user_id',label:'Teacher',render:function(r){return esc(teacherName(r.teacher_os_user_id))}}]):'<div class="notice" style="margin-top:12px">No additional periods are required.</div>')+
-         (plan.unscheduled.length?'<h3 style="margin-top:16px">Needs attention</h3>'+table(plan.unscheduled,[{key:'classroomName',label:'Class'},{key:'subjectName',label:'Subject'},{key:'remaining',label:'Missing periods'},{key:'reason'}]):'')+
-         (plan.suggestions.length?'<button id="applyAutoSchedule" class="primary" style="width:100%;margin-top:14px">Apply '+plan.suggestions.length+' Scheduled Periods</button>':''));
-       var apply=E('applyAutoSchedule');if(apply)apply.onclick=async function(){try{if(!confirm('Apply this schedule? Existing timetable entries will be kept.'))return;apply.disabled=true;var result=await raw('/api/timetable/auto-schedule/apply',{method:'POST',body:JSON.stringify({academicYearId:y,termId:t})});close();toast('Auto Schedule created '+result.created+' periods');page('timetable')}catch(err){apply.disabled=false;toast(err.message,true)}}
+         (plan.unscheduled.length?'<h3 style="margin-top:16px">Needs attention</h3>'+table(plan.unscheduled,[{key:'classroomName',label:'Class'},{key:'subjectName',label:'Subject'},{key:'remainingPeriods',label:'Missing periods'},{key:'reason'}]):'')+
+         (plan.created?'<label style="margin-top:14px"><input id="regenerateAuto" type="checkbox" style="width:auto;margin-right:8px" checked> Regenerate previous auto-scheduled periods while preserving manual/locked changes</label><button id="applyAutoSchedule" class="primary" style="width:100%;margin-top:12px">Apply Auto Schedule</button>':''));
+       var apply=E('applyAutoSchedule');if(apply)apply.onclick=async function(){
+         try{
+           apply.disabled=true;apply.textContent='Scheduling...';
+           var result=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:y,termId:t,teacherOsUserId:teacher,regenerateAuto:E('regenerateAuto').checked,dryRun:false})});
+           close();await page('timetable');successDialog('Timetable scheduled',result.created+' periods were created. '+result.unscheduled.length+' item(s) still need attention.')
+         }catch(err){apply.disabled=false;apply.textContent='Apply Auto Schedule';toast(err.message,true)}
+       }
      }catch(err){toast(err.message,true)}
    };
    E('scheduleSettings').onclick=async function(){
@@ -772,6 +780,40 @@ async function page(p){
      E('returnReport').onclick=async function(){try{var note=E('returnNote').value.trim();if(!note)return toast('Enter the correction required before returning the report',true);E('returnReport').disabled=true;await raw('/api/report-comments/'+sid+'/review',{method:'POST',body:JSON.stringify({termId:tid,action:'return',returnNote:note})});close();toast('Report returned to Class Teacher');page('reports')}catch(err){E('returnReport').disabled=false;toast(err.message,true)}}
    };
    if(remembered&&E('reportStudent').value){setTimeout(function(){E('loadReport').click()},0)}
+ }
+ else if(p==='teacherschedule'){
+   var rr=await Promise.all([
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/staff/core-users'),raw('/api/staff/module-memberships'),
+     raw('/api/teacher-assignments'),raw('/api/class-subjects'),raw('/api/timetable')
+   ]);
+   var years=rr[0],terms=rr[1],users=rr[2],memberships=rr[3],assignments=rr[4],classSubjects=rr[5],allTimetable=rr[6];
+   var activeYear=years.find(function(y){return y.status==='active'})||years[0],activeTerm=terms.find(function(t){return t.status==='active'})||null;
+   var teacherIds=memberships.filter(function(m){return m.status==='active'&&['teacher','headteacher','school_admin'].indexOf(m.role)>=0}).map(function(m){return m.os_user_id});
+   var teachers=users.filter(function(u){return teacherIds.indexOf(u.id)>=0});
+   function workload(t){
+     var rows=assignments.filter(function(a){return a.is_active&&a.teacher_os_user_id===t.id&&(!activeYear||a.academic_year_id===activeYear.id)&&(activeTerm?(a.term_id===activeTerm.id||!a.term_id):true)});
+     var subjectRows=rows.filter(function(a){return a.subject_id}),classRows=rows.filter(function(a){return !a.subject_id});
+     var credits=0,periods=0;
+     subjectRows.forEach(function(a){var cs=classSubjects.find(function(x){return x.classroom_id===a.classroom_id&&x.subject_id===a.subject_id&&x.academic_year_id===a.academic_year_id});if(cs){credits+=Number(cs.credit_hours||0);periods+=Number(cs.weekly_periods||0)}});
+     var scheduled=allTimetable.filter(function(x){return x.teacher_os_user_id===t.id&&(!activeYear||x.academic_year_id===activeYear.id)&&(activeTerm?x.term_id===activeTerm.id:true)}).length;
+     return{assignments:rows,subjects:subjectRows.length,classes:new Set(rows.map(function(x){return x.classroom_id})).size,classTeacher:classRows.length,credits:Math.round(credits*100)/100,minimumPeriods:periods,scheduled:scheduled}
+   }
+   function draw(){
+     var q=E('teacherScheduleSearch').value.trim().toLowerCase(),rows=q?teachers.filter(function(t){return(t.first_name+' '+t.last_name+' '+t.email+' '+(t.job_title||'')).toLowerCase().includes(q)}):teachers;
+     E('teacherScheduleRows').innerHTML=table(rows,[{key:'first_name',label:'Teacher',render:function(t){return'<b>'+esc(t.first_name+' '+t.last_name)+'</b><br><span class="muted">'+esc(t.email)+'</span>'}},{key:'id',label:'Classes',render:function(t){return workload(t).classes}},{key:'id',label:'Subjects',render:function(t){return workload(t).subjects}},{key:'id',label:'Credit hrs/week',render:function(t){return workload(t).credits}},{key:'id',label:'Minimum periods',render:function(t){return workload(t).minimumPeriods}},{key:'id',label:'Scheduled periods',render:function(t){return workload(t).scheduled}}],function(t){return'<button class="mini" data-view-teacher-load="'+t.id+'">View load</button><button class="mini primary-lite" data-schedule-teacher="'+t.id+'">Auto schedule</button>'})
+   }
+   E('content').innerHTML='<div class="section"><div><h1>Teacher Scheduling</h1><p class="muted">A teacher-centred view of class assignments, subject dependencies, credit hours and scheduled periods.</p></div><button id="openAssignments" class="ghost">Open Teaching Assignment Manager</button></div>'+
+     '<div class="panel"><div class="toolbar"><input id="teacherScheduleSearch" placeholder="Search teacher, email or job title"></div><div id="teacherScheduleRows"></div></div>';
+   draw();E('teacherScheduleSearch').oninput=draw;E('openAssignments').onclick=function(){page('assignments')};
+   E('content').onclick=async function(e){
+     var id=e.target.dataset.viewTeacherLoad||e.target.dataset.scheduleTeacher;if(!id)return;var t=teachers.find(function(x){return x.id===id}),w=workload(t);
+     if(e.target.dataset.viewTeacherLoad){
+       return modal('<h2>'+esc(t.first_name+' '+t.last_name)+'</h2><p class="muted">'+esc(t.email)+' • '+esc(t.job_title||'Teacher')+'</p><div class="grid"><div class="panel stat"><span class="muted">Classes</span><b>'+w.classes+'</b></div><div class="panel stat"><span class="muted">Subjects</span><b>'+w.subjects+'</b></div><div class="panel stat"><span class="muted">Credit hrs/week</span><b>'+w.credits+'</b></div><div class="panel stat"><span class="muted">Scheduled periods</span><b>'+w.scheduled+'</b></div></div>'+table(w.assignments,[{key:'classroom_name',label:'Class'},{key:'subject_name',label:'Responsibility',render:function(a){return esc(a.subject_name||'Class Teacher')}},{key:'term_name',label:'Term',render:function(a){return esc(a.term_name||'Whole year')}}]))}
+     var y=activeYear&&activeYear.id,term=activeTerm&&activeTerm.id;if(!y)return toast('No active academic year',true);
+     var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:y,termId:term||null,teacherOsUserId:id,regenerateAuto:false,dryRun:true})});
+     modal('<h2>Auto schedule '+esc(t.first_name+' '+t.last_name)+'</h2><p class="muted">This schedules only this teacher across Monday to Friday while respecting class clashes, breaks, credit hours and maximum daily load.</p><div class="grid"><div class="panel stat"><span class="muted">Periods proposed</span><b>'+plan.created+'</b></div><div class="panel stat"><span class="muted">Needs attention</span><b>'+plan.unscheduled.length+'</b></div></div><button id="applyTeacherSchedule" class="primary" style="width:100%;margin-top:12px">Apply teacher schedule</button>');
+     E('applyTeacherSchedule').onclick=async function(){var x=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:y,termId:term||null,teacherOsUserId:id,regenerateAuto:true,dryRun:false})});close();await page('teacherschedule');successDialog('Teacher timetable scheduled',x.created+' periods were created for '+t.first_name+' '+t.last_name+'.')}
+   }
  }
  else if(p==='announcements'){
    var rr=await Promise.all([raw('/api/announcements'),raw('/api/classes'),raw('/api/communications/status'),raw('/api/communications/outbox')]);
