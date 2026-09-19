@@ -12,6 +12,7 @@ const schema = z.object({
   CORS_ORIGINS: z.string().default('*'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
   PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
+  ENABLE_TEST_PORTAL_ACCESS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 
