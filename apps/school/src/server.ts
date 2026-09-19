@@ -274,6 +274,50 @@ app.post('/api/subjects',async(request,reply)=>{
   const row=await one<any>(db,'INSERT INTO subjects(organisation_id,code,name,stage) VALUES($1,$2,$3,$4) RETURNING *',[a.core.organisation_id,b.code.toUpperCase(),b.name,b.stage]);await audit(a.core.organisation_id,a.core.id,'subject.created','subject',row.id);return reply.code(201).send(row);
 });
 
+app.get('/api/class-subjects',async request=>{
+  const a=await authorize(request,db,config);
+  const q=z.object({academicYearId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);
+  return (await db.query(`SELECT cs.*,c.name classroom_name,c.class_teacher_os_user_id,g.name grade_name,g.code grade_code,
+      s.code subject_code,s.name subject_name,s.stage,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'teacherOsUserId',ta.teacher_os_user_id,'termId',ta.term_id,'active',ta.is_active) ORDER BY ta.created_at)
+                FROM teacher_assignments ta
+                WHERE ta.organisation_id=cs.organisation_id AND ta.classroom_id=cs.classroom_id AND ta.subject_id=cs.subject_id),'[]'::jsonb) teacher_assignments,
+      (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=cs.classroom_id AND e.status='active') student_count
+    FROM class_subjects cs
+    JOIN classrooms c ON c.id=cs.classroom_id
+    JOIN grade_levels g ON g.id=c.grade_level_id
+    JOIN subjects s ON s.id=cs.subject_id
+    WHERE cs.organisation_id=$1
+      AND ($2::uuid IS NULL OR cs.academic_year_id=$2)
+      AND ($3::uuid IS NULL OR cs.classroom_id=$3)
+    ORDER BY g.level_order,c.name,s.name`,[a.core.organisation_id,q.academicYearId??null,q.classroomId??null])).rows;
+});
+app.post('/api/class-subjects',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');
+  const b=z.object({academicYearId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid()}).parse(request.body);
+  const cls=await one<any>(db,'SELECT c.id,g.stage FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.id=$1 AND c.organisation_id=$2 AND c.academic_year_id=$3',[b.classroomId,a.core.organisation_id,b.academicYearId]);
+  const subject=await one<any>(db,'SELECT id,stage FROM subjects WHERE id=$1 AND organisation_id=$2 AND is_active=true',[b.subjectId,a.core.organisation_id]);
+  if(subject.stage!=='both'&&subject.stage!==cls.stage)throw fail(400,'This subject is not configured for the class stage');
+  const row=await one<any>(db,`INSERT INTO class_subjects(organisation_id,academic_year_id,classroom_id,subject_id,is_active)
+    VALUES($1,$2,$3,$4,true)
+    ON CONFLICT(academic_year_id,classroom_id,subject_id) DO UPDATE SET is_active=true,updated_at=now()
+    RETURNING *`,[a.core.organisation_id,b.academicYearId,b.classroomId,b.subjectId]);
+  await audit(a.core.organisation_id,a.core.id,'class_subject.assigned','class_subject',row.id,{classroomId:b.classroomId,subjectId:b.subjectId});
+  return reply.code(201).send(row);
+});
+app.delete('/api/class-subjects/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM class_subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const used=await one<any>(db,`SELECT
+    (SELECT count(*)::int FROM assessments WHERE classroom_id=$1 AND subject_id=$2) assessments,
+    (SELECT count(*)::int FROM timetable_entries WHERE classroom_id=$1 AND subject_id=$2) timetable`,[row.classroom_id,row.subject_id]);
+  if(Number(used.assessments)>0||Number(used.timetable)>0)throw fail(409,'This class subject is already used in assessments or the timetable');
+  await db.query('DELETE FROM teacher_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND subject_id=$3',[a.core.organisation_id,row.classroom_id,row.subject_id]);
+  await db.query('DELETE FROM class_subjects WHERE id=$1',[id]);
+  await audit(a.core.organisation_id,a.core.id,'class_subject.removed','class_subject',id,{classroomId:row.classroom_id,subjectId:row.subject_id});
+  return reply.code(204).send();
+});
+
 app.get('/api/students',async request=>{
   const a=await authorize(request,db,config);const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
   return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
