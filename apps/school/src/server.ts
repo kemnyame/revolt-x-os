@@ -54,7 +54,8 @@ async function requestActor(request:any){
     if(student)return{organisationId:student.organisation_id,userId:null,actorType:'student',portalActorId:student.student_id};
   }
 
-  return{organisationId:null,userId:null,actorType:'public'};
+  const school=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  return{organisationId:school?.organisation_id??null,userId:null,actorType:'public'};
 }
 app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
 app.addHook('onResponse',async(request,reply)=>{
@@ -2140,8 +2141,8 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
-  const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1,submitted_at=now(),
-    return_note=NULL,updated_at=now() WHERE id=$2 RETURNING *`,[a.core.id,report.id]);
+  const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1::uuid,submitted_at=now(),
+    return_note=NULL,updated_at=now() WHERE id=$2::uuid RETURNING *`,[a.core.id,report.id]);
   const reviewerIds=(await db.query(`SELECT reviewer_os_user_id FROM report_reviewer_assignments
     WHERE organisation_id=$1 AND classroom_id=$2 AND is_active=true`,[a.core.organisation_id,current.classroom_id])).rows.map((x:any)=>x.reviewer_os_user_id);
   if(!reviewerIds.length){
