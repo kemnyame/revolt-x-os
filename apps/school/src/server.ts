@@ -31,11 +31,30 @@ function requestSessionToken(request:any){
   return cookie?decodeURIComponent(cookie.slice('rx_school_session='.length)):'';
 }
 async function requestActor(request:any){
-  const token=requestSessionToken(request);
-  if(!token||!token.startsWith('rxs_'))return{organisationId:null,userId:null};
-  const hash=createHash('sha256').update(token).digest('hex');
-  const row=await maybeOne<any>(db,'SELECT organisation_id,os_user_id FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',[hash]);
-  return{organisationId:row?.organisation_id??null,userId:row?.os_user_id??null};
+  const auth=String(request.headers?.authorization||'');
+  const bearer=/^Bearer\s+/i.test(auth)?auth.replace(/^Bearer\s+/i,'').trim():'';
+  const schoolToken=requestSchoolToken(request);
+
+  if(schoolToken&&schoolToken.startsWith('rxs_')){
+    const hash=createHash('sha256').update(schoolToken).digest('hex');
+    const row=await maybeOne<any>(db,'SELECT organisation_id,os_user_id FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',[hash]);
+    if(row)return{organisationId:row.organisation_id,userId:row.os_user_id,actorType:'staff'};
+  }
+
+  if(bearer){
+    const hash=createHash('sha256').update(bearer).digest('hex');
+    const guardian=await maybeOne<any>(db,`SELECT g.organisation_id,g.id guardian_id
+      FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
+      WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hash]);
+    if(guardian)return{organisationId:guardian.organisation_id,userId:null,actorType:'guardian',portalActorId:guardian.guardian_id};
+
+    const student=await maybeOne<any>(db,`SELECT s.organisation_id,s.id student_id
+      FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
+      WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hash]);
+    if(student)return{organisationId:student.organisation_id,userId:null,actorType:'student',portalActorId:student.student_id};
+  }
+
+  return{organisationId:null,userId:null,actorType:'public'};
 }
 app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
 app.addHook('onResponse',async(request,reply)=>{
@@ -50,6 +69,9 @@ app.addHook('onResponse',async(request,reply)=>{
       actor.organisationId,actor.userId,String(request.id),request.method,String(request.url).split('?')[0],
       status,Date.now()-started,status>=500?'server_error':status>=400?'client_error':'success'
     ]);
+    if(actor.actorType==='guardian'||actor.actorType==='student'){
+      request.log.info({requestId:String(request.id),actorType:actor.actorType,portalActorId:actor.portalActorId,path:String(request.url).split('?')[0]},'Portal request recorded');
+    }
   }catch(error){request.log.warn({error},'Could not persist system request log')}
 });
 
