@@ -441,10 +441,10 @@ async function effectiveClassTeacher(organisationId:string,classroomId:string,te
   return row?.teacher_os_user_id??null;
 }
 
-async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
+async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null,coverageDate?:string|null){
   if(a.role==='school_admin'||a.role==='headteacher')return;
   const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
-  if(!roleProfile?.can_teach)return;
+  if(!roleProfile?.can_teach)throw fail(403,'This role does not have teaching scope');
   const term=await activeTerm(a.core.organisation_id);
   const row=subjectId
     ?await maybeOne<any>(db,`SELECT 1 FROM teacher_assignments ta
@@ -460,7 +460,16 @@ async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|nul
             AND ta.is_active=true AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $4::uuid)
         )
       ) LIMIT 1`,[classroomId,a.core.organisation_id,a.core.id,term?.id??null]);
-  if(!row)throw fail(403,subjectId?'You are not assigned to teach this subject in this class':'You are not assigned to this class');
+  if(row)return;
+  const date=coverageDate??new Date().toISOString().slice(0,10);
+  const relief=await maybeOne<any>(db,`SELECT 1 FROM staff_leave_relief_schedule rs
+    JOIN staff_leave_requests lr ON lr.id=rs.leave_request_id
+    WHERE lr.organisation_id=$1 AND lr.status='approved' AND rs.status='planned'
+      AND rs.reliever_os_user_id=$2 AND rs.classroom_id=$3 AND rs.coverage_date=$4::date
+      AND ($5::uuid IS NULL OR rs.subject_id=$5) LIMIT 1`,
+    [a.core.organisation_id,a.core.id,classroomId,date,subjectId??null]);
+  if(relief)return;
+  throw fail(403,subjectId?'You are not assigned to teach or relieve this subject in this class':'You are not assigned to this class on this date');
 }
 
 
@@ -1442,11 +1451,11 @@ app.post('/api/enrolments',async(request,reply)=>{
 });
 
 app.get('/api/attendance',async request=>{
-  const a=await authorize(request,db,config,'attendance.view');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null);
+  const a=await authorize(request,db,config,'attendance.view');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null,q.date);
   return (await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,COALESCE(ar.status,'unmarked') attendance_status,ar.note FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN attendance_records ar ON ar.student_id=s.id AND ar.classroom_id=e.classroom_id AND ar.attendance_date=$3 WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.classroomId,q.date])).rows;
 });
 app.post('/api/attendance/mark',async request=>{
-  const a=await authorize(request,db,config,'attendance.mark');const b=z.object({classroomId:z.string().uuid(),date:z.string().date(),records:z.array(z.object({studentId:z.string().uuid(),status:z.enum(['present','absent','late','excused']),note:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);await ensureTeacherScope(a,b.classroomId,null);
+  const a=await authorize(request,db,config,'attendance.mark');const b=z.object({classroomId:z.string().uuid(),date:z.string().date(),records:z.array(z.object({studentId:z.string().uuid(),status:z.enum(['present','absent','late','excused']),note:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);await ensureTeacherScope(a,b.classroomId,null,b.date);
   await tx(db,async c=>{for(const r of b.records)await c.query(`INSERT INTO attendance_records(organisation_id,student_id,classroom_id,attendance_date,status,note,marked_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(student_id,classroom_id,attendance_date) DO UPDATE SET status=EXCLUDED.status,note=EXCLUDED.note,marked_by_os_user_id=EXCLUDED.marked_by_os_user_id,updated_at=now()`,[a.core.organisation_id,r.studentId,b.classroomId,b.date,r.status,r.note??null,a.core.id])});await audit(a.core.organisation_id,a.core.id,'attendance.marked','classroom',b.classroomId,{date:b.date,count:b.records.length});return{saved:b.records.length};
 });
 
