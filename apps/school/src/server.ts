@@ -3366,6 +3366,18 @@ app.get('/api/system/diagnostics',async request=>{
     checks.push({key,label,status:ok?'pass':severity==='warning'?'warning':'fail',details});
   };
 
+  const coreHealth=await probeCoreOS();
+  add('core_os','Core Revolt-X OS connectivity',Boolean(coreHealth.reachable),{
+    reachable:coreHealth.reachable,status:coreHealth.status,responseMs:coreHealth.responseMs,url:coreHealth.url
+  },'warning');
+
+  const localSessions=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE revoked_at IS NULL AND expires_at>now())::int active,
+    count(*) FILTER(WHERE revoked_at IS NOT NULL)::int revoked,
+    count(*) FILTER(WHERE expires_at<=now())::int expired
+    FROM school_sessions WHERE organisation_id=$1`,[org]);
+  add('school_sessions','Local School authentication sessions',Number(localSessions.active)>=0,localSessions,'info');
+
   const profile=await maybeOne<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[org]);
   add('school_profile','School profile',Boolean(profile),profile?profile.school_name:'Missing school profile');
 
