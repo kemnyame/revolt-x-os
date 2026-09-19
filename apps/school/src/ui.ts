@@ -1,4 +1,4 @@
-export const schoolFrontend=`<!doctype html>
+const schoolFrontendDocument=`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1026,3 +1026,13 @@ Promise.resolve().then(function(){return boot()}).catch(function(e){
 })();
 </script>
 </body></html>`;
+const schoolScriptOpen='<script>';
+const schoolScriptClose='</script>';
+const schoolScriptStart=schoolFrontendDocument.indexOf(schoolScriptOpen);
+const schoolScriptEnd=schoolFrontendDocument.lastIndexOf(schoolScriptClose);
+if(schoolScriptStart<0||schoolScriptEnd<=schoolScriptStart)throw new Error('School frontend script block is missing');
+export const schoolAppScript=schoolFrontendDocument.slice(schoolScriptStart+schoolScriptOpen.length,schoolScriptEnd);
+export const schoolFrontend=
+  schoolFrontendDocument.slice(0,schoolScriptStart)+
+  '<script src="/school-app.js?v=20260919-2" defer></script>'+
+  schoolFrontendDocument.slice(schoolScriptEnd+schoolScriptClose.length);
