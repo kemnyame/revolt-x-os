@@ -735,16 +735,16 @@ app.get('/api/report-cards/:studentId',async request=>{
 
 app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config);const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/fee-items',async(request,reply)=>{
-  const a=await authorize(request,db,config,'fees.edit');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),name:z.string().min(2).max(160),amount:z.number().min(0),mandatory:z.boolean().default(true)}).parse(request.body);const row=await one<any>(db,'INSERT INTO fee_items(organisation_id,academic_year_id,term_id,grade_level_id,name,amount,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId??null,b.gradeLevelId??null,b.name,b.amount,b.mandatory]);await audit(a.core.organisation_id,a.core.id,'fee_item.created','fee_item',row.id);return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'fees.create');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),name:z.string().min(2).max(160),amount:z.number().min(0),mandatory:z.boolean().default(true)}).parse(request.body);const row=await one<any>(db,'INSERT INTO fee_items(organisation_id,academic_year_id,term_id,grade_level_id,name,amount,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId??null,b.gradeLevelId??null,b.name,b.amount,b.mandatory]);await audit(a.core.organisation_id,a.core.id,'fee_item.created','fee_item',row.id);return reply.code(201).send(row);
 });
 app.post('/api/fees/assign',async request=>{
-  const a=await authorize(request,db,config,'fees.edit');const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);const fee=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);let students:string[]=[];if(b.studentId)students=[b.studentId];else students=(await db.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND status='active'",[a.core.organisation_id,b.classroomId])).rows.map((x:any)=>x.student_id);for(const sid of students)await db.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due) VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,[a.core.organisation_id,sid,fee.id,fee.amount]);await audit(a.core.organisation_id,a.core.id,'fees.assigned','fee_item',fee.id,{count:students.length});return{assigned:students.length};
+  const a=await authorize(request,db,config,'fees.create');const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);const fee=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);let students:string[]=[];if(b.studentId)students=[b.studentId];else students=(await db.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND status='active'",[a.core.organisation_id,b.classroomId])).rows.map((x:any)=>x.student_id);for(const sid of students)await db.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due) VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,[a.core.organisation_id,sid,fee.id,fee.amount]);await audit(a.core.organisation_id,a.core.id,'fees.assigned','fee_item',fee.id,{count:students.length});return{assigned:students.length};
 });
 app.get('/api/fees/student/:studentId',async request=>{
   const a=await authorize(request,db,config);const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
 });
 app.post('/api/payments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'fees.edit');const b=z.object({studentId:z.string().uuid(),studentFeeId:z.string().uuid().optional(),amount:z.number().positive(),paymentMethod:z.enum(['cash','mobile_money','bank','card','other']),reference:z.string().max(120).optional(),note:z.string().max(500).optional()}).parse(request.body);const row=await tx(db,async c=>{const p=await one<any>(c,'INSERT INTO payments(organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[a.core.organisation_id,b.studentId,b.studentFeeId??null,b.amount,b.paymentMethod,b.reference??null,a.core.id,b.note??null]);if(b.studentFeeId){const calc=await one<any>(c,`SELECT sf.id,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount),0) paid FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.id=$1 GROUP BY sf.id`,[b.studentFeeId]);const status=Number(calc.paid)>=Number(calc.due)?'paid':Number(calc.paid)>0?'part_paid':'unpaid';await c.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,b.studentFeeId])}return p});await audit(a.core.organisation_id,a.core.id,'payment.recorded','payment',row.id,{amount:b.amount});return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'fees.record');const b=z.object({studentId:z.string().uuid(),studentFeeId:z.string().uuid().optional(),amount:z.number().positive(),paymentMethod:z.enum(['cash','mobile_money','bank','card','other']),reference:z.string().max(120).optional(),note:z.string().max(500).optional()}).parse(request.body);const row=await tx(db,async c=>{const p=await one<any>(c,'INSERT INTO payments(organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[a.core.organisation_id,b.studentId,b.studentFeeId??null,b.amount,b.paymentMethod,b.reference??null,a.core.id,b.note??null]);if(b.studentFeeId){const calc=await one<any>(c,`SELECT sf.id,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount),0) paid FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.id=$1 GROUP BY sf.id`,[b.studentFeeId]);const status=Number(calc.paid)>=Number(calc.due)?'paid':Number(calc.paid)>0?'part_paid':'unpaid';await c.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,b.studentFeeId])}return p});await audit(a.core.organisation_id,a.core.id,'payment.recorded','payment',row.id,{amount:b.amount});return reply.code(201).send(row);
 });
 
 app.get('/api/timetable',async request=>{const a=await authorize(request,db,config);const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2) AND ($3::uuid IS NULL OR tt.term_id=$3) ORDER BY tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null])).rows});
@@ -753,7 +753,7 @@ app.post('/api/timetable',async(request,reply)=>{
 });
 
 app.get('/api/staff/core-users',async request=>{
-  const a=await authorize(request,db,config,'school.manage');const auth=request.headers.authorization!;const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(10000)});if(!res.ok)throw fail(res.status,'Could not load Core OS users');return res.json();
+  const a=await authorize(request,db,config,'staff.view');const auth=request.headers.authorization!;const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(10000)});if(!res.ok)throw fail(res.status,'Could not load Core OS users');return res.json();
 });
 
 app.post('/api/staff/teachers',async(request,reply)=>{
@@ -787,7 +787,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',payload.id,{email:b.email,osUserId:payload.user_id});
   return reply.code(201).send({osUserId:payload.user_id,membershipId:payload.id,email:b.email,firstName:b.firstName,lastName:b.lastName,jobTitle:b.jobTitle});
 });
-app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'school.manage');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
+app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'staff.view');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
 app.post('/api/staff/module-memberships',async(request,reply)=>{
   const a=await authorize(request,db,config,'school.manage');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
 });
@@ -906,15 +906,43 @@ app.delete('/api/attendance',async(request,reply)=>{
 });
 
 app.patch('/api/assessments/:id',async request=>{
-  const a=await authorize(request,db,config,'assessment.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({name:z.string().min(2).max(160).optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),maxScore:z.number().positive().optional(),weight:z.number().positive().max(100).optional(),assessmentDate:z.string().date().nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
-  const row=await one<any>(db,`UPDATE assessments SET name=COALESCE($1,name),assessment_type=COALESCE($2,assessment_type),max_score=COALESCE($3,max_score),weight=COALESCE($4,weight),assessment_date=CASE WHEN $5 THEN $6::date ELSE assessment_date END WHERE id=$7 AND organisation_id=$8 RETURNING *`,[b.name??null,b.assessmentType??null,b.maxScore??null,b.weight??null,Object.hasOwn(b,'assessmentDate'),b.assessmentDate??null,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'assessment.updated','assessment',id);return row;
+  const a=await authorize(request,db,config,'assessment.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    name:z.string().min(2).max(160).optional(),
+    categoryId:z.string().uuid().optional(),
+    maxScore:z.number().positive().optional(),
+    assessmentDate:z.string().date().nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await ensureTeacherScope(a,current.classroom_id,current.subject_id);
+  let category:any=null;
+  if(b.categoryId){
+    category=await one<any>(db,`SELECT * FROM assessment_categories
+      WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND term_id=$4 AND is_active=true`,
+      [b.categoryId,a.core.organisation_id,current.academic_year_id,current.term_id]);
+  }
+  const type=category?(category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other'):null;
+  const row=await one<any>(db,`UPDATE assessments SET
+      name=COALESCE($1,name),
+      category_id=COALESCE($2,category_id),
+      assessment_type=COALESCE($3,assessment_type),
+      max_score=COALESCE($4,max_score),
+      weight=COALESCE($5,weight),
+      assessment_date=CASE WHEN $6 THEN $7::date ELSE assessment_date END
+    WHERE id=$8 AND organisation_id=$9 RETURNING *`,
+    [b.name??null,b.categoryId??null,type,b.maxScore??null,category?.weight_percent??null,Object.hasOwn(b,'assessmentDate'),b.assessmentDate??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment.updated','assessment',id,{categoryId:b.categoryId??current.category_id});
+  return row;
 });
 app.delete('/api/assessments/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'assessment.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const row=await one<any>(db,'DELETE FROM assessments WHERE id=$1 AND organisation_id=$2 RETURNING id,name',[id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'assessment.deleted','assessment',id,{name:row.name});return reply.code(204).send();
+  const a=await authorize(request,db,config,'assessment.delete');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await ensureTeacherScope(a,row.classroom_id,row.subject_id);
+  await db.query('DELETE FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment.deleted','assessment',id,{name:row.name});
+  return reply.code(204).send();
 });
 
 app.patch('/api/fee-items/:id',async request=>{
@@ -1113,7 +1141,7 @@ app.post('/api/promotions/batch',async request=>{
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
 
 app.post('/api/guardians/:id/portal-reset',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const guardian=await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!guardian)throw fail(404,'Guardian not found');
   const pin=String(randomInt(100000,1000000));
   await db.query(`INSERT INTO guardian_portal_access(guardian_id,pin_hash,is_active) VALUES($1,$2,true) ON CONFLICT(guardian_id) DO UPDATE SET pin_hash=EXCLUDED.pin_hash,is_active=true,updated_at=now()`,[id,hashPortalPin(pin)]);
@@ -1231,7 +1259,7 @@ app.get('/api/teacher/dashboard',async request=>{
 });
 
 app.post('/api/students/:id/portal-reset',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');
   const pin=String(randomInt(100000,1000000));
   await db.query(`INSERT INTO student_portal_access(student_id,pin_hash,is_active) VALUES($1,$2,true)
@@ -1290,16 +1318,16 @@ app.get('/api/public/admissions/status',async request=>{
   return{applicationNo:row.application_no,status:row.status,reviewNote:row.review_note,submittedAt:row.submitted_at,updatedAt:row.updated_at};
 });
 app.get('/api/admissions',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const q=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined','enrolled']).optional()}).parse(request.query);
+  const a=await authorize(request,db,config,'admissions.view');const q=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined','enrolled']).optional()}).parse(request.query);
   return (await db.query(`SELECT aa.*,gl.name requested_grade_name FROM admission_applications aa LEFT JOIN grade_levels gl ON gl.organisation_id=aa.organisation_id AND gl.code=aa.requested_grade_code WHERE aa.organisation_id=$1 AND ($2::text IS NULL OR aa.status=$2) ORDER BY aa.submitted_at DESC`,[a.core.organisation_id,q.status??null])).rows;
 });
 app.patch('/api/admissions/:id',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined']),reviewNote:z.string().max(5000).nullable().optional()}).parse(request.body);
+  const a=await authorize(request,db,config,'admissions.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({status:z.enum(['submitted','under_review','approved','waitlisted','declined']),reviewNote:z.string().max(5000).nullable().optional()}).parse(request.body);
   const row=await one<any>(db,`UPDATE admission_applications SET status=$1,review_note=CASE WHEN $2 THEN $3 ELSE review_note END,reviewed_by_os_user_id=$4,reviewed_at=now(),updated_at=now() WHERE id=$5 AND organisation_id=$6 AND status<>'enrolled' RETURNING *`,[b.status,Object.hasOwn(b,'reviewNote'),b.reviewNote??null,a.core.id,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'admission.reviewed','admission_application',id,{status:b.status});return row;
 });
 app.post('/api/admissions/:id/enrol',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({admissionNo:z.string().min(1).max(60),classroomId:z.string().uuid().optional()}).parse(request.body);
+  const a=await authorize(request,db,config,'admissions.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({admissionNo:z.string().min(1).max(60),classroomId:z.string().uuid().optional()}).parse(request.body);
   const result=await tx(db,async c=>{
     const appRow=await one<any>(c,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
     if(appRow.status!=='approved')throw fail(409,'Approve the application before enrolling the student');
