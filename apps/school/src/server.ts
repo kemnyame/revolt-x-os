@@ -991,6 +991,146 @@ app.post('/api/assessments/:id/scores',async request=>{
   const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
+async function buildAcademicStatement(organisationId:string,studentId:string){
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[organisationId]);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[studentId,organisationId]);
+  const periods=(await db.query(`SELECT DISTINCT t.id term_id,t.name term_name,t.term_no,t.start_date,t.end_date,
+      y.id academic_year_id,y.name academic_year,y.start_date academic_year_start,
+      c.name classroom_name,g.name grade_name,g.code grade_code
+    FROM enrolments e
+    JOIN academic_years y ON y.id=e.academic_year_id
+    JOIN terms t ON t.academic_year_id=y.id
+    JOIN classrooms c ON c.id=e.classroom_id
+    JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE e.organisation_id=$1 AND e.student_id=$2
+    ORDER BY y.start_date,t.term_no`,[organisationId,studentId])).rows;
+  const terms:any[]=[];
+  for(const p of periods){
+    const subjects=await calculateStudentTermResults(organisationId,studentId,p.term_id);
+    const attendanceRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records
+      WHERE organisation_id=$1 AND student_id=$2 AND attendance_date BETWEEN $3::date AND $4::date GROUP BY status`,
+      [organisationId,studentId,p.start_date,p.end_date])).rows;
+    const attendance:any={present:0,absent:0,late:0,excused:0,total:0};
+    for(const r of attendanceRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
+    const graded=subjects.filter((s:any)=>s.percentage!=null);
+    const overallAverage=graded.length?Math.round((graded.reduce((sum:number,s:any)=>sum+Number(s.percentage),0)/graded.length)*100)/100:null;
+    if(subjects.length||attendance.total){
+      terms.push({...p,subjects,overallAverage,attendance});
+    }
+  }
+  return{
+    school,student,terms,
+    summary:{
+      academicYears:[...new Set(terms.map((x:any)=>x.academic_year))].length,
+      terms:terms.length,
+      latestClass:terms.length?terms[terms.length-1].classroom_name:null,
+      latestGrade:terms.length?terms[terms.length-1].grade_name:null
+    },
+    generatedAt:new Date().toISOString()
+  };
+}
+
+app.get('/api/academic-statements/:studentId',async request=>{
+  const a=await authorize(request,db,config,'academic_statement.view');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  return buildAcademicStatement(a.core.organisation_id,studentId);
+});
+app.get('/api/academic-statement-requests',async request=>{
+  const a=await authorize(request,db,config,'academic_statement.view');
+  const q=z.object({status:z.enum(['requested','processing','approved','declined']).optional(),q:z.string().max(120).optional()}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT ar.*,s.admission_no,s.first_name,s.last_name,g.first_name guardian_first_name,g.last_name guardian_last_name
+    FROM academic_statement_requests ar JOIN students s ON s.id=ar.student_id
+    LEFT JOIN guardians g ON g.id=ar.guardian_id
+    WHERE ar.organisation_id=$1 AND ($2::text IS NULL OR ar.status=$2)
+      AND ($3::text IS NULL OR s.admission_no ILIKE $3 OR s.first_name ILIKE $3 OR s.last_name ILIKE $3 OR COALESCE(ar.statement_reference,'') ILIKE $3)
+    ORDER BY ar.requested_at DESC`,[a.core.organisation_id,q.status??null,like])).rows;
+});
+app.post('/api/academic-statement-requests',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic_statement.issue');
+  const b=z.object({studentId:z.string().uuid(),purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
+  await one<any>(db,'SELECT id FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
+  const row=await one<any>(db,`INSERT INTO academic_statement_requests(
+    organisation_id,student_id,requested_by_type,purpose,note,status
+  ) VALUES($1,$2,'staff',$3,$4,'processing') RETURNING *`,[a.core.organisation_id,b.studentId,b.purpose,b.note??null]);
+  await audit(a.core.organisation_id,a.core.id,'academic_statement.requested','academic_statement_request',row.id,{studentId:b.studentId,purpose:b.purpose});
+  return reply.code(201).send(row);
+});
+app.patch('/api/academic-statement-requests/:id',async request=>{
+  const a=await authorize(request,db,config,'academic_statement.issue');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({status:z.enum(['processing','approved','declined']),schoolNote:z.string().max(2000).nullable().optional()}).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const reference=b.status==='approved'?(current.statement_reference||('RXAS-'+new Date().getUTCFullYear()+'-'+randomBytes(4).toString('hex').toUpperCase())):current.statement_reference;
+  const row=await one<any>(db,`UPDATE academic_statement_requests SET status=$1,school_note=$2,
+    statement_reference=$3,reviewed_by_os_user_id=$4,reviewed_at=now(),
+    issued_at=CASE WHEN $1='approved' THEN COALESCE(issued_at,now()) ELSE issued_at END
+    WHERE id=$5 RETURNING *`,[b.status,b.schoolNote??null,reference,a.core.id,id]);
+  const student=await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[row.student_id]);
+  if(row.guardian_id){
+    const guardian=await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1',[row.guardian_id]);
+    if(guardian){
+      await notifyContact({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.approved',
+        name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
+        subject:b.status==='approved'?'Cumulative academic statement ready':'Academic statement request updated',
+        body:b.status==='approved'
+          ?`The cumulative academic statement for ${student.first_name} ${student.last_name} is ready. Reference: ${reference}. Open the Parent Portal to view it.`
+          :`The academic statement request for ${student.first_name} ${student.last_name} is now ${b.status}.`,
+        relatedType:'academic_statement_request',relatedId:id
+      });
+    }
+  }
+  await audit(a.core.organisation_id,a.core.id,'academic_statement.'+b.status,'academic_statement_request',id,{reference});
+  return row;
+});
+
+app.get('/api/parent/students/:id/academic-statement-requests',async request=>{
+  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await ensureGuardianStudent(g.guardian_id,id);
+  return (await db.query(`SELECT * FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3
+    ORDER BY requested_at DESC`,[g.organisation_id,id,g.guardian_id])).rows;
+});
+app.post('/api/parent/students/:id/academic-statement-requests',async(request,reply)=>{
+  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await ensureGuardianStudent(g.guardian_id,id);
+  const b=z.object({purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
+  const existing=await maybeOne<any>(db,`SELECT id FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3 AND status IN('requested','processing')`,
+    [g.organisation_id,id,g.guardian_id]);
+  if(existing)throw fail(409,'There is already an academic statement request being processed for this student');
+  const row=await one<any>(db,`INSERT INTO academic_statement_requests(
+    organisation_id,student_id,guardian_id,requested_by_type,purpose,note
+  ) VALUES($1,$2,$3,'guardian',$4,$5) RETURNING *`,[g.organisation_id,id,g.guardian_id,b.purpose,b.note??null]);
+  return reply.code(201).send(row);
+});
+app.get('/api/parent/academic-statements/:requestId',async request=>{
+  const g=await guardianAuth(request);const {requestId}=z.object({requestId:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,`SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2 AND guardian_id=$3 AND status='approved'`,
+    [requestId,g.organisation_id,g.guardian_id]);
+  const statement=await buildAcademicStatement(g.organisation_id,row.student_id);
+  return{request:row,statement};
+});
+app.get('/api/student/academic-statement-requests',async request=>{
+  const s=await studentAuth(request);
+  return (await db.query('SELECT * FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 ORDER BY requested_at DESC',[s.organisation_id,s.student_id])).rows;
+});
+app.post('/api/student/academic-statement-requests',async(request,reply)=>{
+  const s=await studentAuth(request);
+  const b=z.object({purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
+  const existing=await maybeOne<any>(db,`SELECT id FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 AND requested_by_type='student' AND status IN('requested','processing')`,[s.organisation_id,s.student_id]);
+  if(existing)throw fail(409,'There is already an academic statement request being processed');
+  const row=await one<any>(db,`INSERT INTO academic_statement_requests(organisation_id,student_id,requested_by_type,purpose,note)
+    VALUES($1,$2,'student',$3,$4) RETURNING *`,[s.organisation_id,s.student_id,b.purpose,b.note??null]);
+  return reply.code(201).send(row);
+});
+app.get('/api/student/academic-statements/:requestId',async request=>{
+  const s=await studentAuth(request);const {requestId}=z.object({requestId:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,`SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2 AND student_id=$3 AND status='approved'`,
+    [requestId,s.organisation_id,s.student_id]);
+  const statement=await buildAcademicStatement(s.organisation_id,s.student_id);
+  return{request:row,statement};
+});
+
 app.get('/api/report-cards/:studentId',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
