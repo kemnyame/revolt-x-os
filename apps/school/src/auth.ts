@@ -1,4 +1,5 @@
 import type { FastifyRequest } from 'fastify';
+import { createHash } from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
 import { maybeOne } from './db.js';
@@ -21,16 +22,40 @@ export type CoreContext={
 
 export type SchoolRole='school_admin'|'headteacher'|'teacher'|'bursar'|'registrar';
 
+const coreContextCache=new Map<string,{value:CoreContext;expiresAt:number}>();
+const CORE_CONTEXT_CACHE_MS=15_000;
+function authCacheKey(auth:string){return createHash('sha256').update(auth).digest('hex')}
+
 async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Promise<CoreContext>{
   const auth=request.headers.authorization;
   if(!auth) throw Object.assign(new Error('Authentication required'),{statusCode:401});
+
+  const key=authCacheKey(auth);
+  const cached=coreContextCache.get(key);
+  if(cached&&cached.expiresAt>Date.now())return cached.value;
+  if(cached)coreContextCache.delete(key);
+
   const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/context',{
     headers:{authorization:auth},
     signal:AbortSignal.timeout(10000)
   }).catch(()=>null);
   if(!res) throw Object.assign(new Error('Core Revolt-X OS could not be reached'),{statusCode:503});
-  if(!res.ok) throw Object.assign(new Error('Core OS authentication failed'),{statusCode:res.status});
-  return await res.json() as CoreContext;
+
+  if(!res.ok){
+    const body=await res.json().catch(()=>null) as any;
+    const message=res.status===429
+      ? 'Core OS is temporarily rate limited. Please retry in a moment.'
+      : body?.error?.message||'Core OS authentication failed';
+    throw Object.assign(new Error(message),{statusCode:res.status});
+  }
+
+  const value=await res.json() as CoreContext;
+  if(coreContextCache.size>=2000){
+    const oldest=coreContextCache.keys().next().value;
+    if(oldest)coreContextCache.delete(oldest);
+  }
+  coreContextCache.set(key,{value,expiresAt:Date.now()+CORE_CONTEXT_CACHE_MS});
+  return value;
 }
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
