@@ -1593,6 +1593,167 @@ app.post('/api/timetable',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 
+app.post('/api/timetable/auto-schedule',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.auto_schedule');
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    termId:z.string().uuid().nullable().optional(),
+    teacherOsUserId:z.string().uuid().nullable().optional(),
+    regenerateAuto:z.boolean().default(true)
+  }).parse(request.body);
+
+  const settings=(await maybeOne<any>(db,`SELECT * FROM timetable_settings
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
+    ORDER BY term_id NULLS LAST LIMIT 1`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null]))??{
+      school_day_start:'07:30:00',school_day_end:'15:30:00',default_period_minutes:40,max_teacher_periods_per_day:8
+    };
+
+  const periodMinutes=Number(settings.default_period_minutes||40);
+  const maxTeacherPeriods=Number(settings.max_teacher_periods_per_day||8);
+  const toMinutes=(v:any)=>{const x=String(v).slice(0,5).split(':').map(Number);return x[0]*60+x[1]};
+  const toTime=(m:number)=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+  const schoolStart=toMinutes(settings.school_day_start),schoolEnd=toMinutes(settings.school_day_end);
+
+  const breaks=(await db.query(`SELECT * FROM timetable_breaks
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
+    ORDER BY start_time`,[a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
+
+  const requirements=(await db.query(`
+    SELECT cs.id class_subject_id,cs.classroom_id,c.name classroom_name,cs.subject_id,s.name subject_name,
+           cs.weekly_periods,cs.credit_hours,ta.teacher_os_user_id
+    FROM class_subjects cs
+    JOIN classrooms c ON c.id=cs.classroom_id AND c.is_active=true
+    JOIN subjects s ON s.id=cs.subject_id AND s.is_active=true
+    LEFT JOIN LATERAL (
+      SELECT x.teacher_os_user_id
+      FROM teacher_assignments x
+      WHERE x.organisation_id=cs.organisation_id
+        AND x.academic_year_id=cs.academic_year_id
+        AND x.classroom_id=cs.classroom_id
+        AND x.subject_id=cs.subject_id
+        AND x.is_active=true
+        AND (x.term_id IS NOT DISTINCT FROM $3::uuid OR x.term_id IS NULL)
+      ORDER BY CASE WHEN x.term_id IS NOT DISTINCT FROM $3::uuid THEN 0 ELSE 1 END,x.created_at DESC
+      LIMIT 1
+    ) ta ON true
+    WHERE cs.organisation_id=$1 AND cs.academic_year_id=$2 AND cs.is_active=true
+      AND ($4::uuid IS NULL OR ta.teacher_os_user_id=$4)
+    ORDER BY c.name,s.name`,[a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null])).rows;
+
+  if(b.regenerateAuto){
+    await db.query(`DELETE FROM timetable_entries
+      WHERE organisation_id=$1 AND academic_year_id=$2
+        AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
+        AND schedule_source='auto' AND is_locked=false
+        AND ($4::uuid IS NULL OR teacher_os_user_id=$4)`,
+      [a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null]);
+  }
+
+  const existing=(await db.query(`SELECT * FROM timetable_entries
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
+    ORDER BY day_of_week,start_time`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
+
+  const slots:any[]=[];
+  for(let day=1;day<=5;day++){
+    for(let start=schoolStart;start+periodMinutes<=schoolEnd;start+=periodMinutes){
+      const end=start+periodMinutes;
+      const blocked=breaks.some((br:any)=>{
+        if(br.day_of_week!=null&&Number(br.day_of_week)!==day)return false;
+        const bs=toMinutes(br.start_time),be=toMinutes(br.end_time);
+        return start<be&&end>bs;
+      });
+      if(!blocked)slots.push({day,start,end});
+    }
+  }
+
+  const occupancy=existing.map((x:any)=>({
+    classroomId:x.classroom_id,teacherId:x.teacher_os_user_id,subjectId:x.subject_id,
+    day:Number(x.day_of_week),start:toMinutes(x.start_time),end:toMinutes(x.end_time)
+  }));
+  const overlaps=(x:any,y:any)=>x.day===y.day&&x.start<y.end&&x.end>y.start;
+  const teacherLoad=new Map<string,number>();
+  const subjectDayCount=new Map<string,number>();
+  const classDayLoad=new Map<string,number>();
+
+  for(const x of occupancy){
+    if(x.teacherId)teacherLoad.set(x.teacherId+'|'+x.day,(teacherLoad.get(x.teacherId+'|'+x.day)||0)+1);
+    subjectDayCount.set(x.classroomId+'|'+x.subjectId+'|'+x.day,(subjectDayCount.get(x.classroomId+'|'+x.subjectId+'|'+x.day)||0)+1);
+    classDayLoad.set(x.classroomId+'|'+x.day,(classDayLoad.get(x.classroomId+'|'+x.day)||0)+1);
+  }
+
+  const created:any[]=[];
+  const unscheduled:any[]=[];
+  for(const req of requirements){
+    if(!req.teacher_os_user_id){
+      unscheduled.push({classroomId:req.classroom_id,classroomName:req.classroom_name,subjectId:req.subject_id,subjectName:req.subject_name,reason:'No subject teacher assigned'});
+      continue;
+    }
+
+    const required=Math.max(Number(req.weekly_periods||1),Math.ceil((Number(req.credit_hours||0)*60)/periodMinutes));
+    const already=existing.filter((x:any)=>x.classroom_id===req.classroom_id&&x.subject_id===req.subject_id&&x.teacher_os_user_id===req.teacher_os_user_id).length;
+    let remaining=Math.max(0,required-already);
+
+    while(remaining>0){
+      const candidates=slots.filter(slot=>{
+        const probe={...slot,classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id};
+        if((teacherLoad.get(req.teacher_os_user_id+'|'+slot.day)||0)>=maxTeacherPeriods)return false;
+        return !occupancy.some((o:any)=>overlaps(probe,o)&&(o.classroomId===req.classroom_id||o.teacherId===req.teacher_os_user_id));
+      }).sort((x,y)=>{
+        const sx=(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+x.day)||0)*100+
+          (teacherLoad.get(req.teacher_os_user_id+'|'+x.day)||0)*10+
+          (classDayLoad.get(req.classroom_id+'|'+x.day)||0);
+        const sy=(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+y.day)||0)*100+
+          (teacherLoad.get(req.teacher_os_user_id+'|'+y.day)||0)*10+
+          (classDayLoad.get(req.classroom_id+'|'+y.day)||0);
+        return sx-sy||x.day-y.day||x.start-y.start;
+      });
+
+      const chosen=candidates[0];
+      if(!chosen){
+        unscheduled.push({
+          classroomId:req.classroom_id,classroomName:req.classroom_name,subjectId:req.subject_id,subjectName:req.subject_name,
+          teacherOsUserId:req.teacher_os_user_id,remainingPeriods:remaining,
+          reason:'No conflict-free period remains within the configured school day and teacher workload'
+        });
+        break;
+      }
+
+      const row=await one<any>(db,`INSERT INTO timetable_entries(
+        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room,schedule_source,is_locked
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'auto',false) RETURNING *`,[
+        a.core.organisation_id,b.academicYearId,b.termId??null,req.classroom_id,req.subject_id,req.teacher_os_user_id,
+        chosen.day,toTime(chosen.start),toTime(chosen.end)
+      ]);
+      created.push(row);
+      const occ={classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id,day:chosen.day,start:chosen.start,end:chosen.end};
+      occupancy.push(occ);
+      teacherLoad.set(req.teacher_os_user_id+'|'+chosen.day,(teacherLoad.get(req.teacher_os_user_id+'|'+chosen.day)||0)+1);
+      subjectDayCount.set(req.classroom_id+'|'+req.subject_id+'|'+chosen.day,(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+chosen.day)||0)+1);
+      classDayLoad.set(req.classroom_id+'|'+chosen.day,(classDayLoad.get(req.classroom_id+'|'+chosen.day)||0)+1);
+      remaining--;
+    }
+  }
+
+  await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{
+    academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,created:created.length,unscheduled:unscheduled.length
+  });
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.auto_scheduled',
+    resourceType:'timetable',performedOn:'Academic year '+b.academicYearId,
+    oldValue:{existingPeriods:existing.length},newValue:{createdPeriods:created.length,unscheduled},
+    metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,periodMinutes}
+  });
+  return reply.code(201).send({
+    created:created.length,unscheduled,periodMinutes,schoolDayStart:toTime(schoolStart),schoolDayEnd:toTime(schoolEnd),
+    preservedManual:existing.filter((x:any)=>x.schedule_source!=='auto'||x.is_locked).length
+  });
+});
+
 app.get('/api/staff/core-users',async request=>{
   const a=await authorize(request,db,config,'staff.view');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
@@ -1929,11 +2090,17 @@ app.patch('/api/timetable/:id',async request=>{
   const row=await one<any>(db,`UPDATE timetable_entries SET subject_id=COALESCE($1,subject_id),
     teacher_os_user_id=CASE WHEN $2 THEN $3 ELSE teacher_os_user_id END,day_of_week=COALESCE($4,day_of_week),
     start_time=COALESCE($5::time,start_time),end_time=COALESCE($6::time,end_time),
-    room=CASE WHEN $7 THEN $8 ELSE room END WHERE id=$9 AND organisation_id=$10 RETURNING *`,[
+    room=CASE WHEN $7 THEN $8 ELSE room END,schedule_source='manual',is_locked=true
+    WHERE id=$9 AND organisation_id=$10 RETURNING *`,[
     b.subjectId??null,Object.hasOwn(b,'teacherOsUserId'),b.teacherOsUserId??null,b.dayOfWeek??null,b.startTime??null,b.endTime??null,
     Object.hasOwn(b,'room'),b.room??null,id,a.core.organisation_id
   ]);
   await audit(a.core.organisation_id,a.core.id,'timetable.updated','timetable_entry',id);
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.updated',
+    resourceType:'timetable_entry',resourceId:id,performedOn:'Class '+current.classroom_id,
+    oldValue:current,newValue:row,metadata:{manualOverride:true}
+  });
   return row;
 });
 app.delete('/api/timetable/:id',async(request,reply)=>{
