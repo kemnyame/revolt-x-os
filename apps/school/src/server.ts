@@ -1011,6 +1011,9 @@ app.get('/api/students/:id/360',async request=>{
   if(!student)throw fail(404,'Student not found');
   if(student.classroom_id)await ensureTeacherScope(a,student.classroom_id,null);
   const term=await activeTerm(a.core.organisation_id);
+  if(student.classroom_id){
+    student.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,student.classroom_id,term?.id??null);
+  }
   const guardians=(await db.query(`SELECT g.id,g.first_name,g.last_name,g.phone,g.email,g.address,sg.relationship,sg.is_primary,
       (gpa.guardian_id IS NOT NULL AND gpa.is_active=true) portal_active,gpa.last_login_at
     FROM guardians g
@@ -1410,7 +1413,10 @@ app.get('/api/report-cards/:studentId',async request=>{
       e.academic_year_id,y.name academic_year
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
-  if(current?.classroom_id)await ensureTeacherScope(a,current.classroom_id,null);
+  if(current?.classroom_id){
+    await ensureTeacherScope(a,current.classroom_id,null);
+    current.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,q.termId);
+  }
   const subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
   let overallAverage=subjects.length?Math.round((subjects.filter((s:any)=>s.percentage!=null).reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/Math.max(1,subjects.filter((s:any)=>s.percentage!=null).length))*100)/100:null;
   let classPosition:number|null=null,classSize:number|null=null;
