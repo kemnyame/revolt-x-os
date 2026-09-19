@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
 import { one, transaction } from '../db/index.js';
@@ -108,6 +108,47 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }
   });
 
+  app.post('/v1/internal/school/users/:membershipId/password-setup',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const b=z.object({
+      organisationId:z.string().uuid(),
+      actorUserId:z.string().uuid()
+    }).parse(request.body);
+
+    return transaction(db,async c=>{
+      const membership=await one<any>(
+        c,
+        `SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
+         FROM organisation_memberships m
+         JOIN users u ON u.id=m.user_id
+         WHERE m.id=$1 AND m.organisation_id=$2
+         FOR UPDATE OF m,u`,
+        [p.membershipId,b.organisationId]
+      );
+      await c.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1",[membership.user_id]);
+      const token=randomBytes(32).toString('base64url');
+      const tokenHash=createHash('sha256').update(token).digest('hex');
+      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[membership.user_id]);
+      await c.query(`INSERT INTO password_reset_tokens(user_id,token_hash,expires_at)
+        VALUES($1,$2,now()+interval '24 hours')`,[membership.user_id,tokenHash]);
+      await audit(c,{
+        organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
+        action:'school_service.teacher_password_setup_created',resourceType:'user',resourceId:membership.user_id,
+        afterState:{email:membership.email,membershipId:membership.id,expiresInHours:24}
+      });
+      return{
+        userId:membership.user_id,
+        membershipId:membership.id,
+        email:membership.email,
+        firstName:membership.first_name,
+        lastName:membership.last_name,
+        setupToken:token,
+        expiresInHours:24
+      };
+    });
+  });
+
   app.patch('/v1/internal/school/users/:membershipId/status',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
@@ -127,6 +168,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         c,
         'UPDATE organisation_memberships SET status=$1 WHERE id=$2 AND organisation_id=$3 RETURNING *',
         [b.status,p.membershipId,b.organisationId]
+      );
+      await c.query(
+        "UPDATE users SET status=CASE WHEN $1='active' THEN 'active' ELSE status END,updated_at=now() WHERE id=$2",
+        [b.status,row.user_id]
       );
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
