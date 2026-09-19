@@ -11,7 +11,7 @@ export function providerStatus(config:SchoolConfig){
     },
     sms:{
       provider:'twilio',
-      configured:Boolean(twilioAuth&&config.TWILIO_SMS_FROM),
+      configured:Boolean(twilioAuth&&(config.TWILIO_MESSAGING_SERVICE_SID||config.TWILIO_SMS_FROM)),
       authentication:config.TWILIO_API_KEY_SID?'api_key':config.TWILIO_AUTH_TOKEN?'auth_token':'missing'
     },
     whatsapp:{
@@ -41,10 +41,12 @@ async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string
   const password=config.TWILIO_API_KEY_SECRET||config.TWILIO_AUTH_TOKEN;
   if(!password)throw new Error('Twilio API key or Auth Token is not configured');
   const from=channel==='sms'?config.TWILIO_SMS_FROM:config.TWILIO_WHATSAPP_FROM;
-  if(!from)throw new Error(channel==='sms'?'SMS sender is not configured':'WhatsApp sender is not configured');
+  if(channel==='sms'&&!config.TWILIO_MESSAGING_SERVICE_SID&&!from)throw new Error('SMS sender or Messaging Service is not configured');
+  if(channel==='whatsapp'&&!from)throw new Error('WhatsApp sender is not configured');
   const form=new URLSearchParams();
   form.set('To',channel==='whatsapp'?toWhatsappAddress(to):to);
-  form.set('From',channel==='whatsapp'?toWhatsappAddress(from):from);
+  if(channel==='sms'&&config.TWILIO_MESSAGING_SERVICE_SID)form.set('MessagingServiceSid',config.TWILIO_MESSAGING_SERVICE_SID);
+  else form.set('From',channel==='whatsapp'?toWhatsappAddress(from!):from!);
   form.set('Body',body);
   const auth=Buffer.from(username+':'+password).toString('base64');
   const res=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.TWILIO_ACCOUNT_SID)}/Messages.json`,{
