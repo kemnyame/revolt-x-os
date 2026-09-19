@@ -324,6 +324,21 @@ async function studentAuth(request:any){
   if(!row)throw fail(401,'Student portal session has expired');
   return row;
 }
+async function effectiveClassTeacher(organisationId:string,classroomId:string,termId?:string|null){
+  const row=await maybeOne<any>(db,`SELECT COALESCE(
+      (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+       WHERE ta.organisation_id=$1 AND ta.classroom_id=$2 AND ta.subject_id IS NULL AND ta.is_active=true
+         AND ta.term_id IS NOT DISTINCT FROM $3::uuid
+       ORDER BY ta.created_at DESC LIMIT 1),
+      (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+       WHERE ta.organisation_id=$1 AND ta.classroom_id=$2 AND ta.subject_id IS NULL AND ta.is_active=true AND ta.term_id IS NULL
+       ORDER BY ta.created_at DESC LIMIT 1),
+      c.class_teacher_os_user_id
+    ) teacher_os_user_id
+    FROM classrooms c WHERE c.id=$2 AND c.organisation_id=$1`,[organisationId,classroomId,termId??null]);
+  return row?.teacher_os_user_id??null;
+}
+
 async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
   if(a.role!=='teacher')return;
   const row=await maybeOne<any>(db,`SELECT 1 FROM classrooms c
@@ -2672,12 +2687,13 @@ app.put('/api/report-comments/:studentId',async request=>{
     interest:z.string().max(1000).nullable().optional()
   }).parse(request.body);
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
-  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id
+  const current=await one<any>(db,`SELECT c.id classroom_id
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,null);
-  if(a.role==='teacher'&&current.class_teacher_os_user_id!==a.core.id)throw fail(403,'Only the assigned class teacher can complete report remarks for this class');
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
+  if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
   const existing=await maybeOne<any>(db,'SELECT workflow_status FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
   const row=await one<any>(db,`INSERT INTO report_comments(
@@ -2699,12 +2715,13 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
   const b=z.object({termId:z.string().uuid()}).parse(request.body);
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
-  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id
+  const current=await one<any>(db,`SELECT c.id classroom_id
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,null);
-  if(a.role==='teacher'&&current.class_teacher_os_user_id!==a.core.id)throw fail(403,'Only the assigned class teacher can submit this report');
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
+  if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can submit this report');
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
@@ -2745,7 +2762,16 @@ app.get('/api/teacher/report-worklist',async request=>{
     JOIN academic_years y ON y.id=t.academic_year_id
     JOIN enrolments e ON e.student_id=s.id AND e.academic_year_id=t.academic_year_id
     JOIN classrooms c ON c.id=e.classroom_id
-    WHERE rc.organisation_id=$1 AND c.class_teacher_os_user_id=$2
+    WHERE rc.organisation_id=$1
+      AND COALESCE(
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id=rc.term_id ORDER BY ta.created_at DESC LIMIT 1),
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id IS NULL ORDER BY ta.created_at DESC LIMIT 1),
+        c.class_teacher_os_user_id
+      )=$2
       AND ($3::uuid IS NULL OR rc.term_id=$3)
     ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,rc.updated_at DESC`,
     [a.core.organisation_id,a.core.id,q.termId??null])).rows;
@@ -2782,9 +2808,10 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(report.workflow_status!=='submitted')throw fail(409,'Only submitted reports can be reviewed');
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[b.termId]);
-  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+  const current=await one<any>(db,`SELECT c.id classroom_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
-  if(current.class_teacher_os_user_id===a.core.id&&a.role!=='school_admin')throw fail(403,'The Class Teacher cannot approve and release their own report');
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
+  if(classTeacherId===a.core.id&&a.role!=='school_admin')throw fail(403,'The Class Teacher cannot approve and release their own report');
   if(a.role!=='school_admin'&&a.role!=='headteacher'){
     const assignment=await maybeOne<any>(db,'SELECT 1 FROM report_reviewer_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND reviewer_os_user_id=$3 AND is_active=true',[a.core.organisation_id,current.classroom_id,a.core.id]);
     if(!assignment)throw fail(403,'You are not assigned to review reports for this class');
@@ -2810,9 +2837,9 @@ app.post('/api/report-comments/:studentId/review',async request=>{
       relatedType:'report_comment',relatedId:report.id
     });
   }
-  if(status==='returned'&&current.class_teacher_os_user_id){
+  if(status==='returned'&&classTeacherId){
     const coreUsers=await fetchCoreUsers(a.core.organisation_id);
-    const teacher=coreUsers.find((u:any)=>u.id===current.class_teacher_os_user_id);
+    const teacher=coreUsers.find((u:any)=>u.id===classTeacherId);
     if(teacher?.email){
       await notifyContact({
         organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.returned',
@@ -3040,79 +3067,120 @@ app.get('/api/teacher/context',async request=>{
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  const term=await activeTerm(a.core.organisation_id);
   return (await db.query(`
-    WITH teaching_scope AS (
+    WITH effective_class_teacher AS (
+      SELECT c.id classroom_id,COALESCE(
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id IS NOT DISTINCT FROM $3::uuid ORDER BY ta.created_at DESC LIMIT 1),
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true AND ta.term_id IS NULL
+           ORDER BY ta.created_at DESC LIMIT 1),
+        c.class_teacher_os_user_id
+      ) teacher_os_user_id
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+    ),
+    teaching_scope AS (
       SELECT c.id classroom_id,cs.subject_id,'class_teacher'::text assignment_type
       FROM classrooms c
+      JOIN effective_class_teacher ect ON ect.classroom_id=c.id AND ect.teacher_os_user_id=$2
       JOIN class_subjects cs ON cs.classroom_id=c.id AND cs.is_active=true
-      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+      WHERE c.organisation_id=$1 AND c.is_active=true
       UNION
       SELECT ta.classroom_id,ta.subject_id,'subject_teacher'::text assignment_type
       FROM teacher_assignments ta
       WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+        AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ts.subject_id,s.name subject_name,
-      CASE WHEN c.class_teacher_os_user_id=$2 THEN 'class_teacher' ELSE ts.assignment_type END assignment_type,
-      (c.class_teacher_os_user_id=$2) is_class_teacher,
+      CASE WHEN ect.teacher_os_user_id=$2 THEN 'class_teacher' ELSE ts.assignment_type END assignment_type,
+      (ect.teacher_os_user_id=$2) is_class_teacher,
       (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
     FROM teaching_scope ts
     JOIN classrooms c ON c.id=ts.classroom_id
+    JOIN effective_class_teacher ect ON ect.classroom_id=c.id
     JOIN grade_levels g ON g.id=c.grade_level_id
     LEFT JOIN subjects s ON s.id=ts.subject_id
     WHERE c.organisation_id=$1 AND c.is_active=true
-    ORDER BY c.name,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id])).rows;
+    ORDER BY c.name,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
 });
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  const term=await activeTerm(a.core.organisation_id);
   return (await db.query(`
-    WITH scoped_classes AS (
-      SELECT c.id classroom_id
-      FROM classrooms c
-      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+    WITH effective_class_teacher AS (
+      SELECT c.id classroom_id,COALESCE(
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id IS NOT DISTINCT FROM $3::uuid ORDER BY ta.created_at DESC LIMIT 1),
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true AND ta.term_id IS NULL
+           ORDER BY ta.created_at DESC LIMIT 1),
+        c.class_teacher_os_user_id
+      ) teacher_os_user_id
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+    ),
+    scoped_classes AS (
+      SELECT ect.classroom_id FROM effective_class_teacher ect WHERE ect.teacher_os_user_id=$2
       UNION
-      SELECT ta.classroom_id
-      FROM teacher_assignments ta
+      SELECT ta.classroom_id FROM teacher_assignments ta
       WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true
+        AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name,
-      (c.class_teacher_os_user_id=$2) is_class_teacher
+      (ect.teacher_os_user_id=$2) is_class_teacher
     FROM scoped_classes sc
     JOIN enrolments e ON e.classroom_id=sc.classroom_id AND e.status='active'
     JOIN students s ON s.id=e.student_id
     JOIN classrooms c ON c.id=e.classroom_id
+    JOIN effective_class_teacher ect ON ect.classroom_id=c.id
     JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE e.organisation_id=$1
-    ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id])).rows;
+    ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
 });
 app.get('/api/teacher/dashboard',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   const term=await activeTerm(a.core.organisation_id);
   const scope=await db.query(`
-    WITH assignments AS (
-      SELECT c.id classroom_id,NULL::uuid subject_id,true is_class_teacher
-      FROM classrooms c
-      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+    WITH effective_class_teacher AS (
+      SELECT c.id classroom_id,COALESCE(
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id IS NOT DISTINCT FROM $3::uuid ORDER BY ta.created_at DESC LIMIT 1),
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=c.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true AND ta.term_id IS NULL
+           ORDER BY ta.created_at DESC LIMIT 1),
+        c.class_teacher_os_user_id
+      ) teacher_os_user_id
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+    ),
+    assignments AS (
+      SELECT ect.classroom_id,NULL::uuid subject_id,true is_class_teacher
+      FROM effective_class_teacher ect WHERE ect.teacher_os_user_id=$2
       UNION ALL
       SELECT ta.classroom_id,ta.subject_id,false
       FROM teacher_assignments ta
       WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+        AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT count(DISTINCT classroom_id)::int assigned_classes,
       count(DISTINCT subject_id) FILTER(WHERE subject_id IS NOT NULL)::int subject_assignments,
       count(DISTINCT classroom_id) FILTER(WHERE is_class_teacher)::int class_teacher_classes,
       array_agg(DISTINCT classroom_id) classroom_ids
-    FROM assignments`,[a.core.organisation_id,a.core.id]);
+    FROM assignments`,[a.core.organisation_id,a.core.id,term?.id??null]);
   const row=scope.rows[0]||{};
   const classIds=(row.classroom_ids||[]).filter(Boolean);
   if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,presentToday:0,absentToday:0,term};
   const q=await db.query(`SELECT
     (SELECT count(DISTINCT e.student_id)::int FROM enrolments e WHERE e.classroom_id=ANY($1::uuid[]) AND e.status='active') students,
-    (SELECT count(*)::int FROM homework_assignments h WHERE h.classroom_id=ANY($1::uuid[]) AND h.status<>'closed') homework,
-    (SELECT count(*)::int FROM assessments ass WHERE ass.classroom_id=ANY($1::uuid[]) AND ($2::uuid IS NULL OR ass.term_id=$2)) assessments,
+    (SELECT count(*)::int FROM homework_assignments h WHERE h.teacher_os_user_id=$3 AND h.status<>'closed') homework,
+    (SELECT count(*)::int FROM assessments ass WHERE ass.teacher_os_user_id=$3 AND ($2::uuid IS NULL OR ass.term_id=$2)) assessments,
     (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='present') present_today,
-    (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='absent') absent_today`,[classIds,term?.id??null]);
+    (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='absent') absent_today`,
+    [classIds,term?.id??null,a.core.id]);
   return{
     assignedClasses:Number(row.assigned_classes||0),
     subjectAssignments:Number(row.subject_assignments||0),
@@ -3121,7 +3189,6 @@ app.get('/api/teacher/dashboard',async request=>{
     presentToday:q.rows[0]?.present_today??0,absentToday:q.rows[0]?.absent_today??0,term
   };
 });
-
 
 function testAccessCookieValue(request:any){
   const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_test_access='));
