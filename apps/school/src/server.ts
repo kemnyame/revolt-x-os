@@ -12,6 +12,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
+import { loginFrontend } from './login-ui.js';
 import { initializePaystack, providerStatus, sendMessage, verifyPaystack, type MessageChannel } from './providers.js';
 
 const config=loadSchoolConfig();
@@ -503,6 +504,7 @@ async function provisionDemoTeachers(){
 }
 
 app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
 app.get('/student',async(_r,p)=>p.type('text/html; charset=utf-8').send(studentFrontend));
@@ -549,41 +551,76 @@ app.post('/api/system/core-wake',async(_request,reply)=>{
   });
 });
 
-app.post('/api/auth/teacher-login',async(request,reply)=>{
-  const b=z.object({email:z.string().trim().toLowerCase().email(),password:z.string().min(8).max(200)}).parse(request.body);
+async function handleSchoolStaffLogin(request:any,reply:any){
+  const b=z.object({
+    email:z.string().trim().toLowerCase().email(),
+    password:z.string().min(1).max(200)
+  }).parse(request.body);
+
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
-  await wakeCoreOS();
+  const wake=await wakeCoreOS();
+  if(!wake.reachable)throw fail(503,'Core Revolt-X OS is still starting. Please retry in a moment.');
+
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const loginRes=await fetch(base+'/v1/auth/login',{
-    method:'POST',headers:{'content-type':'application/json'},
+    method:'POST',
+    headers:{'content-type':'application/json'},
     body:JSON.stringify({email:b.email,password:b.password,organisationId:school.organisation_id}),
-    signal:AbortSignal.timeout(15000)
+    signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
-  if(!loginRes)throw fail(503,'Core OS could not be reached');
+
+  if(!loginRes)throw fail(503,'Core Revolt-X OS could not be reached');
   const loginPayload=await loginRes.json().catch(()=>null) as any;
   if(!loginRes.ok)throw fail(loginRes.status,loginPayload?.error?.message||'Invalid email or password');
 
   const ctxRes=await fetch(base+'/v1/auth/context',{
     headers:{authorization:'Bearer '+loginPayload.accessToken},
-    signal:AbortSignal.timeout(15000)
+    signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
+
   if(!ctxRes)throw fail(503,'Core OS user context could not be reached');
   const coreContext=await ctxRes.json().catch(()=>null) as any;
   if(!ctxRes.ok||!coreContext)throw fail(ctxRes.status||503,coreContext?.error?.message||'Core OS authentication failed');
 
-  const membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+  let membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active'`,
     [coreContext.organisation_id,coreContext.id]);
-  if(!membership)throw fail(403,'This account does not have active Teacher workspace access');
+
+  if(!membership&&Array.isArray(coreContext.permissions)&&coreContext.permissions.includes('organisation.manage')){
+    membership=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+      VALUES($1,$2,'school_admin','active')
+      ON CONFLICT(organisation_id,os_user_id)
+      DO UPDATE SET role='school_admin',status='active',updated_at=now()
+      RETURNING *`,[coreContext.organisation_id,coreContext.id]);
+  }
+
+  if(!membership)throw fail(403,'This account does not have active Revolt-X School access');
 
   const session=await createSchoolStaffSession(coreContext,'core_exchange');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  await audit(coreContext.organisation_id,coreContext.id,'teacher.authenticated','school_session',null,{role:membership.role});
-  return reply.send({accessToken:session.localToken,expiresIn:8*60*60,schoolRole:membership.role});
-});
 
-app.post('/api/auth/teacher-set-password',async(request,reply)=>{
+  const redirectTo=membership.role==='teacher'?'/teacher':'/';
+  await audit(coreContext.organisation_id,coreContext.id,'school.authenticated','school_session',null,{role:membership.role});
+
+  return reply.send({
+    accessToken:session.localToken,
+    expiresIn:8*60*60,
+    schoolRole:membership.role,
+    user:{
+      id:coreContext.id,
+      email:coreContext.email,
+      firstName:coreContext.first_name,
+      lastName:coreContext.last_name
+    },
+    redirectTo
+  });
+}
+
+app.post('/api/auth/login',handleSchoolStaffLogin);
+app.post('/api/auth/teacher-login',handleSchoolStaffLogin);
+
+async function handleSchoolPasswordSetup(request:any,reply:any){
   const b=z.object({
     token:z.string().min(32).max(300),
     password:z.string().min(12).max(200)
@@ -596,13 +633,15 @@ app.post('/api/auth/teacher-set-password',async(request,reply)=>{
   const res=await fetch(base+'/v1/auth/password-reset/confirm',{
     method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({token:b.token,password:b.password}),
-    signal:AbortSignal.timeout(15000)
+    signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
   if(!res)throw fail(503,'Core OS could not be reached');
   const payload=await res.json().catch(()=>null) as any;
   if(!res.ok)throw fail(res.status,payload?.error?.message||'Password setup failed');
   return reply.send({reset:true});
-});
+}
+app.post('/api/auth/set-password',handleSchoolPasswordSetup);
+app.post('/api/auth/teacher-set-password',handleSchoolPasswordSetup);
 
 app.post('/api/auth/logout',async(request,reply)=>{
   const token=requestSessionToken(request);
