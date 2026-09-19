@@ -689,6 +689,45 @@ app.post('/api/system/core-wake',async(_request,reply)=>{
   });
 });
 
+
+// Safe service recovery endpoint. This deliberately reconnects dependencies instead of
+// killing the Node process; the hosting platform remains responsible for process restarts.
+app.post('/api/system/recover-services',async request=>{
+  const a=await authorize(request,db,config,'system.errors.manage');
+  const started=Date.now();
+  coreUsersCache.clear();
+
+  let database:any={ok:false};
+  try{
+    const t=Date.now();
+    await db.query('SELECT 1');
+    database={ok:true,responseMs:Date.now()-t};
+  }catch(error:any){database={ok:false,error:String(error?.message||error)}}
+
+  const core=await wakeCoreOS();
+  let serviceBridge:any={ok:false,status:0};
+  if(core.reachable&&config.CORE_SERVICE_KEY){
+    try{
+      const t=Date.now();
+      const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(a.core.organisation_id),{
+        headers:coreServiceHeaders(),signal:AbortSignal.timeout(15000)
+      });
+      serviceBridge={ok:res.ok,status:res.status,responseMs:Date.now()-t};
+    }catch(error:any){serviceBridge={ok:false,status:0,error:String(error?.message||error)}}
+  }else if(!config.CORE_SERVICE_KEY){
+    serviceBridge={ok:false,status:0,error:'Core service authentication is not configured'};
+  }
+
+  const recovered=Boolean(database.ok&&core.reachable&&serviceBridge.ok);
+  await audit(a.core.organisation_id,a.core.id,'system.services.recovery','system',null,{database,core,serviceBridge,recovered});
+  return {
+    recovered,database,core,serviceBridge,durationMs:Date.now()-started,checkedAt:new Date().toISOString(),
+    message:recovered
+      ?'School database, Core OS and the secure service bridge are responding.'
+      :'Recovery completed, but one or more dependencies still need attention.'
+  };
+});
+
 async function handleSchoolStaffLogin(request:any,reply:any){
   const b=z.object({
     email:z.string().trim().toLowerCase().email(),
