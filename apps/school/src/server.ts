@@ -892,13 +892,14 @@ app.get('/api/timetable',async request=>{
 });
 app.get('/api/timetable/export.csv',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
   const rows=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
     WHERE tt.organisation_id=$1 AND ($2::uuid IS NULL OR tt.classroom_id=$2)
       AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
-    ORDER BY c.name,tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null])).rows;
+      AND ($5::uuid IS NULL OR tt.teacher_os_user_id=$5)
+    ORDER BY c.name,tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null,q.teacherOsUserId??null])).rows;
   let users:any[]=[];
   try{
     const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:request.headers.authorization!},signal:AbortSignal.timeout(8000)});
@@ -921,6 +922,18 @@ app.post('/api/timetable',async(request,reply)=>{
     startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),room:z.string().max(80).optional()
   }).parse(request.body);
   if(b.endTime<=b.startTime)throw fail(400,'End time must be after start time');
+  const rules=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2
+    AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL) ORDER BY term_id NULLS LAST LIMIT 1`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null]);
+  if(rules){
+    const dayStart=String(rules.school_day_start).slice(0,5),dayEnd=String(rules.school_day_end).slice(0,5);
+    if(b.startTime<dayStart||b.endTime>dayEnd)throw fail(400,`Period must fall within the configured school day (${dayStart} - ${dayEnd})`);
+  }
+  const scheduledBreak=await maybeOne<any>(db,`SELECT label,start_time,end_time FROM timetable_breaks
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
+      AND (day_of_week IS NULL OR day_of_week=$4) AND start_time<$6::time AND end_time>$5::time LIMIT 1`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null,b.dayOfWeek,b.startTime,b.endTime]);
+  if(scheduledBreak)throw fail(409,`This period overlaps the scheduled ${scheduledBreak.label}`);
   const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
     JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3
@@ -1182,6 +1195,18 @@ app.patch('/api/timetable/:id',async request=>{
   const day=b.dayOfWeek??current.day_of_week,start=b.startTime??String(current.start_time).slice(0,5),end=b.endTime??String(current.end_time).slice(0,5);
   const teacher=Object.hasOwn(b,'teacherOsUserId')?b.teacherOsUserId:current.teacher_os_user_id;
   if(end<=start)throw fail(400,'End time must be after start time');
+  const rules=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2
+    AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL) ORDER BY term_id NULLS LAST LIMIT 1`,
+    [a.core.organisation_id,current.academic_year_id,current.term_id]);
+  if(rules){
+    const dayStart=String(rules.school_day_start).slice(0,5),dayEnd=String(rules.school_day_end).slice(0,5);
+    if(start<dayStart||end>dayEnd)throw fail(400,`Period must fall within the configured school day (${dayStart} - ${dayEnd})`);
+  }
+  const scheduledBreak=await maybeOne<any>(db,`SELECT label FROM timetable_breaks WHERE organisation_id=$1 AND academic_year_id=$2
+    AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL) AND (day_of_week IS NULL OR day_of_week=$4)
+    AND start_time<$6::time AND end_time>$5::time LIMIT 1`,
+    [a.core.organisation_id,current.academic_year_id,current.term_id,day,start,end]);
+  if(scheduledBreak)throw fail(409,`This period overlaps the scheduled ${scheduledBreak.label}`);
   const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
     JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3 AND tt.id<>$4
