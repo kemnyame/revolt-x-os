@@ -80,6 +80,7 @@ async function deliverCommunication(input:{
       channel:input.channel,
       to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
       subject:input.subject,
+      recipientName:input.recipientName,
       body:input.body
     });
     return await one<any>(db,`UPDATE communication_outbox
