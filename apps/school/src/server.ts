@@ -757,6 +757,48 @@ app.post('/api/class-subjects',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'class_subject.assigned','class_subject',row.id,{classroomId:b.classroomId,subjectId:b.subjectId});
   return reply.code(201).send(row);
 });
+app.post('/api/class-subjects/bulk',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.edit');
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    classroomId:z.string().uuid(),
+    subjectIds:z.array(z.string().uuid()).min(1).max(30)
+  }).parse(request.body);
+
+  const cls=await one<any>(db,`SELECT c.id,c.name,g.stage
+    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE c.id=$1 AND c.organisation_id=$2 AND c.academic_year_id=$3`,
+    [b.classroomId,a.core.organisation_id,b.academicYearId]);
+
+  const uniqueIds=[...new Set(b.subjectIds)];
+  const subjects=(await db.query(`SELECT id,name,stage FROM subjects
+    WHERE organisation_id=$1 AND is_active=true AND id=ANY($2::uuid[])`,
+    [a.core.organisation_id,uniqueIds])).rows;
+  if(subjects.length!==uniqueIds.length)throw fail(400,'One or more selected subjects are unavailable');
+  const invalid=subjects.filter((s:any)=>s.stage!=='both'&&s.stage!==cls.stage);
+  if(invalid.length)throw fail(400,`These subjects are not configured for this class stage: ${invalid.map((s:any)=>s.name).join(', ')}`);
+
+  const rows=await tx(db,async client=>{
+    const added:any[]=[];
+    for(const subjectId of uniqueIds){
+      const row=await one<any>(client,`INSERT INTO class_subjects(
+          organisation_id,academic_year_id,classroom_id,subject_id,is_active
+        ) VALUES($1,$2,$3,$4,true)
+        ON CONFLICT(academic_year_id,classroom_id,subject_id)
+        DO UPDATE SET is_active=true,updated_at=now()
+        RETURNING *`,
+        [a.core.organisation_id,b.academicYearId,b.classroomId,subjectId]);
+      added.push(row);
+    }
+    return added;
+  });
+
+  await audit(a.core.organisation_id,a.core.id,'class_subject.bulk_assigned','classroom',b.classroomId,{
+    academicYearId:b.academicYearId,subjectIds:uniqueIds,count:rows.length
+  });
+  return reply.code(201).send({classroomId:b.classroomId,added:rows.length,subjects:rows});
+});
+
 app.patch('/api/class-subjects/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
