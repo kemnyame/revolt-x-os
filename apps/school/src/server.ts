@@ -3900,19 +3900,51 @@ app.get('/api/audit',async request=>{
   const a=await authorize(request,db,config,'system.logs.view');
   const q=z.object({q:z.string().max(120).optional(),action:z.string().max(120).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
   const like=q.q?'%'+q.q+'%':null;
-  return (await db.query(`SELECT * FROM school_audit_logs WHERE organisation_id=$1
+  const rows=(await db.query(`SELECT * FROM school_audit_logs WHERE organisation_id=$1
     AND ($2::text IS NULL OR action=$2)
     AND ($3::text IS NULL OR action ILIKE $3 OR resource_type ILIKE $3 OR COALESCE(resource_id,'') ILIKE $3 OR metadata::text ILIKE $3)
     ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,q.action??null,like,q.limit])).rows;
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const names=new Map(users.map((u:any)=>[u.id,(u.first_name+' '+u.last_name).trim()]));
+  return rows.map((r:any)=>({
+    ...r,
+    performed_by:names.get(r.actor_os_user_id)||r.actor_os_user_id||'System',
+    performed_on:r.metadata?.performedOn||r.metadata?.name||r.metadata?.studentName||r.resource_id||r.resource_type,
+    performed_at:r.created_at
+  }));
 });
 app.get('/api/system/request-logs',async request=>{
   const a=await authorize(request,db,config,'system.logs.view');
   const q=z.object({q:z.string().max(120).optional(),status:z.coerce.number().int().optional(),method:z.string().max(12).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
   const like=q.q?'%'+q.q+'%':null;
-  return (await db.query(`SELECT * FROM system_request_logs WHERE organisation_id=$1
+  const rows=(await db.query(`SELECT * FROM system_request_logs WHERE organisation_id=$1
     AND ($2::int IS NULL OR status_code=$2) AND ($3::text IS NULL OR method=$3)
     AND ($4::text IS NULL OR path ILIKE $4 OR request_id ILIKE $4)
     ORDER BY created_at DESC LIMIT $5`,[a.core.organisation_id,q.status??null,q.method??null,like,q.limit])).rows;
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const names=new Map(users.map((u:any)=>[u.id,(u.first_name+' '+u.last_name).trim()]));
+  return rows.map((r:any)=>({
+    ...r,
+    performed_by:names.get(r.actor_os_user_id)||r.actor_os_user_id||'Public / System',
+    performed_on:r.path,
+    performed_at:r.created_at
+  }));
+});
+app.get('/api/system/change-logs',async request=>{
+  const a=await authorize(request,db,config,'system.logs.view');
+  const q=z.object({q:z.string().max(120).optional(),resourceType:z.string().max(120).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  const rows=(await db.query(`SELECT * FROM school_change_logs WHERE organisation_id=$1
+    AND ($2::text IS NULL OR resource_type=$2)
+    AND ($3::text IS NULL OR action ILIKE $3 OR resource_type ILIKE $3 OR COALESCE(performed_on,'') ILIKE $3 OR old_value::text ILIKE $3 OR new_value::text ILIKE $3)
+    ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,q.resourceType??null,like,q.limit])).rows;
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const names=new Map(users.map((u:any)=>[u.id,(u.first_name+' '+u.last_name).trim()]));
+  return rows.map((r:any)=>({
+    ...r,
+    performed_by:names.get(r.actor_os_user_id)||r.actor_os_user_id||'System',
+    performed_at:r.created_at
+  }));
 });
 app.get('/api/system/errors',async request=>{
   const a=await authorize(request,db,config,'system.logs.view');
