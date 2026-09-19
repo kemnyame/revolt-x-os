@@ -1661,16 +1661,25 @@ app.post('/api/timetable',async(request,reply)=>{
       AND (day_of_week IS NULL OR day_of_week=$4) AND start_time<$6::time AND end_time>$5::time LIMIT 1`,
     [a.core.organisation_id,b.academicYearId,b.termId??null,b.dayOfWeek,b.startTime,b.endTime]);
   if(scheduledBreak)throw fail(409,`This period overlaps the scheduled ${scheduledBreak.label}`);
+  if(b.teacherOsUserId){
+    const unavailable=await maybeOne<any>(db,`SELECT reason FROM timetable_teacher_unavailability
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND teacher_os_user_id=$3
+        AND (term_id IS NOT DISTINCT FROM $4::uuid OR term_id IS NULL) AND day_of_week=$5
+        AND start_time<$7::time AND end_time>$6::time LIMIT 1`,
+      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,b.termId??null,b.dayOfWeek,b.startTime,b.endTime]);
+    if(unavailable)throw fail(409,'The selected teacher is unavailable during this period'+(unavailable.reason?': '+unavailable.reason:''));
+  }
   const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
     JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3
       AND tt.start_time<$5::time AND tt.end_time>$4::time
       AND (
         tt.classroom_id=$6 OR
-        ($7::uuid IS NOT NULL AND tt.teacher_os_user_id=$7)
+        ($7::uuid IS NOT NULL AND tt.teacher_os_user_id=$7) OR
+        ($9::text IS NOT NULL AND NULLIF(trim($9),'') IS NOT NULL AND lower(trim(tt.room))=lower(trim($9)))
       )
       AND (tt.term_id IS NOT DISTINCT FROM $8::uuid OR tt.term_id IS NULL OR $8::uuid IS NULL)
-    LIMIT 1`,[a.core.organisation_id,b.academicYearId,b.dayOfWeek,b.startTime,b.endTime,b.classroomId,b.teacherOsUserId??null,b.termId??null]);
+    LIMIT 1`,[a.core.organisation_id,b.academicYearId,b.dayOfWeek,b.startTime,b.endTime,b.classroomId,b.teacherOsUserId??null,b.termId??null,b.room??null]);
   if(conflict)throw fail(409,`Timetable conflict with ${conflict.classroom_name} - ${conflict.subject_name}`);
   const row=await one<any>(db,`INSERT INTO timetable_entries(
     organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room
@@ -1709,6 +1718,10 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
     WHERE organisation_id=$1 AND academic_year_id=$2
       AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
     ORDER BY start_time`,[a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
+  const teacherUnavailability=(await db.query(`SELECT * FROM timetable_teacher_unavailability
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
 
   const requirements=(await db.query(`
     SELECT cs.id class_subject_id,cs.classroom_id,c.name classroom_name,cs.subject_id,s.name subject_name,
@@ -1796,6 +1809,8 @@ app.post('/api/timetable/auto-schedule',async(request,reply)=>{
       const candidates=slots.filter(slot=>{
         const probe={...slot,classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id};
         if((teacherLoad.get(req.teacher_os_user_id+'|'+slot.day)||0)>=maxTeacherPeriods)return false;
+        const unavailable=teacherUnavailability.some((u:any)=>u.teacher_os_user_id===req.teacher_os_user_id&&Number(u.day_of_week)===slot.day&&slot.start<toMinutes(u.end_time)&&slot.end>toMinutes(u.start_time));
+        if(unavailable)return false;
         return !occupancy.some((o:any)=>overlaps(probe,o)&&(o.classroomId===req.classroom_id||o.teacherId===req.teacher_os_user_id));
       }).sort((x,y)=>{
         const sx=(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+x.day)||0)*100+
@@ -2238,13 +2253,22 @@ app.patch('/api/timetable/:id',async request=>{
     AND start_time<$6::time AND end_time>$5::time LIMIT 1`,
     [a.core.organisation_id,current.academic_year_id,current.term_id,day,start,end]);
   if(scheduledBreak)throw fail(409,`This period overlaps the scheduled ${scheduledBreak.label}`);
+  if(teacher){
+    const unavailable=await maybeOne<any>(db,`SELECT reason FROM timetable_teacher_unavailability
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND teacher_os_user_id=$3
+        AND (term_id IS NOT DISTINCT FROM $4::uuid OR term_id IS NULL) AND day_of_week=$5
+        AND start_time<$7::time AND end_time>$6::time LIMIT 1`,
+      [a.core.organisation_id,current.academic_year_id,teacher,current.term_id,day,start,end]);
+    if(unavailable)throw fail(409,'The selected teacher is unavailable during this period'+(unavailable.reason?': '+unavailable.reason:''));
+  }
   const conflict=await maybeOne<any>(db,`SELECT tt.id,c.name classroom_name,s.name subject_name FROM timetable_entries tt
     JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     WHERE tt.organisation_id=$1 AND tt.academic_year_id=$2 AND tt.day_of_week=$3 AND tt.id<>$4
       AND tt.start_time<$6::time AND tt.end_time>$5::time
-      AND (tt.classroom_id=$7 OR ($8::uuid IS NOT NULL AND tt.teacher_os_user_id=$8))
+      AND (tt.classroom_id=$7 OR ($8::uuid IS NOT NULL AND tt.teacher_os_user_id=$8)
+        OR ($10::text IS NOT NULL AND NULLIF(trim($10),'') IS NOT NULL AND lower(trim(tt.room))=lower(trim($10))))
       AND (tt.term_id IS NOT DISTINCT FROM $9::uuid OR tt.term_id IS NULL OR $9::uuid IS NULL)
-    LIMIT 1`,[a.core.organisation_id,current.academic_year_id,day,id,start,end,current.classroom_id,teacher??null,current.term_id]);
+    LIMIT 1`,[a.core.organisation_id,current.academic_year_id,day,id,start,end,current.classroom_id,teacher??null,current.term_id,Object.hasOwn(b,'room')?b.room:current.room]);
   if(conflict)throw fail(409,`Timetable conflict with ${conflict.classroom_name} - ${conflict.subject_name}`);
   const row=await one<any>(db,`UPDATE timetable_entries SET subject_id=COALESCE($1,subject_id),
     teacher_os_user_id=CASE WHEN $2 THEN $3 ELSE teacher_os_user_id END,day_of_week=COALESCE($4,day_of_week),
@@ -3663,6 +3687,40 @@ app.delete('/api/timetable/breaks/:id',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'timetable.break_deleted','timetable_break',row.id);
   return reply.code(204).send();
 });
+app.get('/api/timetable/unavailability',async request=>{
+  const a=await authorize(request,db,config,'timetable.view');
+  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
+  return (await db.query(`SELECT * FROM timetable_teacher_unavailability
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
+      AND ($4::uuid IS NULL OR teacher_os_user_id=$4)
+    ORDER BY teacher_os_user_id,day_of_week,start_time`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null,q.teacherOsUserId??null])).rows;
+});
+app.post('/api/timetable/unavailability',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.configure');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),teacherOsUserId:z.string().uuid(),
+    dayOfWeek:z.number().int().min(1).max(5),startTime:z.string().regex(/^\d{2}:\d{2}$/),
+    endTime:z.string().regex(/^\d{2}:\d{2}$/),reason:z.string().max(300).optional()
+  }).parse(request.body);
+  if(b.endTime<=b.startTime)throw fail(400,'Unavailable end time must be after start time');
+  const row=await one<any>(db,`INSERT INTO timetable_teacher_unavailability(
+      organisation_id,academic_year_id,term_id,teacher_os_user_id,day_of_week,start_time,end_time,reason,created_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    ON CONFLICT DO NOTHING RETURNING *`,
+    [a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId,b.dayOfWeek,b.startTime,b.endTime,b.reason??null,a.core.id]);
+  if(!row)throw fail(409,'This teacher unavailability already exists');
+  await audit(a.core.organisation_id,a.core.id,'timetable.teacher_unavailability_created','timetable_teacher_unavailability',row.id,{teacherOsUserId:b.teacherOsUserId});
+  return reply.code(201).send(row);
+});
+app.delete('/api/timetable/unavailability/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,'DELETE FROM timetable_teacher_unavailability WHERE id=$1 AND organisation_id=$2 RETURNING *',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'timetable.teacher_unavailability_deleted','timetable_teacher_unavailability',id,{teacherOsUserId:row.teacher_os_user_id});
+  return reply.code(204).send();
+});
+
 app.get('/api/timetable/schedule-analysis',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
   const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional()}).parse(request.query);
@@ -3679,6 +3737,7 @@ app.get('/api/timetable/schedule-analysis',async request=>{
     if(String(x.start_time)<String(y.end_time)&&String(x.end_time)>String(y.start_time)){
       if(x.classroom_id===y.classroom_id)conflicts.push({type:'class',first:x.id,second:y.id,message:`${x.classroom_name}: ${x.subject_name} overlaps ${y.subject_name}`});
       if(x.teacher_os_user_id&&x.teacher_os_user_id===y.teacher_os_user_id)conflicts.push({type:'teacher',first:x.id,second:y.id,message:`A teacher is scheduled for two classes at the same time`});
+      if(x.room&&y.room&&String(x.room).trim().toLowerCase()===String(y.room).trim().toLowerCase())conflicts.push({type:'room',first:x.id,second:y.id,message:`Room ${x.room} is assigned to two classes at the same time`});
     }
   }
   const teacherLoad=(await db.query(`SELECT teacher_os_user_id,day_of_week,count(*)::int periods FROM timetable_entries
@@ -3693,7 +3752,14 @@ app.get('/api/timetable/schedule-analysis',async request=>{
       AND NOT EXISTS(SELECT 1 FROM timetable_entries tt WHERE tt.organisation_id=ta.organisation_id AND tt.academic_year_id=ta.academic_year_id
         AND tt.classroom_id=ta.classroom_id AND tt.subject_id=ta.subject_id AND tt.teacher_os_user_id=ta.teacher_os_user_id
         AND ($3::uuid IS NULL OR tt.term_id=$3))`,[a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
-  return{settings:settings??null,entryCount:entries.length,conflicts,teacherLoad,overloads,unscheduledAssignments:unscheduled};
+  const unavailability=(await db.query(`SELECT * FROM timetable_teacher_unavailability
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)`,
+    [a.core.organisation_id,q.academicYearId,q.termId??null])).rows;
+  const availabilityConflicts=entries.filter((x:any)=>x.teacher_os_user_id&&unavailability.some((u:any)=>
+    u.teacher_os_user_id===x.teacher_os_user_id&&Number(u.day_of_week)===Number(x.day_of_week)&&String(x.start_time)<String(u.end_time)&&String(x.end_time)>String(u.start_time)
+  )).map((x:any)=>({type:'availability',first:x.id,second:null,message:`${x.classroom_name} - ${x.subject_name} is scheduled during the teacher's unavailable time`}));
+  conflicts.push(...availabilityConflicts);
+  return{settings:settings??null,entryCount:entries.length,conflicts,teacherLoad,overloads,unscheduledAssignments:unscheduled,teacherUnavailability:unavailability};
 });
 
 app.get('/api/lesson-notes',async request=>{
