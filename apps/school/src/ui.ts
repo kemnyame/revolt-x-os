@@ -151,7 +151,12 @@ async function page(p){
    }
  }
  else if(p==='classes'){
-   var rr=await Promise.all([raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/subjects'),raw('/api/class-subjects'),raw('/api/staff/core-users'),raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),raw('/api/terms')]);
+   var academicManagerDirectoryError=null;
+   var rr=await Promise.all([
+     raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/subjects'),raw('/api/class-subjects'),
+     raw('/api/staff/core-users').catch(function(e){academicManagerDirectoryError=e;return[]}),
+     raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),raw('/api/terms')
+   ]);
    var ys=rr[0],gs=rr[1],cls=rr[2],subs=rr[3],classSubs=rr[4],users=rr[5],memberships=rr[6],assignments=rr[7],terms=rr[8];
    var teacherIds=memberships.filter(function(m){return m.status==='active'&&(m.role==='teacher'||m.role==='headteacher'||m.role==='school_admin')}).map(function(m){return m.os_user_id});
    var teachers=users.filter(function(u){return teacherIds.indexOf(u.id)>=0});
@@ -162,6 +167,7 @@ async function page(p){
    function renderManager(){
      var list=yearClasses();if(!selectedClass&&list[0])selectedClass=list[0].id;
      E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">Manage classes, curriculum subjects and teacher assignments from one screen.</p></div><div class="actions"><button id="addClass" class="primary">Add class</button><button id="addSubject" class="ghost">Add subject</button></div></div>'+
+     (academicManagerDirectoryError?'<div class="notice warn">The Core staff directory is waking or temporarily unavailable. Classes, subjects and existing teacher assignments are still available. Teacher names and new teacher assignment choices will appear automatically after retry.</div>':'')+
      '<div class="panel academic-toolbar"><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div>'+
      '<div class="academic-manager"><div class="panel class-browser"><h3>Classes</h3><div id="classCards">'+(list.length?list.map(classCard).join(''):'<div class="empty">No classes for this academic year.</div>')+'</div></div><div id="classDetail" class="panel"></div></div>'+
      '<div class="section"><h2>Subject Catalogue</h2></div><div class="panel">'+table(subs,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class="mini" data-edit-subject="'+r.id+'">Edit</button><button class="mini danger" data-delete-subject="'+r.id+'">Delete</button>'})+'</div>';
