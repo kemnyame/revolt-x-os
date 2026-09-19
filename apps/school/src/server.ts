@@ -148,7 +148,8 @@ async function provisionDemoTeachers(){
         await db.query(`INSERT INTO class_subjects(organisation_id,academic_year_id,classroom_id,subject_id,is_active)
           VALUES($1,$2,$3,$4,true)
           ON CONFLICT(academic_year_id,classroom_id,subject_id) DO UPDATE SET is_active=true,updated_at=now()`,[orgId,year.id,cls.id,sub.id]);
-        const t=byEmail(subjectTeacher[sub.code]);
+        const teacherEmail=subjectTeacher[sub.code];
+        const t=teacherEmail?byEmail(teacherEmail):undefined;
         if(t){
           await db.query(`INSERT INTO teacher_assignments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active)
             SELECT $1,$2,$3,$4,$5,$6,true
