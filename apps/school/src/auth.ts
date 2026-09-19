@@ -22,6 +22,16 @@ export type CoreContext={
 
 export type SchoolRole='school_admin'|'headteacher'|'teacher'|'bursar'|'registrar';
 
+export async function effectiveCapabilities(db:SchoolDb,role:SchoolRole){
+  if(role==='school_admin'){
+    return (await db.query<{key:string}>('SELECT key FROM school_capabilities ORDER BY sort_order,key')).rows.map(x=>x.key);
+  }
+  return (await db.query<{capability_key:string}>(
+    'SELECT capability_key FROM school_role_capabilities WHERE role=$1 AND allowed=true ORDER BY capability_key',
+    [role]
+  )).rows.map(x=>x.capability_key);
+}
+
 const coreContextCache=new Map<string,{value:CoreContext;expiresAt:number}>();
 const CORE_CONTEXT_CACHE_MS=15_000;
 function authCacheKey(auth:string){return createHash('sha256').update(auth).digest('hex')}
