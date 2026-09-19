@@ -1377,15 +1377,16 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
       WHERE organisation_id=$1 AND status='active' AND role IN('headteacher','school_admin')`,[a.core.organisation_id])).rows.map((x:any)=>x.os_user_id));
   }
   const coreUsers=await fetchCoreUsers(request.headers.authorization);
+  const reportStudent=await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId]);
   for(const reviewerId of [...new Set(reviewerIds)]){
     const reviewer=coreUsers.find((u:any)=>u.id===reviewerId);
     if(reviewer?.email){
-      await deliverCommunication({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
-        recipientName:(reviewer.first_name+' '+reviewer.last_name).trim(),recipientAddress:reviewer.email,
+      await notifyContact({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.submitted',
+        name:(reviewer.first_name+' '+reviewer.last_name).trim(),email:reviewer.email,phone:null,
         subject:'Report card awaiting review',
-        body:`A report card has been submitted for review. Student: ${(await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId])).first_name} ${(await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId])).last_name}. Open the Report Cards approval queue in Revolt-X School.`,
-        templateKey:'reports.submitted',relatedType:'report_comment',relatedId:report.id
+        body:`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. Open the Report Cards approval queue in Revolt-X School.`,
+        relatedType:'report_comment',relatedId:report.id
       });
     }
   }
@@ -1456,12 +1457,12 @@ app.post('/api/report-comments/:studentId/review',async request=>{
     const coreUsers=await fetchCoreUsers(request.headers.authorization);
     const teacher=coreUsers.find((u:any)=>u.id===current.class_teacher_os_user_id);
     if(teacher?.email){
-      await deliverCommunication({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
-        recipientName:(teacher.first_name+' '+teacher.last_name).trim(),recipientAddress:teacher.email,
+      await notifyContact({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.returned',
+        name:(teacher.first_name+' '+teacher.last_name).trim(),email:teacher.email,phone:null,
         subject:'Report card returned for correction',
         body:`The report card for ${student.first_name} ${student.last_name} has been returned for correction. Reviewer note: ${b.returnNote||''}`,
-        templateKey:'reports.returned',relatedType:'report_comment',relatedId:report.id
+        relatedType:'report_comment',relatedId:report.id
       });
     }
   }
