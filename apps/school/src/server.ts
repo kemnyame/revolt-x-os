@@ -1313,8 +1313,10 @@ app.get('/api/roles/capabilities',async request=>{
   const a=await authorize(request,db,config,'roles.view');
   const capabilities=(await db.query(`SELECT * FROM school_capabilities ORDER BY sort_order,module,action,label`)).rows;
   const mappings=(await db.query(`SELECT role,capability_key,allowed FROM school_role_capabilities ORDER BY role,capability_key`)).rows;
+  const manage=await maybeOne<any>(db,'SELECT allowed FROM school_role_capabilities WHERE role=$1 AND capability_key=$2',[a.role,'roles.manage']);
   return{
     currentRole:a.role,
+    canManage:a.role==='school_admin'||Boolean(manage?.allowed),
     roles:['school_admin','headteacher','teacher','bursar','registrar'],
     capabilities,
     mappings
