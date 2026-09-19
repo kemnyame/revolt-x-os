@@ -65,7 +65,7 @@ function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){retur
 function toast(m,bad){var t=E('toast');t.textContent=m;t.style.borderColor=bad?'#71323a':'#2c6d5c';t.classList.remove('hide');setTimeout(function(){t.classList.add('hide')},2500)}
 function badge(v){var s=String(v||'');var c=/absent|withdrawn|closed|suspended|unpaid/i.test(s)?' red':/draft|planned|late|part_paid|unmarked/i.test(s)?' warn':'';return '<span class="badge'+c+'">'+esc(s||'—')+'</span>'}
 function table(rows,cols,act){if(!rows||!rows.length)return '<div class="empty">No records yet.</div>';return '<div class="table"><table><thead><tr>'+cols.map(function(c){return'<th>'+esc(c.label||c.key)+'</th>'}).join('')+(act?'<th>Actions</th>':'')+'</tr></thead><tbody>'+rows.map(function(r){return'<tr>'+cols.map(function(c){var v=c.render?c.render(r):r[c.key];return'<td>'+String(v==null?'':v)+'</td>'}).join('')+(act?'<td>'+act(r)+'</td>':'')+'</tr>'}).join('')+'</tbody></table></div>'}
-async function raw(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{},token?{authorization:'Bearer '+token}:{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');return j}
+async function raw(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{},token?{authorization:'Bearer '+token}:{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var err=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');err.status=r.status;throw err}return j}
 function modal(html){E('modalBody').innerHTML=html;E('modal').classList.remove('hide')}function close(){E('modal').classList.add('hide');E('modalBody').innerHTML=''}E('closeModal').onclick=close;
 function field(f,v){v=v==null?'':v;if(f.type==='select')return'<label>'+esc(f.label)+'</label><select data-f="'+f.key+'">'+(f.options||[]).map(function(o){var value=typeof o==='string'?o:o.value,label=typeof o==='string'?o:o.label;return'<option value="'+esc(value)+'"'+(String(value)===String(v)?' selected':'')+'>'+esc(label)+'</option>'}).join('')+'</select>';if(f.type==='textarea')return'<label>'+esc(f.label)+'</label><textarea rows="'+(f.rows||4)+'" data-f="'+f.key+'">'+esc(v)+'</textarea>';return'<label>'+esc(f.label)+'</label><input type="'+(f.type||'text')+'" data-f="'+f.key+'" value="'+esc(v)+'">'}
 function form(title,fields,vals,save){vals=vals||{};modal('<h2 style="margin-bottom:15px">'+esc(title)+'</h2>'+fields.map(function(f){return field(f,vals[f.key])}).join('')+'<button id="saveModal" class="primary" style="width:100%;margin:8px 0 12px">Save</button>');E('saveModal').onclick=async function(){var v={};E('modalBody').querySelectorAll('[data-f]').forEach(function(x){v[x.dataset.f]=x.value});try{E('saveModal').disabled=true;await save(v);close();toast('Saved');await page(current)}catch(e){toast(e.message,true);E('saveModal').disabled=false}}}
@@ -87,17 +87,41 @@ function setupGlobalSearch(){
   box.onclick=function(e){var b=e.target.closest('[data-search-section]');if(!b)return;box.classList.add('hide');input.value='';if(b.dataset.searchType==='student')sessionStorage.setItem('rx_open_student',b.dataset.searchId);page(b.dataset.searchSection||'dashboard')};
   input.onkeydown=function(e){if(e.key==='Escape')box.classList.add('hide')};
 }
+function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
+async function previewToken(){
+  var last=null;
+  for(var i=0;i<3;i++){
+    try{
+      var p=await fetch('/api/auth/preview',{method:'POST'}),j=await p.json();
+      if(p.ok&&j.accessToken)return j.accessToken;
+      last=Error(j&&j.error&&j.error.message?j.error.message:'Core OS access failed');
+      last.status=p.status
+    }catch(e){last=e}
+    if(i<2)await wait(900*(i+1))
+  }
+  throw last||Error('Core OS access failed')
+}
 async function boot(){
  try{
    token=sessionStorage.getItem('rx_school_token')||'';
-   if(!token){var p=await fetch('/api/auth/preview',{method:'POST'});var j=await p.json();if(!p.ok)throw Error(j.error&&j.error.message||'Core OS access failed');token=j.accessToken;sessionStorage.setItem('rx_school_token',token)}
-   ctx=await raw('/api/context');
+   if(!token){token=await previewToken();sessionStorage.setItem('rx_school_token',token)}
+   try{ctx=await raw('/api/context')}
+   catch(e){
+     if(e.status===401||e.status===403){
+       sessionStorage.removeItem('rx_school_token');token=await previewToken();sessionStorage.setItem('rx_school_token',token);ctx=await raw('/api/context')
+     }else if(e.status===429||e.status===502||e.status===503||e.status===504){
+       await wait(1200);ctx=await raw('/api/context')
+     }else throw e
+   }
    if(!ctx.profile){await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});ctx=await raw('/api/context')}
    E('schoolName').textContent=ctx.profile.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;E('role').textContent=ctx.schoolRole.replace('_',' ');
    var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
    E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};setupGlobalSearch();
    E('loading').classList.add('hide');E('app').classList.remove('hide');await page('dashboard')
- }catch(e){E('loading').innerHTML='<div><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p></div>'}
+ }catch(e){
+   E('loading').innerHTML='<div><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><button id="retrySchool" class="primary">Retry</button></div>';
+   var b=E('retrySchool');if(b)b.onclick=function(){sessionStorage.removeItem('rx_school_token');location.reload()}
+ }
 }
 async function page(p){
  var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!canAny(navItem[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role does not have permission to open this module.</p></div>';return}
