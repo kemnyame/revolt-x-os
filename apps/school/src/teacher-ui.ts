@@ -76,7 +76,7 @@ function showPasswordSetup(setupToken){
 }
 async function openWorkspace(){
   ctx=await raw('/api/teacher/context');
-  E('school').textContent=ctx.school.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.schoolRole.replace('_',' ');
+  E('school').textContent=ctx.school.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+((ctx.roleProfile&&ctx.roleProfile.name)||ctx.schoolRole.replace('_',' '));
   var visibleNav=nav.filter(function(n){return can(n[3])});
   E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};
@@ -256,7 +256,8 @@ else if(p==='reports'){
    var r=await raw('/api/report-cards/'+sid+'?termId='+tid),cm=r.comments||{},status=cm.workflow_status||'draft';
    var components=function(x){return(Array.isArray(x.components)?x.components:[]).filter(function(v){return v.exerciseCount>0}).map(function(v){return esc(v.name)+' '+esc(v.weightPercent)+'%: '+esc(v.average==null?'—':v.average)+'% ('+esc(v.exerciseCount)+' exercises)'}).join('<br>')};
    E('report').innerHTML='<div class="panel" style="margin-top:12px"><div class="section"><div><h2>'+esc(r.student.first_name+' '+r.student.last_name)+'</h2><p class="muted">'+esc(r.student.classroom_name||'')+' • '+esc(r.term.name)+' • '+badge(status)+'</p></div></div>'+
-     table(r.subjects,[{key:'subject_name',label:'Subject'},{key:'components',label:'Assessment breakdown',render:components},{key:'percentage',label:'Final %'},{key:'grade'},{key:'remark'}])+
+     '<div class="notice"><b>Report responsibility:</b> '+esc((r.reportResponsibility&&r.reportResponsibility.rule)||'Subject Teachers enter their subject scores. The Class Teacher compiles and submits the complete report.')+'</div>'+
+     table(r.subjects,[{key:'subject_name',label:'Subject'},{key:'subject_teacher_name',label:'Subject Teacher',render:function(x){return esc(x.subject_teacher_name||'Not assigned')}},{key:'components',label:'Assessment breakdown',render:components},{key:'percentage',label:'Final %'},{key:'grade'},{key:'remark'}])+
      '<h3 style="margin-top:18px">Class Teacher Remarks</h3>'+
      (cm.return_note?'<div class="panel" style="border-color:#a96d33;background:#2a2114"><b>Returned for correction</b><p>'+esc(cm.return_note)+'</p></div>':'')+
      '<label>Class teacher remark</label><textarea id="teacherComment"'+((status==='submitted'||status==='approved')?' disabled':'')+'>'+esc(cm.class_teacher_comment||'')+'</textarea>'+
