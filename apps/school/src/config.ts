@@ -8,6 +8,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3100),
   SCHOOL_DATABASE_URL: z.string().min(1),
   CORE_OS_URL: z.string().url(),
+  CORE_SERVICE_KEY: z.preprocess(emptyToUndefined,z.string().min(32).optional()),
   CORS_ORIGINS: z.string().default('*'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
   PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
