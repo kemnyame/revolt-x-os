@@ -4,41 +4,19 @@ import { SignJWT } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
-import { maybeOne, one, transaction } from '../db/index.js';
+import { one, transaction } from '../db/index.js';
 import { AppError } from '../core/errors.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
-async function ensurePreviewOwner(db: Db) {
-  const existing = await maybeOne<{ user_id: string; organisation_id: string }>(
-    db,
-    `SELECT m.user_id,m.organisation_id
-     FROM organisation_memberships m
-     JOIN users u ON u.id=m.user_id
-     JOIN membership_roles mr ON mr.membership_id=m.id
-     JOIN roles r ON r.id=mr.role_id
-     WHERE u.status='active' AND r.key='owner'
-     ORDER BY m.joined_at
-     LIMIT 1`
-  );
-
-  if (existing) {
-    await db.query(
-      `UPDATE organisation_memberships
-       SET status='active'
-       WHERE user_id=$1 AND organisation_id=$2`,
-      [existing.user_id, existing.organisation_id]
-    );
-    return existing;
-  }
-
+export async function ensurePreviewOwner(db: Db) {
   return transaction(db, async client => {
     const organisation = await one<{ id: string }>(
       client,
       `INSERT INTO organisations(name,slug,status)
        VALUES('Kem Company','kem-company','active')
        ON CONFLICT (slug)
-       DO UPDATE SET name=EXCLUDED.name,status='active',updated_at=now()
+       DO UPDATE SET status='active',updated_at=now()
        RETURNING id`
     );
 
@@ -48,17 +26,17 @@ async function ensurePreviewOwner(db: Db) {
       `INSERT INTO users(email,password_hash,first_name,last_name,status,email_verified_at)
        VALUES('preview@revolt-x.local',$1,'Revolt-X','Preview','active',now())
        ON CONFLICT (email)
-       DO UPDATE SET status='active',updated_at=now()
+       DO UPDATE SET status='active',email_verified_at=COALESCE(users.email_verified_at,now()),updated_at=now()
        RETURNING id`,
       [passwordHash]
     );
 
     const membership = await one<{ id: string }>(
       client,
-      `INSERT INTO organisation_memberships(organisation_id,user_id,status)
-       VALUES($1,$2,'active')
+      `INSERT INTO organisation_memberships(organisation_id,user_id,status,job_title)
+       VALUES($1,$2,'active','Preview Administrator')
        ON CONFLICT (organisation_id,user_id)
-       DO UPDATE SET status='active'
+       DO UPDATE SET status='active',job_title=COALESCE(organisation_memberships.job_title,'Preview Administrator')
        RETURNING id`,
       [organisation.id, user.id]
     );
@@ -72,8 +50,40 @@ async function ensurePreviewOwner(db: Db) {
       [membership.id, organisation.id, user.id]
     );
 
-    return { user_id: user.id, organisation_id: organisation.id };
+    return { user_id: user.id, organisation_id: organisation.id, membership_id: membership.id };
   });
+}
+
+export async function buildPreviewContext(db:Db){
+  const owner=await ensurePreviewOwner(db);
+  const row=await one<any>(
+    db,
+    `SELECT u.id,u.email,u.first_name,u.last_name,u.status,
+            m.id membership_id,m.status membership_status,
+            o.id organisation_id,o.name organisation_name,o.slug organisation_slug
+     FROM users u
+     JOIN organisation_memberships m ON m.user_id=u.id AND m.organisation_id=$2
+     JOIN organisations o ON o.id=m.organisation_id
+     WHERE u.id=$1
+     LIMIT 1`,
+    [owner.user_id,owner.organisation_id]
+  );
+  const permissions=(await db.query<{key:string}>(
+    `SELECT DISTINCT p.key
+     FROM organisation_memberships m
+     JOIN membership_roles mr ON mr.membership_id=m.id
+     JOIN role_permissions rp ON rp.role_id=mr.role_id
+     JOIN permissions p ON p.id=rp.permission_id
+     WHERE m.user_id=$1 AND m.organisation_id=$2 AND m.status='active'
+     ORDER BY p.key`,
+    [owner.user_id,owner.organisation_id]
+  )).rows.map(x=>x.key);
+  return{
+    ...row,
+    sessionId:'00000000-0000-0000-0000-000000000000',
+    permissions,
+    preview:true
+  };
 }
 
 export async function previewRoutes(
@@ -126,6 +136,6 @@ export async function previewRoutes(
     };
   };
 
-  app.post('/v1/auth/preview-session', createPreviewSession);
-  app.post('/v1/auth/preview', createPreviewSession);
+  app.post('/v1/auth/preview-session',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},createPreviewSession);
+  app.post('/v1/auth/preview',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},createPreviewSession);
 }
