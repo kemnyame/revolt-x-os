@@ -520,53 +520,77 @@ app.post('/api/system/core-wake',async(_request,reply)=>{
 
 app.post('/api/auth/preview',async(_r,p)=>{
   const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const previewUrl=base+'/v1/auth/preview-session';
   const transient=new Set([429,502,503,504]);
 
   const wake=await wakeCoreOS();
   if(!wake.reachable){
-    return p.code(503).send({error:{message:'Core Revolt-X OS could not be started. Use Wake Core OS and retry.'}});
+    return p.code(503).send({error:{message:'Core Revolt-X OS could not be started. Use Reconnect & Repair and retry.'}});
   }
 
-  let coreToken:string|null=null;
+  let coreContext:any=null;
   let lastStatus=503;
   let lastMessage='Core Revolt-X OS is starting. Please retry in a moment.';
 
-  for(let attempt=0;attempt<6;attempt++){
-    const res=await fetch(previewUrl,{method:'POST',signal:AbortSignal.timeout(15000)}).catch(()=>null);
-    if(res?.ok){
-      const body=await res.json().catch(()=>({})) as any;
-      coreToken=body?.accessToken??null;
-      if(coreToken)break;
-      lastMessage='Core OS preview session did not return an access token';
-    }else if(res){
-      lastStatus=res.status;
-      const body=await res.json().catch(()=>null) as any;
-      lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is starting. Please retry in a moment.':'Core OS preview request failed');
-      if(!transient.has(res.status))return p.code(res.status).send({error:{message:lastMessage}});
+  // Preferred path: trusted service-to-service bootstrap. This avoids browser auth
+  // fan-out and remains independent of the public Core rate-limit bucket.
+  if(config.CORE_SERVICE_KEY){
+    try{
+      const serviceRes=await fetch(base+'/v1/internal/school/preview-context',{
+        headers:coreServiceHeaders(),
+        signal:AbortSignal.timeout(15000)
+      });
+      if(serviceRes.ok){
+        coreContext=await serviceRes.json().catch(()=>null);
+      }else{
+        lastStatus=serviceRes.status;
+        const body=await serviceRes.json().catch(()=>null) as any;
+        lastMessage=body?.error?.message||lastMessage;
+      }
+    }catch(error:any){
+      lastMessage=String(error?.message||lastMessage);
     }
-    if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[1200,2000,3200,4800,6500][attempt]||6500));
   }
 
-  if(!coreToken)return p.code(lastStatus).send({error:{message:lastMessage}});
+  // Fallback path: normal Core preview JWT exchange.
+  if(!coreContext){
+    const previewUrl=base+'/v1/auth/preview-session';
+    let coreToken:string|null=null;
 
-  let coreContext:any=null;
-  for(let attempt=0;attempt<6;attempt++){
-    const res=await fetch(base+'/v1/auth/context',{
-      headers:{authorization:'Bearer '+coreToken},
-      signal:AbortSignal.timeout(15000)
-    }).catch(()=>null);
-
-    if(res?.ok){
-      coreContext=await res.json().catch(()=>null);
-      if(coreContext)break;
-    }else if(res){
-      lastStatus=res.status;
-      const body=await res.json().catch(()=>null) as any;
-      lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is still starting. Please retry in a moment.':'Core OS authentication failed');
-      if(!transient.has(res.status))return p.code(res.status).send({error:{message:lastMessage}});
+    for(let attempt=0;attempt<6;attempt++){
+      const res=await fetch(previewUrl,{method:'POST',signal:AbortSignal.timeout(15000)}).catch(()=>null);
+      if(res?.ok){
+        const body=await res.json().catch(()=>({})) as any;
+        coreToken=body?.accessToken??null;
+        if(coreToken)break;
+        lastMessage='Core OS preview session did not return an access token';
+      }else if(res){
+        lastStatus=res.status;
+        const body=await res.json().catch(()=>null) as any;
+        lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is starting. Please retry in a moment.':'Core OS preview request failed');
+        if(!transient.has(res.status)&&res.status!==401)break;
+      }
+      if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[1200,2000,3200,4800,6500][attempt]||6500));
     }
-    if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[800,1500,2500,4000,6000][attempt]||6000));
+
+    if(coreToken){
+      for(let attempt=0;attempt<6;attempt++){
+        const res=await fetch(base+'/v1/auth/context',{
+          headers:{authorization:'Bearer '+coreToken},
+          signal:AbortSignal.timeout(15000)
+        }).catch(()=>null);
+
+        if(res?.ok){
+          coreContext=await res.json().catch(()=>null);
+          if(coreContext)break;
+        }else if(res){
+          lastStatus=res.status;
+          const body=await res.json().catch(()=>null) as any;
+          lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is still starting. Please retry in a moment.':'Core OS authentication failed');
+          if(!transient.has(res.status))break;
+        }
+        if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[800,1500,2500,4000,6000][attempt]||6000));
+      }
+    }
   }
 
   if(!coreContext)return p.code(lastStatus).send({error:{message:lastMessage}});
@@ -592,7 +616,8 @@ app.post('/api/auth/preview',async(_r,p)=>{
     expiresIn:8*60*60,
     tokenType:'Bearer',
     localSession:true,
-    coreWake:wake
+    coreWake:wake,
+    bootstrap:config.CORE_SERVICE_KEY?'service_bridge':'jwt_exchange'
   });
 });
 
