@@ -33,10 +33,15 @@ export async function ensurePreviewOwner(db: Db) {
 
     const membership = await one<{ id: string }>(
       client,
-      `INSERT INTO organisation_memberships(organisation_id,user_id,status,job_title)
-       VALUES($1,$2,'active','Preview Administrator')
+      `INSERT INTO organisation_memberships(
+         organisation_id,user_id,status,job_title,employee_number
+       )
+       VALUES($1,$2,'active','Preview Administrator','RX-PREVIEW-001')
        ON CONFLICT (organisation_id,user_id)
-       DO UPDATE SET status='active',job_title=COALESCE(organisation_memberships.job_title,'Preview Administrator')
+       DO UPDATE SET
+         status='active',
+         job_title=COALESCE(organisation_memberships.job_title,'Preview Administrator'),
+         employee_number=COALESCE(organisation_memberships.employee_number,'RX-PREVIEW-001')
        RETURNING id`,
       [organisation.id, user.id]
     );
