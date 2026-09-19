@@ -388,25 +388,72 @@ app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
 app.post('/api/auth/preview',async(_r,p)=>{
-  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/preview-session';
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const previewUrl=base+'/v1/auth/preview-session';
   const transient=new Set([429,502,503,504]);
-  let last:Response|null=null;
+
+  let coreToken:string|null=null;
+  let lastStatus=503;
+  let lastMessage='Core Revolt-X OS is starting. Please retry in a moment.';
+
   for(let attempt=0;attempt<6;attempt++){
-    const res=await fetch(url,{method:'POST',signal:AbortSignal.timeout(15000)}).catch(()=>null);
+    const res=await fetch(previewUrl,{method:'POST',signal:AbortSignal.timeout(15000)}).catch(()=>null);
     if(res?.ok){
-      const body=await res.json().catch(()=>({}));
-      return p.code(res.status).send(body);
+      const body=await res.json().catch(()=>({})) as any;
+      coreToken=body?.accessToken??null;
+      if(coreToken)break;
+      lastMessage='Core OS preview session did not return an access token';
+    }else if(res){
+      lastStatus=res.status;
+      const body=await res.json().catch(()=>null) as any;
+      lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is starting. Please retry in a moment.':'Core OS preview request failed');
+      if(!transient.has(res.status))return p.code(res.status).send({error:{message:lastMessage}});
     }
-    if(res&&!transient.has(res.status)){
-      const body=await res.json().catch(async()=>({error:{message:await res.text().catch(()=> 'Core OS preview request failed')}}));
-      return p.code(res.status).send(body);
-    }
-    last=res;
     if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[1000,1800,3000,4500,6500][attempt]||6500));
   }
-  if(!last)throw fail(503,'Core Revolt-X OS is starting. Please retry in a moment.');
-  const body=await last.json().catch(async()=>({error:{message:'Core Revolt-X OS is starting. Please retry in a moment.'}}));
-  return p.code(last.status).send(body);
+
+  if(!coreToken)return p.code(lastStatus).send({error:{message:lastMessage}});
+
+  let coreContext:any=null;
+  for(let attempt=0;attempt<6;attempt++){
+    const res=await fetch(base+'/v1/auth/context',{
+      headers:{authorization:'Bearer '+coreToken},
+      signal:AbortSignal.timeout(15000)
+    }).catch(()=>null);
+
+    if(res?.ok){
+      coreContext=await res.json().catch(()=>null);
+      if(coreContext)break;
+    }else if(res){
+      lastStatus=res.status;
+      const body=await res.json().catch(()=>null) as any;
+      lastMessage=body?.error?.message||(transient.has(res.status)?'Core Revolt-X OS is still starting. Please retry in a moment.':'Core OS authentication failed');
+      if(!transient.has(res.status))return p.code(res.status).send({error:{message:lastMessage}});
+    }
+    if(attempt<5)await new Promise(resolve=>setTimeout(resolve,[800,1500,2500,4000,6000][attempt]||6000));
+  }
+
+  if(!coreContext)return p.code(lastStatus).send({error:{message:lastMessage}});
+
+  const localToken='rxs_'+randomBytes(48).toString('base64url');
+  const tokenHash=createHash('sha256').update(localToken).digest('hex');
+  const expiresAt=new Date(Date.now()+8*60*60*1000);
+
+  await db.query(`INSERT INTO school_sessions(
+      token_hash,organisation_id,os_user_id,core_context,source,expires_at
+    ) VALUES($1,$2,$3,$4,'preview',$5)`,[
+      tokenHash,coreContext.organisation_id,coreContext.id,JSON.stringify(coreContext),expiresAt.toISOString()
+    ]);
+
+  await db.query(`DELETE FROM school_sessions
+    WHERE expires_at<now()-interval '1 day' OR revoked_at IS NOT NULL`).catch(()=>null);
+
+  return p.send({
+    accessToken:localToken,
+    expiresIn:8*60*60,
+    tokenType:'Bearer',
+    localSession:true
+  });
 });
 
 app.get('/api/context',async request=>{
