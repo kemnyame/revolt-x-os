@@ -55,7 +55,7 @@ async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string
 export async function sendMessage(config:SchoolConfig,input:{
   channel:MessageChannel;
   to:string;
-  subject?:string|null;
+  subject?:string|null|undefined;
   body:string;
 }){
   if(input.channel==='email'){
