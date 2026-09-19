@@ -119,6 +119,12 @@ async function activeTerm(org:string){
   return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
 }
 
+async function ensureTeachingRole(a:any){
+  const profile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(!profile?.can_teach)throw fail(403,'Teacher workspace access is not enabled for this school role');
+  return profile;
+}
+
 function coreServiceHeaders(){
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   return {'x-revolt-service-key':config.CORE_SERVICE_KEY};
@@ -2570,10 +2576,12 @@ async function validateTeachingAssignment(input:{
   subjectId?:string|null;
   teacherOsUserId:string;
 }){
-  const membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+  const membership=await maybeOne<any>(db,`SELECT sm.*,sr.can_teach,sr.portal_mode,sr.name role_name
+    FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true AND sr.can_teach=true`,
     [input.organisationId,input.teacherOsUserId]);
-  if(!membership)throw fail(409,'The selected staff member does not have active Teacher/Headteacher access in Revolt-X School');
+  if(!membership)throw fail(409,'The selected user does not have an active teaching role in Revolt-X School');
 
   const classroom=await one<any>(db,`SELECT c.*,g.stage FROM classrooms c
     JOIN grade_levels g ON g.id=c.grade_level_id
@@ -3049,7 +3057,7 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
 });
 app.get('/api/teacher/report-worklist',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher report worklist is not available for this role');
+  await ensureTeachingRole(a);
   const q=z.object({termId:z.string().uuid().optional()}).parse(request.query);
   return (await db.query(`SELECT rc.*,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,
       t.name term_name,y.name academic_year
@@ -3359,7 +3367,7 @@ app.get('/api/payments/:id/receipt',async request=>{
 
 app.get('/api/teacher/context',async request=>{
   const a=await authorize(request,db,config);
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  await ensureTeachingRole(a);
   const school=await one<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
   const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   if(!roleProfile?.can_teach)throw fail(403,'Teacher workspace access is not enabled for this role');
@@ -3368,7 +3376,7 @@ app.get('/api/teacher/context',async request=>{
 });
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
   return (await db.query(`
     WITH effective_class_teacher AS (
@@ -3406,7 +3414,7 @@ app.get('/api/teacher/classes',async request=>{
 });
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
   return (await db.query(`
     WITH effective_class_teacher AS (
@@ -3441,7 +3449,7 @@ app.get('/api/teacher/students',async request=>{
 });
 app.get('/api/teacher/dashboard',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
   const scope=await db.query(`
     WITH effective_class_teacher AS (
