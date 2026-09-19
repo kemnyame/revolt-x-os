@@ -18,12 +18,12 @@ color:var(--text);font:14px/1.5 Arial,sans-serif;display:grid;place-items:center
 .role-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:28px}.role{border:1px solid #28505d;background:#0a1b24;border-radius:12px;padding:12px}.role b{display:block}.role small{color:var(--muted)}
 .form-side{padding:48px;display:flex;align-items:center}.card{width:100%;max-width:420px;margin:auto}.eyebrow{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.08em;font-size:11px}.card h2{font-size:30px;margin:6px 0}.muted{color:var(--muted)}
 label{display:block;margin-top:16px;font-size:12px;color:#bad0db;font-weight:700}
-input{width:100%;margin-top:7px;padding:13px 14px;background:#06131b;border:1px solid var(--line);border-radius:10px;color:white;outline:none}
+input,select{width:100%;margin-top:7px;padding:13px 14px;background:#06131b;border:1px solid var(--line);border-radius:10px;color:white;outline:none}
 input:focus{border-color:#4ca5b9;box-shadow:0 0 0 3px #48a9ff1a}
 button{width:100%;border:0;border-radius:10px;padding:13px;margin-top:18px;background:linear-gradient(90deg,var(--green),var(--blue));color:#041018;font-weight:900;cursor:pointer}
 button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px;border-radius:10px;margin-top:14px}.error{background:#2b161a;border:1px solid #6d3038;color:#ffc1c8}.success{background:#112a24;border:1px solid #2c6d5c;color:#8af0d3}.status{background:#0b1720;border:1px solid var(--line);color:var(--muted)}
 .links{display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:12px}.links a{color:#91cfff;text-decoration:none}
-.password-rule{color:var(--muted);font-size:11px;margin-top:6px}
+.password-rule{color:var(--muted);font-size:11px;margin-top:6px}.demo-box{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.demo-box h3{margin:0 0 4px}.demo-box button.secondary{background:#102833;color:#dff8ff;border:1px solid #315466}.demo-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.demo-row button{width:auto;min-width:120px}.hide{display:none!important}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.hero{min-height:auto;padding:28px}.hero h1{font-size:34px}.role-grid{display:none}.form-side{padding:28px}}
 </style>
 </head>
@@ -56,6 +56,22 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <input id="password" type="password" autocomplete="current-password">
         <button id="signin">Sign in to Revolt-X School</button>
         <div id="status" class="status" style="display:none"></div>
+        <div id="demoAccess" class="demo-box hide">
+          <div class="eyebrow">Demo access</div>
+          <h3>Select a School user</h3>
+          <p class="muted">Keep this testing route until production sign-in is fully commissioned.</p>
+          <div id="demoGate">
+            <label>Demo access password</label>
+            <input id="demoPassword" type="password" autocomplete="current-password">
+            <button id="unlockDemo" class="secondary">Unlock Demo Access</button>
+          </div>
+          <div id="demoChooser" class="hide">
+            <label>Staff user</label>
+            <select id="demoStaff"><option value="">Loading staff...</option></select>
+            <button id="openDemoStaff">Open Selected Workspace</button>
+          </div>
+          <div id="demoStatus" class="muted" style="margin-top:8px"></div>
+        </div>
         <div class="links"><a href="/admissions">Public admissions</a><a href="/parent">Parent portal</a></div>
       </div>
       <div id="setupView" style="display:none">
@@ -78,7 +94,14 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
 function E(id){return document.getElementById(id)}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 async function json(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
-function allowedNext(role,next){if(next==='/teacher'&&['teacher','headteacher','school_admin'].indexOf(role)>=0)return'/teacher';if(next==='/'&&role!=='teacher')return'/';return role==='teacher'?'/teacher':'/'}
+function roleHome(role){return role==='teacher'?'/teacher':role==='headteacher'?'/headteacher':role==='bursar'?'/bursar':role==='registrar'?'/registrar':'/'}
+function allowedNext(role,next){
+  var home=roleHome(role);
+  if(next&&next===home)return next;
+  if(next==='/teacher'&&['teacher','headteacher','school_admin'].indexOf(role)>=0)return role==='headteacher'?'/headteacher':'/teacher';
+  if(next==='/'&&role!=='teacher'&&role!=='headteacher')return'/';
+  return home
+}
 async function existingSession(){
   try{
     var r=await fetch('/api/context'),j=await r.json();
@@ -96,10 +119,51 @@ async function signIn(){
     status.textContent='Signed in as '+(x.user?x.user.firstName+' '+x.user.lastName:'School user')+'. Opening your workspace...';
     try{sessionStorage.setItem('rx_school_token',x.accessToken);if(x.schoolRole==='teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken)}catch(e){}
     var next=new URLSearchParams(location.search).get('next')||'';
-    location.replace(allowedNext(x.schoolRole,next))
+    location.replace(x.redirectTo||allowedNext(x.schoolRole,next))
   }catch(err){
     E('message').innerHTML='<div class="error">'+esc(err.message)+'</div>';status.style.display='none';btn.disabled=false;btn.textContent='Sign in to Revolt-X School'
   }
+}
+async function configureDemoAccess(){
+  var state;
+  try{state=await json('/api/test-access/status')}catch(e){return}
+  if(!state.enabled)return;
+  E('demoAccess').classList.remove('hide');
+
+  async function loadStaff(){
+    try{
+      var staff=await json('/api/test-access/staff');
+      E('demoGate').classList.add('hide');E('demoChooser').classList.remove('hide');
+      E('demoStaff').innerHTML=staff.length?staff.map(function(u){
+        return '<option value="'+esc(u.id)+'">'+esc(u.first_name+' '+u.last_name+' • '+u.role.replace('_',' ')+' • '+(u.job_title||''))+'</option>'
+      }).join(''):'<option value="">No demo staff configured</option>'
+    }catch(err){
+      if(err.status===401){E('demoGate').classList.remove('hide');E('demoChooser').classList.add('hide');return}
+      E('demoStatus').textContent=err.message
+    }
+  }
+
+  E('unlockDemo').onclick=async function(){
+    var btn=E('unlockDemo');btn.disabled=true;btn.textContent='Unlocking...';E('demoStatus').textContent='';
+    try{
+      await json('/api/test-access/unlock',{method:'POST',body:JSON.stringify({password:E('demoPassword').value})});
+      await loadStaff()
+    }catch(err){E('demoStatus').textContent=err.message;btn.disabled=false;btn.textContent='Unlock Demo Access'}
+  };
+  E('demoPassword').onkeydown=function(e){if(e.key==='Enter')E('unlockDemo').click()};
+  E('openDemoStaff').onclick=async function(){
+    var id=E('demoStaff').value;if(!id)return;
+    var btn=E('openDemoStaff');btn.disabled=true;btn.textContent='Opening workspace...';E('demoStatus').textContent='';
+    try{
+      var x=await json('/api/test-access/staff-login',{method:'POST',body:JSON.stringify({osUserId:id})});
+      try{
+        sessionStorage.setItem('rx_school_token',x.accessToken);
+        if(x.schoolRole==='teacher'||x.schoolRole==='headteacher'||x.schoolRole==='school_admin')sessionStorage.setItem('rx_teacher_token',x.accessToken)
+      }catch(e){}
+      location.replace(x.redirectTo||roleHome(x.schoolRole))
+    }catch(err){E('demoStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Selected Workspace'}
+  };
+  if(state.unlocked)await loadStaff()
 }
 async function setup(){
   var p1=E('newPassword').value,p2=E('confirmPassword').value,btn=E('savePassword'),token=new URLSearchParams(location.search).get('setup');
@@ -117,7 +181,8 @@ async function boot(){
   var setupToken=new URLSearchParams(location.search).get('setup');
   if(setupToken){E('signinView').style.display='none';E('setupView').style.display='block';E('savePassword').onclick=setup;return}
   if(await existingSession())return;
-  E('signin').onclick=signIn;E('password').onkeydown=function(e){if(e.key==='Enter')signIn()}
+  E('signin').onclick=signIn;E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
+  await configureDemoAccess()
 }
 boot()
 })();
