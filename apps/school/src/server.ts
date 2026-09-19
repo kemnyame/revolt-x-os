@@ -2946,8 +2946,8 @@ app.put('/api/report-comments/:studentId',async request=>{
     ON CONFLICT(student_id,term_id) DO UPDATE SET
       class_teacher_comment=EXCLUDED.class_teacher_comment,conduct=EXCLUDED.conduct,interest=EXCLUDED.interest,
       next_term_begins=EXCLUDED.next_term_begins,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,
-      workflow_status=CASE WHEN report_comments.workflow_status='returned' THEN 'draft' ELSE report_comments.workflow_status END,
-      return_note=NULL,updated_at=now()
+      workflow_status=report_comments.workflow_status,
+      return_note=CASE WHEN report_comments.workflow_status='returned' THEN report_comments.return_note ELSE NULL END,updated_at=now()
     RETURNING *`,[
       a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,term.next_term_begins??null,a.core.id
     ]);
@@ -2963,10 +2963,13 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
-  await ensureTeacherScope(a,current.classroom_id,null);
-  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
-  if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can submit this report');
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  const returnedToMe=a.role==='teacher'&&report.workflow_status==='returned'&&report.submitted_by_os_user_id===a.core.id;
+  if(!returnedToMe){
+    await ensureTeacherScope(a,current.classroom_id,null);
+    const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
+    if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can submit this report');
+  }
   if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
   const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1::uuid,submitted_at=now(),
