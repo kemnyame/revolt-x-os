@@ -31,6 +31,22 @@ function field(f,v){v=v==null?'':v;if(f.type==='select')return'<label>'+esc(f.la
 function form(title,fields,vals,save){vals=vals||{};modal('<h2>'+esc(title)+'</h2>'+fields.map(function(f){return field(f,vals[f.key])}).join('')+'<button id="saveModal" class="primary" style="width:100%">Save</button>');E('saveModal').onclick=async function(){var v={},btn=E('saveModal');E('modalBody').querySelectorAll('[data-f]').forEach(function(x){v[x.dataset.f]=x.value});try{btn.disabled=true;btn.textContent='Saving...';await save(v);btn.textContent='Saved';close();await page(current);successDialog('Record saved',title+' was saved successfully.')}catch(e){btn.disabled=false;btn.textContent='Save'}}}
 function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
 async function publicJson(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
+async function showTeacherTestAccess(message){
+  sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;
+  E('app').classList.add('hide');E('loading').classList.remove('hide');
+  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><div class="badge info">TEST ACCESS</div><h1>Choose a Teacher</h1><p class="muted">Temporary testing mode. Select a teacher to open the workspace without password setup.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<label>Teacher</label><select id="testTeacherSelect"><option>Loading teachers...</option></select><button id="testTeacherLogin" class="primary" style="width:100%">Open Teacher Workspace</button><div id="testTeacherStatus" class="muted" style="margin-top:10px"></div></div>';
+  try{
+    var teachers=await publicJson('/api/test-access/teachers');
+    E('testTeacherSelect').innerHTML=teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name+' • '+t.role.replace('_',' ')+' • '+(t.job_title||'Teacher'))+'</option>'}).join('');
+    E('testTeacherLogin').onclick=async function(){
+      var btn=E('testTeacherLogin');btn.disabled=true;btn.textContent='Opening workspace...';
+      try{
+        var x=await publicJson('/api/test-access/teacher-login',{method:'POST',body:JSON.stringify({osUserId:E('testTeacherSelect').value})});
+        token=x.accessToken;sessionStorage.setItem('rx_teacher_token',token);await openWorkspace()
+      }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Teacher Workspace'}
+    }
+  }catch(err){E('testTeacherStatus').textContent=err.message}
+}
 function showTeacherLogin(message){
   E('app').classList.add('hide');E('loading').classList.remove('hide');
   E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Teacher Sign In</h1><p class="muted">Sign in with the email address and password linked to your teacher account.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<label>Email address</label><input id="teacherEmail" type="email" autocomplete="username" placeholder="teacher@school.edu"><label>Password</label><input id="teacherPassword" type="password" autocomplete="current-password"><button id="teacherLogin" class="primary" style="width:100%">Sign in</button><div id="teacherLoginStatus" class="muted" style="margin-top:10px"></div></div>';
@@ -65,7 +81,7 @@ async function openWorkspace(){
   E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
-  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;showTeacherLogin('You have been signed out.')};
+  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;location.reload()};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
@@ -79,25 +95,27 @@ async function startOnboardingAccess(){
   await openWorkspace();
 }
 async function boot(){
-  var setup=new URLSearchParams(location.search).get('setup');
-  if(setup){history.replaceState({},document.title,'/teacher');showPasswordSetup(setup);return}
   token=sessionStorage.getItem('rx_teacher_token')||'';
   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');token=''}
-  try{
-    if(!token){await startOnboardingAccess();return}
-    await openWorkspace()
+  var testMode=false;
+  try{var status=await publicJson('/api/test-access/status');testMode=!!status.enabled}catch(e){}
+  if(testMode){
+    history.replaceState({},document.title,'/teacher');
+    if(!token){await showTeacherTestAccess();return}
+    try{await openWorkspace();return}catch(e){sessionStorage.removeItem('rx_teacher_token');token='';await showTeacherTestAccess(e.message);return}
   }
-  catch(e){
-    if(e.status===401||e.status===403){
-      sessionStorage.removeItem('rx_teacher_token');token='';
-      try{await startOnboardingAccess();return}catch(onboardErr){e=onboardErr}
-    }
-    E('loading').classList.remove('hide');E('app').classList.add('hide');
-    E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X TEACHER</div><h1>Teacher workspace unavailable</h1><p>'+esc(e.message)+'</p><div id="teacherConnectionStatus" class="muted">Onboarding access is temporarily unavailable. Retry to reconnect the School workspace.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="retryTeacher" class="primary">Retry onboarding</button><button id="teacherManualSignIn" class="ghost">Use teacher sign in</button></div></div>';
-    E('retryTeacher').onclick=function(){sessionStorage.removeItem('rx_teacher_token');token='';location.reload()};
-    E('teacherManualSignIn').onclick=function(){sessionStorage.removeItem('rx_teacher_token');token='';showTeacherLogin('Temporary onboarding access is bypassed. Sign in with a Teacher account.')}
+
+  var setup=new URLSearchParams(location.search).get('setup');
+  if(setup){history.replaceState({},document.title,'/teacher');showPasswordSetup(setup);return}
+  try{
+    if(!token){showTeacherLogin();return}
+    await openWorkspace()
+  }catch(e){
+    sessionStorage.removeItem('rx_teacher_token');token='';
+    showTeacherLogin(e.message)
   }
 }
+
 async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
 if(p==='dashboard'){var d=await raw('/api/teacher/dashboard');E('content').innerHTML='<div class="section"><div><h1>My Dashboard</h1><p class="muted">Your teaching responsibilities, whether you are a Class Teacher, Subject Teacher or both.</p></div></div><div class="grid">'+[['Teaching classes',d.assignedClasses],['Subject assignments',d.subjectAssignments||0],['Class teacher classes',d.classTeacherClasses||0],['Students in my classes',d.students],['Homework',d.homework],['Assessments',d.assessments]].map(function(x){return'<div class="panel stat"><span class="muted">'+x[0]+'</span><b>'+esc(x[1])+'</b></div>'}).join('')+'</div><div class="two" style="margin-top:12px"><div class="panel"><h3>Today</h3><p><b>'+esc(d.presentToday)+'</b> marked present</p><p><b>'+esc(d.absentToday)+'</b> marked absent</p></div><div class="panel"><h3>Current term</h3><p>'+esc(d.term?d.term.name:'No active term')+'</p><p class="muted">Subject Teachers do not need to be Class Teachers. Assigned class-subject combinations appear automatically in Homework, Assessments, Lesson Notes and My Timetable.</p></div></div>'}
 else if(p==='classes'){var rows=await raw('/api/teacher/classes');E('content').innerHTML='<h1>My Classes</h1><div class="panel">'+table(rows,[{key:'classroom_name',label:'Class'},{key:'grade_name',label:'Grade'},{key:'subject_name',label:'Subject',render:function(r){return esc(r.subject_name||'Class teacher / all subjects')}},{key:'student_count',label:'Students'}])+'</div>'}
