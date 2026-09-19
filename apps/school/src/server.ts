@@ -1871,6 +1871,63 @@ If you did not expect this invitation, contact your school administrator.`,
     jobTitle:b.jobTitle,invitation
   });
 });
+app.post('/api/staff/teachers/:osUserId/send-invitation',async request=>{
+  const a=await authorize(request,db,config,'staff.edit');
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const {osUserId}=z.object({osUserId:z.string().uuid()}).parse(request.params);
+  const schoolMembership=await one<any>(db,`SELECT * FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+    [a.core.organisation_id,osUserId]);
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const teacher=users.find((u:any)=>u.id===osUserId);
+  if(!teacher?.membership_id)throw fail(404,'Teacher Core OS membership was not found');
+
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const activated=await fetch(base+'/v1/internal/school/users/'+teacher.membership_id+'/status',{
+    method:'PATCH',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,status:'active'}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!activated?.ok)throw fail(activated?.status||503,'Teacher Core OS access could not be activated');
+
+  const setupRes=await fetch(base+'/v1/internal/school/users/'+teacher.membership_id+'/password-setup',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!setupRes)throw fail(503,'Core OS could not create a password setup invitation');
+  const setup=await setupRes.json().catch(()=>null) as any;
+  if(!setupRes.ok)throw fail(setupRes.status,setup?.error?.message||'Could not create password setup invitation');
+
+  const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+  const setupUrl=publicBase+'/teacher?setup='+encodeURIComponent(setup.setupToken);
+  const delivered=await deliverCommunication({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
+    recipientName:(teacher.first_name+' '+teacher.last_name).trim(),recipientAddress:teacher.email,
+    subject:'Set up your Revolt-X Teacher account',
+    body:`Hello ${teacher.first_name},
+
+A secure password-setup link has been generated for your Revolt-X School Teacher account.
+
+Create your password here:
+${setupUrl}
+
+This link expires in 24 hours. After setting your password, sign in at ${publicBase}/teacher using ${teacher.email}.
+
+If you did not request or expect this message, contact your school administrator.`,
+    templateKey:'teacher.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
+  });
+  await audit(a.core.organisation_id,a.core.id,'teacher.invitation_sent','school_membership',schoolMembership.id,{email:teacher.email,status:delivered.status});
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.invitation_sent',
+    resourceType:'teacher',resourceId:osUserId,performedOn:(teacher.first_name+' '+teacher.last_name).trim(),
+    oldValue:null,newValue:{invitationStatus:delivered.status,expiresInHours:24}
+  });
+  return{status:delivered.status,error:delivered.last_error??null,expiresInHours:24};
+});
+
 app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'staff.view');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
 app.post('/api/staff/module-memberships',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.edit');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
