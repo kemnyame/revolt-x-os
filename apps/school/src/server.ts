@@ -528,24 +528,147 @@ app.post('/api/attendance/mark',async request=>{
   await tx(db,async c=>{for(const r of b.records)await c.query(`INSERT INTO attendance_records(organisation_id,student_id,classroom_id,attendance_date,status,note,marked_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(student_id,classroom_id,attendance_date) DO UPDATE SET status=EXCLUDED.status,note=EXCLUDED.note,marked_by_os_user_id=EXCLUDED.marked_by_os_user_id,updated_at=now()`,[a.core.organisation_id,r.studentId,b.classroomId,b.date,r.status,r.note??null,a.core.id])});await audit(a.core.organisation_id,a.core.id,'attendance.marked','classroom',b.classroomId,{date:b.date,count:b.records.length});return{saved:b.records.length};
 });
 
+
+app.get('/api/assessment-categories',async request=>{
+  const a=await authorize(request,db,config,'assessment.view');
+  const q=z.object({academicYearId:z.string().uuid().optional(),termId:z.string().uuid().optional()}).parse(request.query);
+  const rows=(await db.query(`SELECT ac.*,
+      (SELECT count(*)::int FROM assessments a WHERE a.category_id=ac.id) exercise_count
+    FROM assessment_categories ac
+    WHERE ac.organisation_id=$1
+      AND ($2::uuid IS NULL OR ac.academic_year_id=$2)
+      AND ($3::uuid IS NULL OR ac.term_id=$3)
+    ORDER BY ac.sort_order,ac.name`,[a.core.organisation_id,q.academicYearId??null,q.termId??null])).rows;
+  const totalWeight=rows.filter((r:any)=>r.is_active).reduce((sum:number,r:any)=>sum+Number(r.weight_percent),0);
+  return{categories:rows,totalWeight:Math.round(totalWeight*100)/100};
+});
+app.post('/api/assessment-categories',async(request,reply)=>{
+  const a=await authorize(request,db,config,'assessment.create');
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    termId:z.string().uuid(),
+    code:z.string().min(1).max(40),
+    name:z.string().min(2).max(120),
+    defaultMaxScore:z.number().positive(),
+    weightPercent:z.number().min(0).max(100),
+    sortOrder:z.number().int().default(0)
+  }).parse(request.body);
+  const total=await one<any>(db,`SELECT COALESCE(sum(weight_percent),0) total FROM assessment_categories
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND is_active=true`,
+    [a.core.organisation_id,b.academicYearId,b.termId]);
+  if(Number(total.total)+b.weightPercent>100.0001)throw fail(400,'Assessment category weights cannot exceed 100% for a term');
+  const row=await one<any>(db,`INSERT INTO assessment_categories(
+      organisation_id,academic_year_id,term_id,code,name,default_max_score,weight_percent,sort_order
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [a.core.organisation_id,b.academicYearId,b.termId,b.code.toUpperCase(),b.name,b.defaultMaxScore,b.weightPercent,b.sortOrder]);
+  await audit(a.core.organisation_id,a.core.id,'assessment_category.created','assessment_category',row.id,{weight:b.weightPercent});
+  return reply.code(201).send(row);
+});
+app.patch('/api/assessment-categories/:id',async request=>{
+  const a=await authorize(request,db,config,'assessment.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    name:z.string().min(2).max(120).optional(),
+    defaultMaxScore:z.number().positive().optional(),
+    weightPercent:z.number().min(0).max(100).optional(),
+    sortOrder:z.number().int().optional(),
+    isActive:z.boolean().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM assessment_categories WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const nextWeight=b.weightPercent??Number(current.weight_percent);
+  const total=await one<any>(db,`SELECT COALESCE(sum(weight_percent),0) total FROM assessment_categories
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND id<>$4 AND is_active=true`,
+    [a.core.organisation_id,current.academic_year_id,current.term_id,id]);
+  if((b.isActive??current.is_active)&&Number(total.total)+nextWeight>100.0001)throw fail(400,'Assessment category weights cannot exceed 100% for a term');
+  const row=await one<any>(db,`UPDATE assessment_categories SET
+      name=COALESCE($1,name),
+      default_max_score=COALESCE($2,default_max_score),
+      weight_percent=COALESCE($3,weight_percent),
+      sort_order=COALESCE($4,sort_order),
+      is_active=COALESCE($5,is_active),
+      updated_at=now()
+    WHERE id=$6 AND organisation_id=$7 RETURNING *`,
+    [b.name??null,b.defaultMaxScore??null,b.weightPercent??null,b.sortOrder??null,b.isActive??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment_category.updated','assessment_category',id);
+  return row;
+});
+app.delete('/api/assessment-categories/:id',async(request,reply)=>{
+  const a=await authorize(request,db,config,'assessment.delete');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const used=await one<any>(db,'SELECT count(*)::int n FROM assessments WHERE category_id=$1',[id]);
+  if(Number(used.n)>0)throw fail(409,'This assessment category already has exercises. Disable it instead of deleting it.');
+  await one<any>(db,'DELETE FROM assessment_categories WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment_category.deleted','assessment_category',id);
+  return reply.code(204).send();
+});
+
 app.get('/api/assessments',async request=>{
-  const a=await authorize(request,db,config);const q=z.object({termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);
-  let rows=(await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name FROM assessments a JOIN subjects s ON s.id=a.subject_id JOIN classrooms c ON c.id=a.classroom_id JOIN terms t ON t.id=a.term_id WHERE a.organisation_id=$1 AND ($2::uuid IS NULL OR a.term_id=$2) AND ($3::uuid IS NULL OR a.classroom_id=$3) ORDER BY a.assessment_date DESC NULLS LAST,a.created_at DESC`,[a.core.organisation_id,q.termId??null,q.classroomId??null])).rows;
+  const a=await authorize(request,db,config,'assessment.view');
+  const q=z.object({termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional(),subjectId:z.string().uuid().optional(),categoryId:z.string().uuid().optional()}).parse(request.query);
+  let rows=(await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name,
+      ac.name category_name,ac.code category_code,ac.weight_percent category_weight,ac.default_max_score,
+      (SELECT count(*)::int FROM assessment_scores sc WHERE sc.assessment_id=a.id) scored_students
+    FROM assessments a
+    JOIN subjects s ON s.id=a.subject_id
+    JOIN classrooms c ON c.id=a.classroom_id
+    JOIN terms t ON t.id=a.term_id
+    LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+    WHERE a.organisation_id=$1
+      AND ($2::uuid IS NULL OR a.term_id=$2)
+      AND ($3::uuid IS NULL OR a.classroom_id=$3)
+      AND ($4::uuid IS NULL OR a.subject_id=$4)
+      AND ($5::uuid IS NULL OR a.category_id=$5)
+    ORDER BY ac.sort_order NULLS LAST,a.assessment_date DESC NULLS LAST,a.created_at DESC`,
+    [a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,q.categoryId??null])).rows;
   if(a.role==='teacher'){
-    const allowed=(await db.query(`SELECT DISTINCT classroom_id,subject_id FROM teacher_assignments WHERE organisation_id=$1 AND teacher_os_user_id=$2 AND is_active=true UNION SELECT id,NULL::uuid FROM classrooms WHERE organisation_id=$1 AND class_teacher_os_user_id=$2`,[a.core.organisation_id,a.core.id])).rows;
+    const allowed=(await db.query(`SELECT DISTINCT classroom_id,subject_id FROM teacher_assignments
+      WHERE organisation_id=$1 AND teacher_os_user_id=$2 AND is_active=true
+      UNION SELECT id,NULL::uuid FROM classrooms WHERE organisation_id=$1 AND class_teacher_os_user_id=$2`,
+      [a.core.organisation_id,a.core.id])).rows;
     rows=rows.filter((r:any)=>allowed.some((x:any)=>x.classroom_id===r.classroom_id&&(x.subject_id==null||x.subject_id===r.subject_id)));
   }
   return rows;
 });
 app.post('/api/assessments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'assessment.edit');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),name:z.string().min(2).max(160),assessmentType:z.enum(['classwork','homework','project','test','exam','other']),maxScore:z.number().positive(),weight:z.number().positive().max(100).default(100),assessmentDate:z.string().date().optional()}).parse(request.body);await ensureTeacherScope(a,b.classroomId,b.subjectId);
-  const row=await one<any>(db,'INSERT INTO assessments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,name,assessment_type,max_score,weight,assessment_date,created_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,b.name,b.assessmentType,b.maxScore,b.weight,b.assessmentDate??null,a.core.id]);await audit(a.core.organisation_id,a.core.id,'assessment.created','assessment',row.id);return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'assessment.create');
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    termId:z.string().uuid(),
+    classroomId:z.string().uuid(),
+    subjectId:z.string().uuid(),
+    categoryId:z.string().uuid().optional(),
+    assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),
+    name:z.string().min(2).max(160),
+    maxScore:z.number().positive().optional(),
+    assessmentDate:z.string().date().optional()
+  }).parse(request.body);
+  await ensureTeacherScope(a,b.classroomId,b.subjectId);
+  let category:any=null;
+  if(b.categoryId){
+    category=await one<any>(db,`SELECT * FROM assessment_categories
+      WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND term_id=$4 AND is_active=true`,
+      [b.categoryId,a.core.organisation_id,b.academicYearId,b.termId]);
+  }else{
+    const code=({classwork:'CLASSWORK',homework:'HOMEWORK',project:'PROJECT',test:'MIDTERM',exam:'EXAM',other:'CLASSWORK'} as Record<string,string>)[b.assessmentType||'classwork'];
+    category=await maybeOne<any>(db,`SELECT * FROM assessment_categories
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND code=$4 AND is_active=true`,
+      [a.core.organisation_id,b.academicYearId,b.termId,code]);
+  }
+  if(!category)throw fail(400,'Select a valid assessment category for this term');
+  const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';
+  const maxScore=b.maxScore??Number(category.default_max_score);
+  const row=await one<any>(db,`INSERT INTO assessments(
+      organisation_id,academic_year_id,term_id,classroom_id,subject_id,category_id,name,assessment_type,max_score,weight,assessment_date,created_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,category.id,b.name,type,maxScore,category.weight_percent,b.assessmentDate??null,a.core.id]);
+  await audit(a.core.organisation_id,a.core.id,'assessment.created','assessment',row.id,{categoryId:category.id});
+  return reply.code(201).send(row);
 });
 app.get('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 app.get('/api/report-cards/:studentId',async request=>{
