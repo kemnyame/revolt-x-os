@@ -346,7 +346,9 @@ async function effectiveClassTeacher(organisationId:string,classroomId:string,te
 }
 
 async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
-  if(a.role!=='teacher')return;
+  if(a.role==='school_admin'||a.role==='headteacher')return;
+  const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(!roleProfile?.can_teach)return;
   const term=await activeTerm(a.core.organisation_id);
   const row=subjectId
     ?await maybeOne<any>(db,`SELECT 1 FROM teacher_assignments ta
@@ -1663,7 +1665,7 @@ app.get('/api/report-cards/:studentId',async request=>{
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
   const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]);
   if(current?.classroom_id){
-    const returnedToMe=a.role==='teacher'&&comments?.workflow_status==='returned'&&comments?.submitted_by_os_user_id===a.core.id;
+    const returnedToMe=comments?.workflow_status==='returned'&&comments?.submitted_by_os_user_id===a.core.id;
     if(!returnedToMe)await ensureTeacherScope(a,current.classroom_id,null);
     current.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,q.termId);
   }
@@ -3133,10 +3135,10 @@ app.put('/api/report-comments/:studentId',async request=>{
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
   const existing=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
-  const returnedToMe=a.role==='teacher'&&existing?.workflow_status==='returned'&&existing?.submitted_by_os_user_id===a.core.id;
+  const returnedToMe=existing?.workflow_status==='returned'&&existing?.submitted_by_os_user_id===a.core.id;
   if(!returnedToMe){
     await ensureTeacherScope(a,current.classroom_id,null);
-    if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
+    if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
   }
   if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
   const row=await one<any>(db,`INSERT INTO report_comments(
@@ -3164,11 +3166,11 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
-  const returnedToMe=a.role==='teacher'&&report.workflow_status==='returned'&&report.submitted_by_os_user_id===a.core.id;
+  const returnedToMe=report.workflow_status==='returned'&&report.submitted_by_os_user_id===a.core.id;
   if(!returnedToMe){
     await ensureTeacherScope(a,current.classroom_id,null);
     const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
-    if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can submit this report');
+    if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can submit this report');
   }
   if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
