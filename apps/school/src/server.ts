@@ -1701,7 +1701,7 @@ app.get('/api/teacher/context',async request=>{
   return{core:a.core,schoolRole:a.role,school,capabilities};
 });
 app.get('/api/teacher/classes',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'academic.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   if(a.role==='teacher'){
     return (await db.query(`SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ta.subject_id,s.name subject_name,
@@ -1719,7 +1719,7 @@ app.get('/api/teacher/classes',async request=>{
     WHERE c.organisation_id=$1 AND c.is_active=true ORDER BY g.level_order,c.name`,[a.core.organisation_id])).rows;
 });
 app.get('/api/teacher/students',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'students.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   if(a.role==='teacher'){
     return (await db.query(`SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name
@@ -1736,7 +1736,7 @@ app.get('/api/teacher/students',async request=>{
     WHERE e.organisation_id=$1 AND e.status='active' ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id])).rows;
 });
 app.get('/api/teacher/dashboard',async request=>{
-  const a=await authorize(request,db,config);
+  const a=await authorize(request,db,config,'reports.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   const term=await activeTerm(a.core.organisation_id);
   let classIds:string[]=[];
