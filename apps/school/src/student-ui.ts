@@ -5,7 +5,7 @@ export const studentFrontend=`<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Arial,sans-serif}.wrap{max-width:1100px;margin:auto;padding:22px}.brand{font-size:20px;font-weight:900;margin-bottom:22px}.brand span{color:var(--green)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.stat b{display:block;font-size:25px;margin-top:6px}.muted{color:var(--muted)}input,select,textarea{width:100%;padding:11px;margin:6px 0 12px;background:#07141d;border:1px solid var(--line);border-radius:8px;color:white}.primary,.ghost{padding:10px 14px;border-radius:9px;cursor:pointer}.primary{border:0;background:linear-gradient(90deg,var(--green),var(--blue));font-weight:800;color:#041018}.ghost{border:1px solid var(--line);background:transparent;color:white}.top{display:flex;justify-content:space-between;gap:12px;align-items:center}.hide{display:none}.toast{position:fixed;right:18px;bottom:18px;background:#102a24;border:1px solid #2c6d5c;border-radius:9px;padding:11px 14px;z-index:40;max-width:min(420px,90vw)}.table{overflow:auto}.table table{width:100%;border-collapse:collapse}.table td,.table th{padding:9px;border-bottom:1px solid var(--line);text-align:left}.table th{color:var(--muted);font-size:11px;text-transform:uppercase}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.badge{display:inline-block;padding:4px 7px;border-radius:10px;background:#15342b;color:#73e6c6;font-size:11px}.badge.warn{background:#382a14;color:#ffd273}.badge.gray{background:#253039;color:#bec9ce}.badge.info{background:#123449;color:#80c9ff}.error{color:#ffb0bb}@media(max-width:760px){.grid{grid-template-columns:1fr 1fr}.top{align-items:flex-start;flex-direction:column}}@media(max-width:520px){.grid{grid-template-columns:1fr}}
 </style></head><body>
 <div class="wrap"><div class="brand"><span>RX</span> REVOLT-X SCHOOL <span class="muted">Student Portal</span></div>
-<section id="login" class="panel" style="max-width:520px;margin:70px auto"><h2>Student Portal</h2><div id="testStudentLogin" class="hide"><div class="badge info">TEST ACCESS</div><p class="muted">Choose a student to open the portal for testing. No PIN is required while Test Access is enabled.</p><label>Student</label><select id="testStudentSelect"></select><button id="testStudentSignin" class="primary" style="width:100%">Open Student Portal</button></div><div id="normalStudentLogin"><p class="muted">Enter your admission number and school-issued PIN.</p><label>Admission number</label><input id="admission"><label>PIN</label><input id="pin" type="password" maxlength="6"><button id="signin" class="primary" style="width:100%">Sign in</button></div><p id="err" class="error"></p></section>
+<section id="login" class="panel" style="max-width:520px;margin:70px auto"><h2>Student Portal</h2><div id="testStudentLogin" class="hide"><div class="badge info">DEMO ACCESS</div><p class="muted">Use the generic Demo Access password once, then choose a student. The selected student receives a real authenticated portal session.</p><div id="studentDemoGate"><label>Demo access password</label><input id="studentDemoPassword" type="password" autocomplete="current-password"><button id="studentDemoUnlock" class="primary" style="width:100%">Unlock Student Demo Access</button></div><div id="studentDemoChooser" class="hide"><label>Student</label><select id="testStudentSelect"></select><button id="testStudentSignin" class="primary" style="width:100%">Open Student Portal</button></div></div><div id="normalStudentLogin"><p class="muted">Enter your admission number and school-issued PIN.</p><label>Admission number</label><input id="admission"><label>PIN</label><input id="pin" type="password" maxlength="6"><button id="signin" class="primary" style="width:100%">Sign in</button></div><p id="err" class="error"></p></section>
 <section id="portal" class="hide"><div class="top"><div><h2 id="studentName"></h2><div id="schoolName" class="muted"></div></div><button id="logout" class="ghost">Sign out</button></div><div id="summary" class="grid"></div><div class="tabs"><button id="homework" class="ghost">Homework</button><button id="results" class="ghost">Results</button><button id="statement" class="ghost">Academic Statement</button><button id="timetable" class="ghost">Timetable</button><button id="announcements" class="ghost">Announcements</button></div><div id="detail"></div></section>
 </div><div id="toast" class="toast hide"></div>
 <script>
@@ -16,19 +16,41 @@ function table(rows,cols){if(!rows||!rows.length)return'<p class="muted">No reco
 async function raw(path,opt){opt=opt||{};var method=String(opt.method||'GET').toUpperCase();opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{},token?{authorization:'Bearer '+token}:{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var msg=j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')';if(j&&j.error&&j.error.errorId)msg+=' • Error ref: '+j.error.errorId;toast(msg,true);throw Error(msg)}if(method!=='GET'&&method!=='HEAD'&&!opt.silent){var msgOk=path.indexOf('/login')>=0?'Signed in successfully':path.indexOf('academic-statement')>=0?'Request submitted successfully':path.indexOf('/logout')>=0?'Signed out successfully':'Action completed successfully';toast(msgOk,false)}return j}
 async function configureLogin(){
   try{
-    var s=await fetch('/api/test-access/status').then(function(r){return r.json()});
-    if(!s.enabled)return;
-    var students=await fetch('/api/test-access/students').then(function(r){return r.json()});
+    var state=await fetch('/api/test-access/status').then(function(r){return r.json()});
+    if(!state.enabled)return;
     E('normalStudentLogin').classList.add('hide');E('testStudentLogin').classList.remove('hide');
-    E('testStudentSelect').innerHTML=students.map(function(x){return'<option value="'+x.id+'">'+esc(x.first_name+' '+x.last_name+' • '+x.admission_no+' • '+(x.classroom_name||'No class'))+'</option>'}).join('');
+
+    async function loadStudents(){
+      try{
+        var r=await fetch('/api/test-access/students'),students=await r.json();
+        if(!r.ok)throw Object.assign(Error(students&&students.error&&students.error.message?students.error.message:'Could not load demo students'),{status:r.status});
+        E('studentDemoGate').classList.add('hide');E('studentDemoChooser').classList.remove('hide');
+        E('testStudentSelect').innerHTML=students.length?students.map(function(x){return'<option value="'+x.id+'">'+esc(x.first_name+' '+x.last_name+' • '+x.admission_no+' • '+(x.classroom_name||'No class'))+'</option>'}).join(''):'<option value="">No students configured</option>';
+      }catch(err){
+        if(err.status===401){E('studentDemoGate').classList.remove('hide');E('studentDemoChooser').classList.add('hide');return}
+        E('err').textContent=err.message
+      }
+    }
+
+    E('studentDemoUnlock').onclick=async function(){
+      E('err').textContent='';var btn=E('studentDemoUnlock');btn.disabled=true;btn.textContent='Unlocking...';
+      try{
+        var r=await fetch('/api/test-access/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:E('studentDemoPassword').value})});
+        var x=await r.json();if(!r.ok)throw Error(x&&x.error&&x.error.message?x.error.message:'Could not unlock Demo Access');
+        await loadStudents()
+      }catch(e){E('err').textContent=e.message;btn.disabled=false;btn.textContent='Unlock Student Demo Access'}
+    };
+    E('studentDemoPassword').onkeydown=function(e){if(e.key==='Enter')E('studentDemoUnlock').click()};
     E('testStudentSignin').onclick=async function(){
       E('err').textContent='';
+      if(!E('testStudentSelect').value)return;
       try{
         var r=await fetch('/api/test-access/student-login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({studentId:E('testStudentSelect').value})});
-        var x=await r.json();if(!r.ok)throw Error(x&&x.error&&x.error.message?x.error.message:'Could not open test student');
+        var x=await r.json();if(!r.ok)throw Error(x&&x.error&&x.error.message?x.error.message:'Could not open demo student');
         token=x.token;sessionStorage.setItem('rx_student_token',token);me=await raw('/api/student/me');show()
       }catch(e){E('err').textContent=e.message}
-    }
+    };
+    if(state.unlocked)await loadStudents();
   }catch(e){}
 }
 async function boot(){await configureLogin();if(!token)return;try{me=await raw('/api/student/me');show()}catch(e){sessionStorage.removeItem('rx_student_token');token=''}}
