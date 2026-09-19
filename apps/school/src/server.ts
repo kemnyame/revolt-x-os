@@ -1930,15 +1930,43 @@ app.get('/api/parent/students/:id/fees',async request=>{
 app.get('/api/parent/students/:id/latest-report',async request=>{
   const g=await guardianAuth(request);
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  await ensureGuardianStudent(g.guardian_id,id);
+  const student=await ensureGuardianStudent(g.guardian_id,id);
   const approved=await maybeOne<any>(db,`SELECT rc.*,t.name term_name,t.id term_id,t.academic_year_id
     FROM report_comments rc JOIN terms t ON t.id=rc.term_id
     WHERE rc.organisation_id=$1 AND rc.student_id=$2 AND rc.workflow_status='approved'
     ORDER BY rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[g.organisation_id,id]);
-  if(!approved)return{available:false,term:null,subjects:[],comments:null};
-  const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[approved.term_id]);
+  if(!approved)return{available:false,term:null,student,subjects:[],comments:null};
+
+  const term=await one<any>(db,`SELECT t.*,y.name academic_year FROM terms t
+    JOIN academic_years y ON y.id=t.academic_year_id WHERE t.id=$1`,[approved.term_id]);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,c.class_teacher_os_user_id
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[id,term.academic_year_id]);
+  Object.assign(student,current||{});
   const subjects=await calculateStudentTermResults(g.organisation_id,id,term.id);
-  return{available:true,term,subjects,comments:approved};
+
+  let overallAverage=subjects.length
+    ?Math.round((subjects.filter((x:any)=>x.percentage!=null).reduce((sum:number,x:any)=>sum+Number(x.percentage||0),0)/
+      Math.max(1,subjects.filter((x:any)=>x.percentage!=null).length))*100)/100
+    :null;
+  let classPosition:number|null=null,classSize:number|null=null;
+  if(current?.classroom_id){
+    const rank=await calculateClassRank(g.organisation_id,current.classroom_id,term.id,id);
+    if(rank){overallAverage=Number(rank.average);classPosition=rank.position;classSize=rank.class_size}
+  }
+  const attRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records
+    WHERE organisation_id=$1 AND student_id=$2 AND attendance_date BETWEEN $3::date AND $4::date GROUP BY status`,
+    [g.organisation_id,id,term.start_date,term.end_date])).rows;
+  const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
+  for(const r of attRows){attendance[r.status]=r.count;attendance.total+=Number(r.count)}
+  if(attendance.total)attendance.rate=Math.round(((attendance.present+attendance.late+attendance.excused)/attendance.total)*10000)/100;
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
+
+  return{
+    available:true,school,term,student,subjects,comments:approved,
+    performance:{overallAverage,classPosition,classSize},
+    attendance
+  };
 });
 
 app.get('/api/payments/:id/receipt',async request=>{
