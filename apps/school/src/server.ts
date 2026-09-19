@@ -33,7 +33,7 @@ function requestSessionToken(request:any){
 async function requestActor(request:any){
   const auth=String(request.headers?.authorization||'');
   const bearer=/^Bearer\s+/i.test(auth)?auth.replace(/^Bearer\s+/i,'').trim():'';
-  const schoolToken=requestSchoolToken(request);
+  const schoolToken=requestSessionToken(request);
 
   if(schoolToken&&schoolToken.startsWith('rxs_')){
     const hash=createHash('sha256').update(schoolToken).digest('hex');
