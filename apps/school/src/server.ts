@@ -1665,7 +1665,28 @@ app.get('/api/report-cards/:studentId',async request=>{
     if(!returnedToMe)await ensureTeacherScope(a,current.classroom_id,null);
     current.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,q.termId);
   }
-  const subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
+  let subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
+  const coreUsers=await fetchCoreUsers(a.core.organisation_id);
+  const userLabel=(id:string|null|undefined)=>{
+    const u=id?coreUsers.find((x:any)=>x.id===id):null;
+    return u?(u.first_name+' '+u.last_name).trim():'Not assigned';
+  };
+  if(current?.classroom_id&&subjects.length){
+    const subjectIds=subjects.map((x:any)=>x.subject_id);
+    const teacherRows=(await db.query(`
+      SELECT DISTINCT ON (ta.subject_id) ta.subject_id,ta.teacher_os_user_id,ta.term_id
+      FROM teacher_assignments ta
+      WHERE ta.organisation_id=$1 AND ta.classroom_id=$2 AND ta.subject_id=ANY($3::uuid[]) AND ta.is_active=true
+        AND (ta.term_id=$4 OR ta.term_id IS NULL)
+      ORDER BY ta.subject_id,(ta.term_id=$4) DESC,ta.created_at DESC`,
+      [a.core.organisation_id,current.classroom_id,subjectIds,q.termId])).rows;
+    subjects=subjects.map((s:any)=>{
+      const ta=teacherRows.find((x:any)=>x.subject_id===s.subject_id);
+      const teacherId=ta?.teacher_os_user_id??current.class_teacher_os_user_id??null;
+      return{...s,subject_teacher_os_user_id:teacherId,subject_teacher_name:userLabel(teacherId)};
+    });
+  }
+  const classTeacherName=userLabel(current?.class_teacher_os_user_id);
   let overallAverage=subjects.length?Math.round((subjects.filter((s:any)=>s.percentage!=null).reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/Math.max(1,subjects.filter((s:any)=>s.percentage!=null).length))*100)/100:null;
   let classPosition:number|null=null,classSize:number|null=null;
   if(current?.classroom_id){
@@ -1688,6 +1709,11 @@ app.get('/api/report-cards/:studentId',async request=>{
     performance:{overallAverage,classPosition,classSize},
     attendance,
     comments,
+    reportResponsibility:{
+      classTeacherOsUserId:current?.class_teacher_os_user_id??null,
+      classTeacherName,
+      rule:'Subject Teachers enter and own the scores for their assigned subjects. The Class Teacher compiles the complete report, writes the overall Class Teacher remark, and submits it for approval.'
+    },
     generatedAt:new Date().toISOString()
   };
 });
@@ -3102,24 +3128,25 @@ app.put('/api/report-comments/:studentId',async request=>{
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
     ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
   const existing=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   const returnedToMe=a.role==='teacher'&&existing?.workflow_status==='returned'&&existing?.submitted_by_os_user_id===a.core.id;
   if(!returnedToMe){
     await ensureTeacherScope(a,current.classroom_id,null);
-    const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
     if(a.role==='teacher'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
   }
   if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
   const row=await one<any>(db,`INSERT INTO report_comments(
-      organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id,workflow_status
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft')
+      organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id,workflow_status,class_teacher_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9)
     ON CONFLICT(student_id,term_id) DO UPDATE SET
       class_teacher_comment=EXCLUDED.class_teacher_comment,conduct=EXCLUDED.conduct,interest=EXCLUDED.interest,
       next_term_begins=EXCLUDED.next_term_begins,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,
+      class_teacher_os_user_id=EXCLUDED.class_teacher_os_user_id,
       workflow_status=report_comments.workflow_status,
       return_note=CASE WHEN report_comments.workflow_status='returned' THEN report_comments.return_note ELSE NULL END,updated_at=now()
     RETURNING *`,[
-      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,term.next_term_begins??null,a.core.id
+      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,term.next_term_begins??null,a.core.id,classTeacherId
     ]);
   await audit(a.core.organisation_id,a.core.id,'report.remarks_saved','report_comment',row.id,{studentId,termId:b.termId});
   return row;
