@@ -877,12 +877,27 @@ app.post('/api/class-subjects/bulk',async(request,reply)=>{
 });
 
 app.patch('/api/class-subjects/:id',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({weeklyPeriods:z.number().int().min(1).max(20)}).parse(request.body);
-  const row=await one<any>(db,`UPDATE class_subjects SET weekly_periods=$1,updated_at=now()
-    WHERE id=$2 AND organisation_id=$3 RETURNING *`,[b.weeklyPeriods,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'class_subject.schedule_requirement_updated','class_subject',id,{weeklyPeriods:b.weeklyPeriods});
+  const b=z.object({
+    weeklyPeriods:z.number().int().min(1).max(20).optional(),
+    creditHours:z.number().min(0.25).max(20).optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const before=await one<any>(db,`SELECT cs.*,c.name classroom_name,s.name subject_name FROM class_subjects cs
+    JOIN classrooms c ON c.id=cs.classroom_id JOIN subjects s ON s.id=cs.subject_id
+    WHERE cs.id=$1 AND cs.organisation_id=$2`,[id,a.core.organisation_id]);
+  const row=await one<any>(db,`UPDATE class_subjects SET
+    weekly_periods=COALESCE($1,weekly_periods),
+    credit_hours=COALESCE($2,credit_hours),
+    updated_at=now()
+    WHERE id=$3 AND organisation_id=$4 RETURNING *`,[b.weeklyPeriods??null,b.creditHours??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'class_subject.schedule_requirement_updated','class_subject',id,{weeklyPeriods:row.weekly_periods,creditHours:row.credit_hours});
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'class_subject.schedule_requirement_updated',
+    resourceType:'class_subject',resourceId:id,performedOn:before.classroom_name+' • '+before.subject_name,
+    oldValue:{weeklyPeriods:before.weekly_periods,creditHours:before.credit_hours},
+    newValue:{weeklyPeriods:row.weekly_periods,creditHours:row.credit_hours}
+  });
   return row;
 });
 app.delete('/api/class-subjects/:id',async(request,reply)=>{
@@ -1735,8 +1750,11 @@ app.patch('/api/grade-levels/:id',async request=>{
 app.patch('/api/classes/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:z.string().uuid().nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const before=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const row=await one<any>(db,`UPDATE classrooms SET name=COALESCE($1,name),stream=CASE WHEN $2 THEN $3 ELSE stream END,capacity=CASE WHEN $4 THEN $5 ELSE capacity END,class_teacher_os_user_id=CASE WHEN $6 THEN $7 ELSE class_teacher_os_user_id END,is_active=COALESCE($8,is_active) WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.name??null,Object.hasOwn(b,'stream'),b.stream??null,Object.hasOwn(b,'capacity'),b.capacity??null,Object.hasOwn(b,'classTeacherOsUserId'),b.classTeacherOsUserId??null,b.isActive??null,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'class.updated','classroom',id);return row;
+  await audit(a.core.organisation_id,a.core.id,'class.updated','classroom',id);
+  await changeLog({organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'class.updated',resourceType:'classroom',resourceId:id,performedOn:row.name,oldValue:before,newValue:row});
+  return row;
 });
 app.delete('/api/classes/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
@@ -1974,7 +1992,7 @@ async function validateTeachingAssignment(input:{
 }
 
 app.get('/api/teacher-assignments',async request=>{
-  const a=await authorize(request,db,config,'staff.view');
+  const a=await authorize(request,db,config,'teaching_assignments.view');
   return (await db.query(`SELECT ta.*,c.name classroom_name,s.name subject_name,y.name academic_year,t.name term_name
     FROM teacher_assignments ta
     JOIN classrooms c ON c.id=ta.classroom_id
@@ -1985,7 +2003,7 @@ app.get('/api/teacher-assignments',async request=>{
     ORDER BY ta.is_active DESC,c.name,s.name NULLS FIRST,ta.created_at DESC`,[a.core.organisation_id])).rows;
 });
 app.post('/api/teacher-assignments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'staff.edit');
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
   const b=z.object({
     academicYearId:z.string().uuid(),
     termId:z.string().uuid().nullable().optional(),
@@ -2045,10 +2063,19 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'teacher_assignment.created','teacher_assignment',row.id,{
     teacherOsUserId:b.teacherOsUserId,classroomId:b.classroomId,subjectId:b.subjectId??null,replaced:b.replaceExisting
   });
+  const target=await one<any>(db,`SELECT c.name classroom_name,s.name subject_name FROM classrooms c
+    LEFT JOIN subjects s ON s.id=$1 WHERE c.id=$2`,[b.subjectId??null,b.classroomId]);
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher_assignment.created',
+    resourceType:'teacher_assignment',resourceId:row.id,
+    performedOn:target.classroom_name+' • '+(target.subject_name||'Class Teacher'),
+    oldValue:b.replaceExisting?conflicts:null,
+    newValue:{teacherOsUserId:b.teacherOsUserId,classroomId:b.classroomId,subjectId:b.subjectId??null,termId:b.termId??null,isActive:true}
+  });
   return reply.code(201).send(row);
 });
 app.patch('/api/teacher-assignments/:id',async request=>{
-  const a=await authorize(request,db,config,'staff.edit');
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({isActive:z.boolean()}).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
@@ -2058,10 +2085,16 @@ app.patch('/api/teacher-assignments/:id',async request=>{
       [b.isActive?current.teacher_os_user_id:null,current.classroom_id,a.core.organisation_id]);
   }
   await audit(a.core.organisation_id,a.core.id,'teacher_assignment.updated','teacher_assignment',id,{isActive:b.isActive});
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher_assignment.updated',
+    resourceType:'teacher_assignment',resourceId:id,performedOn:current.classroom_id,
+    oldValue:{isActive:current.is_active,teacherOsUserId:current.teacher_os_user_id,subjectId:current.subject_id},
+    newValue:{isActive:row.is_active,teacherOsUserId:row.teacher_os_user_id,subjectId:row.subject_id}
+  });
   return row;
 });
 app.delete('/api/teacher-assignments/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'staff.delete');
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await db.query('DELETE FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
@@ -2070,6 +2103,11 @@ app.delete('/api/teacher-assignments/:id',async(request,reply)=>{
       [current.classroom_id,a.core.organisation_id,current.teacher_os_user_id]);
   }
   await audit(a.core.organisation_id,a.core.id,'teacher_assignment.deleted','teacher_assignment',id);
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher_assignment.deleted',
+    resourceType:'teacher_assignment',resourceId:id,performedOn:current.classroom_id,
+    oldValue:current,newValue:null
+  });
   return reply.code(204).send();
 });
 
