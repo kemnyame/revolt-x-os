@@ -34,6 +34,18 @@ async function activeTerm(org:string){
   return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
 }
 
+async function fetchCoreUsers(authHeader:string|undefined){
+  if(!authHeader)return[] as any[];
+  try{
+    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{
+      headers:{authorization:authHeader},
+      signal:AbortSignal.timeout(8000)
+    });
+    if(!res.ok)return[] as any[];
+    return await res.json() as any[];
+  }catch{return[] as any[]}
+}
+
 function normalizePhone(phone:string){
   const p=String(phone||'').trim().replace(/[\s()-]/g,'');
   if(p.startsWith('+'))return p;
@@ -1358,6 +1370,25 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
   const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1,submitted_at=now(),
     return_note=NULL,updated_at=now() WHERE id=$2 RETURNING *`,[a.core.id,report.id]);
+  const reviewerIds=(await db.query(`SELECT reviewer_os_user_id FROM report_reviewer_assignments
+    WHERE organisation_id=$1 AND classroom_id=$2 AND is_active=true`,[a.core.organisation_id,current.classroom_id])).rows.map((x:any)=>x.reviewer_os_user_id);
+  if(!reviewerIds.length){
+    reviewerIds.push(...(await db.query(`SELECT os_user_id FROM school_memberships
+      WHERE organisation_id=$1 AND status='active' AND role IN('headteacher','school_admin')`,[a.core.organisation_id])).rows.map((x:any)=>x.os_user_id));
+  }
+  const coreUsers=await fetchCoreUsers(request.headers.authorization);
+  for(const reviewerId of [...new Set(reviewerIds)]){
+    const reviewer=coreUsers.find((u:any)=>u.id===reviewerId);
+    if(reviewer?.email){
+      await deliverCommunication({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
+        recipientName:(reviewer.first_name+' '+reviewer.last_name).trim(),recipientAddress:reviewer.email,
+        subject:'Report card awaiting review',
+        body:`A report card has been submitted for review. Student: ${(await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId])).first_name} ${(await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId])).last_name}. Open the Report Cards approval queue in Revolt-X School.`,
+        templateKey:'reports.submitted',relatedType:'report_comment',relatedId:report.id
+      });
+    }
+  }
   await audit(a.core.organisation_id,a.core.id,'report.submitted','report_comment',report.id,{studentId,termId:b.termId,classroomId:current.classroom_id});
   return updated;
 });
@@ -1393,7 +1424,7 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(report.workflow_status!=='submitted')throw fail(409,'Only submitted reports can be reviewed');
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[b.termId]);
-  const current=await one<any>(db,`SELECT c.id classroom_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
   if(a.role!=='school_admin'&&a.role!=='headteacher'){
     const assignment=await maybeOne<any>(db,'SELECT 1 FROM report_reviewer_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND reviewer_os_user_id=$3 AND is_active=true',[a.core.organisation_id,current.classroom_id,a.core.id]);
@@ -1420,6 +1451,19 @@ app.post('/api/report-comments/:studentId/review',async request=>{
       body:`The report card for ${student.first_name} ${student.last_name} has been approved and is now available in the Parent Portal.`,
       relatedType:'report_comment',relatedId:report.id
     });
+  }
+  if(status==='returned'&&current.class_teacher_os_user_id){
+    const coreUsers=await fetchCoreUsers(request.headers.authorization);
+    const teacher=coreUsers.find((u:any)=>u.id===current.class_teacher_os_user_id);
+    if(teacher?.email){
+      await deliverCommunication({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
+        recipientName:(teacher.first_name+' '+teacher.last_name).trim(),recipientAddress:teacher.email,
+        subject:'Report card returned for correction',
+        body:`The report card for ${student.first_name} ${student.last_name} has been returned for correction. Reviewer note: ${b.returnNote||''}`,
+        templateKey:'reports.returned',relatedType:'report_comment',relatedId:report.id
+      });
+    }
   }
   await audit(a.core.organisation_id,a.core.id,'report.'+status,'report_comment',report.id,{studentId,termId:b.termId});
   return updated;
@@ -1726,7 +1770,7 @@ async function createAdmissionApplication(input:{
     VALUES($1,$2,NULL,'submitted',$3,$4)`,[
       input.organisationId,row.id,input.source==='external'?'Application received through public portal':'Application created internally',input.actorOsUserId??null
     ]);
-  const school=await one<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[input.organisationId]);
+  const school=await one<any>(db,'SELECT school_name,email FROM school_profiles WHERE organisation_id=$1',[input.organisationId]);
   await notifyContact({
     organisationId:input.organisationId,actorOsUserId:input.actorOsUserId,eventKey:'admission.received',
     name:b.guardianFirstName+' '+b.guardianLastName,email:b.guardianEmail??null,phone:b.guardianPhone,
@@ -1734,6 +1778,15 @@ async function createAdmissionApplication(input:{
     body:`${school.school_name} has received the admission application for ${b.firstName} ${b.lastName}. Application number: ${applicationNo}. You can use this number and the guardian phone number to check the status.`,
     relatedType:'admission_application',relatedId:row.id
   });
+  if(input.source==='external'&&school.email){
+    await deliverCommunication({
+      organisationId:input.organisationId,actorOsUserId:input.actorOsUserId,channel:'email',
+      recipientName:school.school_name,recipientAddress:school.email,
+      subject:'New admission application '+applicationNo,
+      body:`A new external admission application has been received for ${b.firstName} ${b.lastName}, requesting ${b.requestedGradeCode}. Guardian: ${b.guardianFirstName} ${b.guardianLastName}, ${b.guardianPhone}. Open Revolt-X School Admissions to review the complete record.`,
+      templateKey:'admission.received.internal',relatedType:'admission_application',relatedId:row.id
+    });
+  }
   return row;
 }
 
