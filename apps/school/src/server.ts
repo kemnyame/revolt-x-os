@@ -2091,56 +2091,86 @@ app.get('/api/teacher/context',async request=>{
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
-  if(a.role==='teacher'){
-    return (await db.query(`SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ta.subject_id,s.name subject_name,
-      (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
+  return (await db.query(`
+    WITH teaching_scope AS (
+      SELECT c.id classroom_id,cs.subject_id,'class_teacher'::text assignment_type
       FROM classrooms c
-      JOIN grade_levels g ON g.id=c.grade_level_id
-      LEFT JOIN teacher_assignments ta ON ta.classroom_id=c.id AND ta.organisation_id=c.organisation_id AND ta.teacher_os_user_id=$2 AND ta.is_active=true
-      LEFT JOIN subjects s ON s.id=ta.subject_id
-      WHERE c.organisation_id=$1 AND c.is_active=true AND (c.class_teacher_os_user_id=$2 OR ta.id IS NOT NULL)
-      ORDER BY c.name,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id])).rows;
-  }
-  return (await db.query(`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,NULL::uuid subject_id,NULL::text subject_name,
-    (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
-    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
-    WHERE c.organisation_id=$1 AND c.is_active=true ORDER BY g.level_order,c.name`,[a.core.organisation_id])).rows;
+      JOIN class_subjects cs ON cs.classroom_id=c.id AND cs.is_active=true
+      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+      UNION
+      SELECT ta.classroom_id,ta.subject_id,'subject_teacher'::text assignment_type
+      FROM teacher_assignments ta
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+    )
+    SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ts.subject_id,s.name subject_name,
+      CASE WHEN c.class_teacher_os_user_id=$2 THEN 'class_teacher' ELSE ts.assignment_type END assignment_type,
+      (c.class_teacher_os_user_id=$2) is_class_teacher,
+      (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
+    FROM teaching_scope ts
+    JOIN classrooms c ON c.id=ts.classroom_id
+    JOIN grade_levels g ON g.id=c.grade_level_id
+    LEFT JOIN subjects s ON s.id=ts.subject_id
+    WHERE c.organisation_id=$1 AND c.is_active=true
+    ORDER BY c.name,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id])).rows;
 });
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
-  if(a.role==='teacher'){
-    return (await db.query(`SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name
-      FROM enrolments e
-      JOIN students s ON s.id=e.student_id
-      JOIN classrooms c ON c.id=e.classroom_id
-      JOIN grade_levels g ON g.id=c.grade_level_id
-      LEFT JOIN teacher_assignments ta ON ta.classroom_id=c.id AND ta.organisation_id=c.organisation_id AND ta.teacher_os_user_id=$2 AND ta.is_active=true
-      WHERE e.organisation_id=$1 AND e.status='active' AND (c.class_teacher_os_user_id=$2 OR ta.id IS NOT NULL)
-      ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id])).rows;
-  }
-  return (await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name
-    FROM enrolments e JOIN students s ON s.id=e.student_id JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
-    WHERE e.organisation_id=$1 AND e.status='active' ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id])).rows;
+  return (await db.query(`
+    WITH scoped_classes AS (
+      SELECT c.id classroom_id
+      FROM classrooms c
+      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+      UNION
+      SELECT ta.classroom_id
+      FROM teacher_assignments ta
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true
+    )
+    SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name,
+      (c.class_teacher_os_user_id=$2) is_class_teacher
+    FROM scoped_classes sc
+    JOIN enrolments e ON e.classroom_id=sc.classroom_id AND e.status='active'
+    JOIN students s ON s.id=e.student_id
+    JOIN classrooms c ON c.id=e.classroom_id
+    JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE e.organisation_id=$1
+    ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id])).rows;
 });
 app.get('/api/teacher/dashboard',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
   const term=await activeTerm(a.core.organisation_id);
-  let classIds:string[]=[];
-  if(a.role==='teacher'){
-    classIds=(await db.query(`SELECT DISTINCT c.id FROM classrooms c LEFT JOIN teacher_assignments ta ON ta.classroom_id=c.id AND ta.teacher_os_user_id=$2 AND ta.is_active=true WHERE c.organisation_id=$1 AND c.is_active=true AND (c.class_teacher_os_user_id=$2 OR ta.id IS NOT NULL)`,[a.core.organisation_id,a.core.id])).rows.map((x:any)=>x.id);
-  }else{
-    classIds=(await db.query('SELECT id FROM classrooms WHERE organisation_id=$1 AND is_active=true',[a.core.organisation_id])).rows.map((x:any)=>x.id);
-  }
-  if(!classIds.length)return{assignedClasses:0,students:0,homework:0,assessments:0,presentToday:0,absentToday:0,term};
+  const scope=await db.query(`
+    WITH assignments AS (
+      SELECT c.id classroom_id,NULL::uuid subject_id,true is_class_teacher
+      FROM classrooms c
+      WHERE c.organisation_id=$1 AND c.is_active=true AND c.class_teacher_os_user_id=$2
+      UNION ALL
+      SELECT ta.classroom_id,ta.subject_id,false
+      FROM teacher_assignments ta
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+    )
+    SELECT count(DISTINCT classroom_id)::int assigned_classes,
+      count(DISTINCT subject_id) FILTER(WHERE subject_id IS NOT NULL)::int subject_assignments,
+      count(DISTINCT classroom_id) FILTER(WHERE is_class_teacher)::int class_teacher_classes,
+      array_agg(DISTINCT classroom_id) classroom_ids
+    FROM assignments`,[a.core.organisation_id,a.core.id]);
+  const row=scope.rows[0]||{};
+  const classIds=(row.classroom_ids||[]).filter(Boolean);
+  if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,presentToday:0,absentToday:0,term};
   const q=await db.query(`SELECT
     (SELECT count(DISTINCT e.student_id)::int FROM enrolments e WHERE e.classroom_id=ANY($1::uuid[]) AND e.status='active') students,
     (SELECT count(*)::int FROM homework_assignments h WHERE h.classroom_id=ANY($1::uuid[]) AND h.status<>'closed') homework,
-    (SELECT count(*)::int FROM assessments a WHERE a.classroom_id=ANY($1::uuid[]) AND ($2::uuid IS NULL OR a.term_id=$2)) assessments,
+    (SELECT count(*)::int FROM assessments ass WHERE ass.classroom_id=ANY($1::uuid[]) AND ($2::uuid IS NULL OR ass.term_id=$2)) assessments,
     (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='present') present_today,
     (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='absent') absent_today`,[classIds,term?.id??null]);
-  return{assignedClasses:classIds.length,students:q.rows[0]?.students??0,homework:q.rows[0]?.homework??0,assessments:q.rows[0]?.assessments??0,presentToday:q.rows[0]?.present_today??0,absentToday:q.rows[0]?.absent_today??0,term};
+  return{
+    assignedClasses:Number(row.assigned_classes||0),
+    subjectAssignments:Number(row.subject_assignments||0),
+    classTeacherClasses:Number(row.class_teacher_classes||0),
+    students:q.rows[0]?.students??0,homework:q.rows[0]?.homework??0,assessments:q.rows[0]?.assessments??0,
+    presentToday:q.rows[0]?.present_today??0,absentToday:q.rows[0]?.absent_today??0,term
+  };
 });
 
 app.post('/api/students/:id/portal-reset',async request=>{
