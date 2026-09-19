@@ -1703,6 +1703,40 @@ app.get('/api/student/latest-report',async request=>{
   return{available:true,term,subjects,comments:approved};
 });
 
+async function createAdmissionApplication(input:{
+  organisationId:string;
+  source:'external'|'internal';
+  actorOsUserId?:string|null|undefined;
+  data:any;
+}){
+  const b=input.data;
+  const grade=await maybeOne<any>(db,'SELECT 1 FROM grade_levels WHERE organisation_id=$1 AND code=$2 AND is_active=true',[input.organisationId,b.requestedGradeCode]);
+  if(!grade)throw fail(400,'Requested grade is not available');
+  const applicationNo='ADM-'+new Date().getUTCFullYear()+'-'+randomBytes(3).toString('hex').toUpperCase();
+  const row=await one<any>(db,`INSERT INTO admission_applications(
+      organisation_id,application_no,source,first_name,middle_name,last_name,sex,date_of_birth,requested_grade_code,previous_school,
+      guardian_first_name,guardian_last_name,guardian_phone,guardian_alt_phone,guardian_email,guardian_relationship,address,
+      emergency_contact_name,emergency_contact_phone,notes
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,[
+      input.organisationId,applicationNo,input.source,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,
+      b.requestedGradeCode,b.previousSchool??null,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianAltPhone??null,
+      b.guardianEmail??null,b.guardianRelationship,b.address??null,b.emergencyContactName??null,b.emergencyContactPhone??null,b.notes??null
+    ]);
+  await db.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
+    VALUES($1,$2,NULL,'submitted',$3,$4)`,[
+      input.organisationId,row.id,input.source==='external'?'Application received through public portal':'Application created internally',input.actorOsUserId??null
+    ]);
+  const school=await one<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[input.organisationId]);
+  await notifyContact({
+    organisationId:input.organisationId,actorOsUserId:input.actorOsUserId,eventKey:'admission.received',
+    name:b.guardianFirstName+' '+b.guardianLastName,email:b.guardianEmail??null,phone:b.guardianPhone,
+    subject:'Admission application received',
+    body:`${school.school_name} has received the admission application for ${b.firstName} ${b.lastName}. Application number: ${applicationNo}. You can use this number and the guardian phone number to check the status.`,
+    relatedType:'admission_application',relatedId:row.id
+  });
+  return row;
+}
+
 app.get('/api/public/school',async()=>{
   const school=await maybeOne<any>(db,'SELECT organisation_id,school_name,short_name,motto,phone,email,address FROM school_profiles ORDER BY created_at LIMIT 1');
   if(!school)throw fail(404,'School admissions are not configured');
