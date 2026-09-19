@@ -3496,35 +3496,42 @@ app.post('/api/test-access/student-login',async request=>{
     VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
   return{token,expiresIn:28800,testAccess:true};
 });
-app.get('/api/test-access/teachers',async request=>{
-  requireTestAccess(request);
+async function testStaffDirectory(roles:string[]){
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
   const memberships=(await db.query(`SELECT os_user_id,role FROM school_memberships
-    WHERE organisation_id=$1 AND status='active' AND role IN('teacher','headteacher','school_admin')
-    ORDER BY role,created_at`,[school.organisation_id])).rows;
+    WHERE organisation_id=$1 AND status='active' AND role=ANY($2::text[])
+    ORDER BY CASE role WHEN 'school_admin' THEN 1 WHEN 'headteacher' THEN 2 WHEN 'teacher' THEN 3 WHEN 'registrar' THEN 4 ELSE 5 END,created_at`,
+    [school.organisation_id,roles])).rows;
   const users=await fetchCoreUsers(school.organisation_id);
   return memberships.map((m:any)=>{
     const u=users.find((x:any)=>x.id===m.os_user_id)||{};
     return{
-      id:m.os_user_id,role:m.role,email:u.email||'',first_name:u.first_name||'Teacher',
-      last_name:u.last_name||'',job_title:u.job_title||'Teacher'
+      id:m.os_user_id,role:m.role,email:u.email||'',
+      first_name:u.first_name||(m.role==='headteacher'?'Headteacher':m.role==='school_admin'?'Administrator':'Demo'),
+      last_name:u.last_name||'User',job_title:u.job_title||m.role.replace('_',' ')
     };
   });
-});
-app.post('/api/test-access/teacher-login',async(request,reply)=>{
+}
+function testStaffRedirect(role:string){
+  return role==='teacher'?'/teacher':
+    role==='headteacher'?'/headteacher':
+    role==='bursar'?'/bursar':
+    role==='registrar'?'/registrar':'/';
+}
+async function createTestStaffLogin(request:any,reply:any,allowedRoles:string[]){
   requireTestAccess(request);
   const b=z.object({osUserId:z.string().uuid()}).parse(request.body);
   const school=await one<any>(db,'SELECT organisation_id,school_name FROM school_profiles ORDER BY created_at LIMIT 1');
   const membership=await one<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
-    [school.organisation_id,b.osUserId]);
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role=ANY($3::text[])`,
+    [school.organisation_id,b.osUserId,allowedRoles]);
   const users=await fetchCoreUsers(school.organisation_id);
   const u=users.find((x:any)=>x.id===b.osUserId)||{};
   const coreContext={
     id:b.osUserId,
     email:u.email||('test-'+b.osUserId+'@revolt-x.local'),
-    first_name:u.first_name||'Test',
-    last_name:u.last_name||'Teacher',
+    first_name:u.first_name||'Demo',
+    last_name:u.last_name||'User',
     status:'active',
     membership_id:'test-'+b.osUserId,
     membership_status:'active',
@@ -3538,8 +3545,26 @@ app.post('/api/test-access/teacher-login',async(request,reply)=>{
   const session=await createSchoolStaffSession(coreContext,'preview');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  await audit(school.organisation_id,b.osUserId,'teacher.test_authenticated','school_session',null,{role:membership.role});
-  return reply.send({accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,testAccess:true});
+  await audit(school.organisation_id,b.osUserId,'staff.test_authenticated','school_session',null,{role:membership.role});
+  return reply.send({
+    accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,
+    redirectTo:testStaffRedirect(membership.role),testAccess:true,
+    user:{id:b.osUserId,firstName:coreContext.first_name,lastName:coreContext.last_name,email:coreContext.email}
+  });
+}
+app.get('/api/test-access/teachers',async request=>{
+  requireTestAccess(request);
+  return testStaffDirectory(['teacher','headteacher','school_admin']);
+});
+app.post('/api/test-access/teacher-login',async(request,reply)=>{
+  return createTestStaffLogin(request,reply,['teacher','headteacher','school_admin']);
+});
+app.get('/api/test-access/staff',async request=>{
+  requireTestAccess(request);
+  return testStaffDirectory(['school_admin','headteacher','teacher','registrar','bursar']);
+});
+app.post('/api/test-access/staff-login',async(request,reply)=>{
+  return createTestStaffLogin(request,reply,['school_admin','headteacher','teacher','registrar','bursar']);
 });
 
 app.post('/api/students/:id/portal-reset',async request=>{
