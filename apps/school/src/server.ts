@@ -85,6 +85,90 @@ async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|nul
   if(!row)throw fail(403,'You are not assigned to this class or subject');
 }
 
+
+async function calculateStudentTermResults(orgId:string,studentId:string,termId:string){
+  const rows=(await db.query(`
+    WITH category_scores AS (
+      SELECT
+        a.subject_id,
+        sub.name subject_name,
+        COALESCE(ac.id,a.id) category_id,
+        COALESCE(ac.code,upper(a.assessment_type)) category_code,
+        COALESCE(ac.name,initcap(a.assessment_type)) category_name,
+        COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
+        ROUND(AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END)::numeric,2) category_average,
+        COUNT(sc.score)::int exercise_count
+      FROM assessments a
+      JOIN subjects sub ON sub.id=a.subject_id
+      LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+      LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$2
+      WHERE a.organisation_id=$1 AND a.term_id=$3
+      GROUP BY a.subject_id,sub.name,COALESCE(ac.id,a.id),COALESCE(ac.code,upper(a.assessment_type)),
+               COALESCE(ac.name,initcap(a.assessment_type)),COALESCE(ac.weight_percent,a.weight,0)
+    ),
+    subject_scores AS (
+      SELECT subject_id,subject_name,
+        SUM(CASE WHEN category_average IS NOT NULL THEN category_average*weight_percent/100.0 ELSE 0 END) weighted_points,
+        SUM(CASE WHEN category_average IS NOT NULL THEN weight_percent ELSE 0 END) assessed_weight,
+        SUM(exercise_count)::int assessment_count,
+        jsonb_agg(jsonb_build_object(
+          'categoryId',category_id,'code',category_code,'name',category_name,
+          'weightPercent',weight_percent,'average',category_average,'exerciseCount',exercise_count,
+          'weightedContribution',CASE WHEN category_average IS NULL THEN NULL ELSE ROUND((category_average*weight_percent/100.0)::numeric,2) END
+        ) ORDER BY category_name) components
+      FROM category_scores
+      GROUP BY subject_id,subject_name
+    )
+    SELECT subject_id,subject_name,assessment_count,assessed_weight,components,
+      ROUND(CASE WHEN assessed_weight>0 THEN (weighted_points/assessed_weight)*100.0 ELSE NULL END::numeric,2) percentage,
+      ROUND(weighted_points::numeric,2) weighted_points
+    FROM subject_scores
+    ORDER BY subject_name`,[orgId,studentId,termId])).rows;
+  const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[orgId])).rows;
+  return rows.map((s:any)=>{
+    const pct=s.percentage==null?null:Number(s.percentage);
+    const band=pct==null?null:bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));
+    return {...s,percentage:pct,grade:band?.name??'',remark:band?.remark??''};
+  });
+}
+
+async function calculateClassRank(orgId:string,classroomId:string,termId:string,studentId:string){
+  return maybeOne<any>(db,`
+    WITH category_scores AS (
+      SELECT e.student_id,a.subject_id,COALESCE(ac.id,a.id) category_id,
+             COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
+             AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END) category_average
+      FROM enrolments e
+      JOIN assessments a ON a.classroom_id=e.classroom_id AND a.term_id=$3
+      LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+      LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=e.student_id
+      WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status='active'
+      GROUP BY e.student_id,a.subject_id,COALESCE(ac.id,a.id),COALESCE(ac.weight_percent,a.weight,0)
+    ),
+    subject_scores AS (
+      SELECT student_id,subject_id,
+             CASE WHEN SUM(CASE WHEN category_average IS NOT NULL THEN weight_percent ELSE 0 END)>0
+               THEN SUM(CASE WHEN category_average IS NOT NULL THEN category_average*weight_percent/100.0 ELSE 0 END)
+                    / SUM(CASE WHEN category_average IS NOT NULL THEN weight_percent ELSE 0 END) * 100.0
+               ELSE NULL END subject_percentage
+      FROM category_scores
+      GROUP BY student_id,subject_id
+    ),
+    student_scores AS (
+      SELECT student_id,AVG(subject_percentage) overall_average
+      FROM subject_scores
+      WHERE subject_percentage IS NOT NULL
+      GROUP BY student_id
+    ),
+    ranked AS (
+      SELECT student_id,ROUND(overall_average::numeric,2) average,
+             RANK() OVER(ORDER BY overall_average DESC)::int position,
+             COUNT(*) OVER()::int class_size
+      FROM student_scores
+    )
+    SELECT * FROM ranked WHERE student_id=$4`,[orgId,classroomId,termId,studentId]);
+}
+
 async function provisionDemoTeachers(){
   if(!config.PROVISION_DEMO_TEACHERS)return;
   const base=config.CORE_OS_URL.replace(/\/$/,'');
