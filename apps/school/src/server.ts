@@ -1144,13 +1144,15 @@ app.get('/api/parent/students/:id/fees',async request=>{
   const payments=(await db.query('SELECT id,amount,payment_method,reference,paid_at,note FROM payments WHERE organisation_id=$1 AND student_id=$2 AND voided_at IS NULL ORDER BY paid_at DESC',[g.organisation_id,id])).rows;return{items,payments};
 });
 app.get('/api/parent/students/:id/latest-report',async request=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);await ensureGuardianStudent(g.guardian_id,id);
-  const term=await maybeOne<any>(db,`SELECT t.* FROM terms t WHERE t.organisation_id=$1 AND t.status IN('active','closed') ORDER BY CASE WHEN t.status='active' THEN 0 ELSE 1 END,t.end_date DESC LIMIT 1`,[g.organisation_id]);if(!term)return{term:null,subjects:[],comments:null};
-  const subjects=(await db.query(`SELECT sub.name subject_name,ROUND(AVG((sc.score/a.max_score)*100)::numeric,2) percentage FROM assessments a JOIN subjects sub ON sub.id=a.subject_id JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$1 WHERE a.organisation_id=$2 AND a.term_id=$3 GROUP BY sub.id,sub.name ORDER BY sub.name`,[id,g.organisation_id,term.id])).rows;
-  const bands=(await db.query('SELECT * FROM grading_bands WHERE organisation_id=$1 AND is_active=true ORDER BY sort_order,min_percentage DESC',[g.organisation_id])).rows;
-  const graded=subjects.map((s:any)=>{const pct=Number(s.percentage),band=bands.find((b:any)=>pct>=Number(b.min_percentage)&&pct<=Number(b.max_percentage));return{...s,grade:band?.name??'',remark:band?.remark??''}});
+  const g=await guardianAuth(request);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await ensureGuardianStudent(g.guardian_id,id);
+  const term=await maybeOne<any>(db,`SELECT t.* FROM terms t WHERE t.organisation_id=$1 AND t.status IN('active','closed')
+    ORDER BY CASE WHEN t.status='active' THEN 0 ELSE 1 END,t.end_date DESC LIMIT 1`,[g.organisation_id]);
+  if(!term)return{term:null,subjects:[],comments:null};
+  const subjects=await calculateStudentTermResults(g.organisation_id,id,term.id);
   const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[g.organisation_id,id,term.id]);
-  return{term,subjects:graded,comments};
+  return{term,subjects,comments};
 });
 
 app.get('/api/payments/:id/receipt',async request=>{
