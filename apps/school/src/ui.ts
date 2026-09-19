@@ -607,8 +607,9 @@ async function page(p){
    E('content').onclick=function(e){var p=e.target.dataset.openPortal;if(p)window.open(p,'_blank')}
  }
  else if(p==='staff'){
+   var coreUsersError=null;
    var rr=await Promise.all([
-     raw('/api/staff/core-users'),raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),
+     raw('/api/staff/core-users').catch(function(e){coreUsersError=e;return[]}),raw('/api/staff/module-memberships'),raw('/api/teacher-assignments'),
      raw('/api/roles/capabilities'),raw('/api/classes'),raw('/api/report-reviewers'),
      raw('/api/academic-years'),raw('/api/terms'),raw('/api/class-subjects')
    ]);
@@ -637,6 +638,7 @@ async function page(p){
      ],function(r){return (can('staff.edit')?'<button class="mini" data-disable-assignment="'+r.id+'">Disable</button>':'')+(can('staff.delete')?'<button class="mini danger" data-delete-assignment="'+r.id+'">Remove</button>':'')})
    }
    E('content').innerHTML='<div class="section"><div><h1>Access Management</h1><p class="muted">Manage staff access and teaching responsibilities without mixing them with academic setup.</p></div><div class="actions">'+(can('staff.create')?'<button id="addTeacher" class="primary">Add teacher</button>':'')+(can('staff.edit')?'<button id="quickAssignTeacher" class="primary">Assign teacher to class & subject</button><button id="assignStaff" class="ghost">Assign school role</button>':'')+'</div></div>'+
+   (coreUsersError?'<div class="notice warn">Core staff directory could not be reached. School roles, permissions and teaching assignments are still available. Refresh this page to retry the directory.</div>':'')+
    '<div class="grid staff-stats"><div class="panel stat"><span class="muted">Core OS staff</span><b>'+esc(users.length)+'</b></div><div class="panel stat"><span class="muted">Teaching staff</span><b>'+esc(teachers.length)+'</b></div><div class="panel stat"><span class="muted">Active teaching assignments</span><b>'+esc(assignments.filter(function(a){return a.is_active}).length)+'</b></div><div class="panel stat"><span class="muted">Active School roles</span><b>'+esc(memberships.filter(function(m){return m.status==='active'}).length)+'</b></div></div>'+
    '<div class="staff-tabs"><button class="staff-tab active" data-staff-tab="directory">Staff Directory</button><button class="staff-tab" data-staff-tab="teaching">Teaching Assignments</button><button class="staff-tab" data-staff-tab="access">User Access</button><button class="staff-tab" data-staff-tab="privileges">Roles & Privileges</button><button class="staff-tab" data-staff-tab="reviewers">Report Reviewers</button></div>'+
    '<div id="staff-directory" class="staff-pane"><div class="panel"><div class="toolbar"><input id="staffSearch" placeholder="Search staff name, email, staff number or role"></div><div id="staffDirectoryTable">'+table(users,[{key:'first_name',label:'Staff Member',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(u.email)+'</span>'}},{key:'job_title',label:'Job Title'},{key:'employee_number',label:'Staff No.'},{key:'id',label:'School Role',render:function(u){return badge(schoolRole(u.id))}},{key:'membership_status',label:'Core Status',render:function(u){return badge(u.membership_status)}}],function(u){return teachers.some(function(t){return t.id===u.id})&&can('staff.edit')?'<button class="mini primary-lite" data-assign-user="'+u.id+'">Assign teaching</button>':''})+'</div></div></div>'+
