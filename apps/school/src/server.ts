@@ -751,7 +751,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
 });
 app.get('/api/staff/module-memberships',async request=>{const a=await authorize(request,db,config,'staff.view');return (await db.query('SELECT * FROM school_memberships WHERE organisation_id=$1 ORDER BY created_at',[a.core.organisation_id])).rows});
 app.post('/api/staff/module-memberships',async(request,reply)=>{
-  const a=await authorize(request,db,config,'school.manage');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'staff.edit');const b=z.object({osUserId:z.string().uuid(),role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']),status:z.enum(['active','suspended']).default('active')}).parse(request.body);const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status) VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status,updated_at=now() RETURNING *`,[a.core.organisation_id,b.osUserId,b.role,b.status]);await audit(a.core.organisation_id,a.core.id,'school_staff.assigned','school_membership',row.id,{role:b.role});return reply.code(201).send(row);
 });
 
 
@@ -948,13 +948,13 @@ app.delete('/api/timetable/:id',async(request,reply)=>{
 });
 
 app.patch('/api/staff/module-memberships/:id',async request=>{
-  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'staff.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({role:z.enum(['school_admin','headteacher','teacher','bursar','registrar']).optional(),status:z.enum(['active','suspended']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const row=await one<any>(db,'UPDATE school_memberships SET role=COALESCE($1,role),status=COALESCE($2,status),updated_at=now() WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.role??null,b.status??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'school_staff.updated','school_membership',id,{role:row.role,status:row.status});return row;
 });
 app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'staff.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(row.os_user_id===a.core.id)throw fail(409,'You cannot remove your own School access');
   await db.query('DELETE FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'school_staff.removed','school_membership',id,{osUserId:row.os_user_id});return reply.code(204).send();
@@ -962,7 +962,7 @@ app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
 
 
 app.get('/api/teacher-assignments',async request=>{
-  const a=await authorize(request,db,config,'school.manage');
+  const a=await authorize(request,db,config,'staff.view');
   return (await db.query(`SELECT ta.*,c.name classroom_name,s.name subject_name
     FROM teacher_assignments ta
     JOIN classrooms c ON c.id=ta.classroom_id
@@ -971,7 +971,7 @@ app.get('/api/teacher-assignments',async request=>{
     ORDER BY c.name,s.name NULLS FIRST,ta.created_at DESC`,[a.core.organisation_id])).rows;
 });
 app.post('/api/teacher-assignments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'school.manage');
+  const a=await authorize(request,db,config,'staff.edit');
   const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),classroomId:z.string().uuid(),subjectId:z.string().uuid().nullable().optional(),teacherOsUserId:z.string().uuid()}).parse(request.body);
   const row=await one<any>(db,`INSERT INTO teacher_assignments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id)
     VALUES($1,$2,$3,$4,$5,$6)
@@ -982,13 +982,13 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.patch('/api/teacher-assignments/:id',async request=>{
-  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'staff.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({isActive:z.boolean()}).parse(request.body);
   const row=await one<any>(db,'UPDATE teacher_assignments SET is_active=$1 WHERE id=$2 AND organisation_id=$3 RETURNING *',[b.isActive,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'teacher_assignment.updated','teacher_assignment',id,{isActive:b.isActive});return row;
 });
 app.delete('/api/teacher-assignments/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'school.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'staff.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   await one<any>(db,'DELETE FROM teacher_assignments WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'teacher_assignment.deleted','teacher_assignment',id);return reply.code(204).send();
 });
