@@ -7,7 +7,8 @@ export function providerStatus(config:SchoolConfig){
   return{
     email:{
       provider:'resend',
-      configured:Boolean(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL)
+      configured:Boolean(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL),
+      mode:config.RESEND_FROM_EMAIL&&/(@|<)[^>]*resend\.dev>?$/i.test(config.RESEND_FROM_EMAIL)?'testing':'production'
     },
     sms:{
       provider:'twilio',
