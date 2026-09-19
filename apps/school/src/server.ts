@@ -64,7 +64,7 @@ async function fetchCoreUsers(organisationId:string){
     }catch(error:any){
       lastError=String(error?.message||lastError);
     }
-    if(attempt<4)await sleep([800,1500,2500,4000][attempt]||4000);
+    if(attempt<4)await new Promise(resolve=>setTimeout(resolve,[800,1500,2500,4000][attempt]||4000));
   }
 
   if(cached)return cached.value;
