@@ -55,6 +55,8 @@ var nav=[
 ['promotions','Promotion & Rollover','⇧','promotion.manage'],
 ['grading','Grading Setup','G','assessment.view'],
 ['fees','Fees & Payments','₵','fees.view'],
+['finance','Finance & Accounts','₵','finance.view'],
+['leave','Leave & Relief','L','leave.view'],
 ['timetable','Timetable & Scheduling','T','timetable.view'],
 ['teacherschedule','Teacher Scheduling','↔','teaching_assignments.view|timetable.view'],
 ['announcements','Communication Centre','N','communications.view'],
@@ -749,7 +751,16 @@ else if(p==='attendance'){
    E('content').innerHTML='<h1>Parent Portal</h1><div class="two"><div class="panel"><h3>Guardian access</h3><p class="muted">Open a student record, then use <b>Portal PIN</b> beside a guardian to generate or reset secure access.</p><button id="openParentPortal" class="primary">Open Parent Portal</button></div><div class="panel"><h3>What parents can see</h3><p>Linked children, class information, attendance summary, homework, announcements, fee statements, payments and the latest report card.</p></div></div>';E('openParentPortal').onclick=function(){window.open('/parent','_blank')}
  }
  else if(p==='portals'){
-   E('content').innerHTML='<h1>Portals & Interfaces</h1><div class="grid"><div class="panel"><h3>School Administration</h3><p class="muted">Full operational management for administrators, headteachers, registrars and bursars.</p><button class="ghost" disabled>Current interface</button></div><div class="panel"><h3>Teacher Portal</h3><p class="muted">Focused workspace for assigned classes, attendance, homework, assessments, timetable and reports.</p><button class="primary" data-open-portal="/teacher">Open Teacher Portal</button></div><div class="panel"><h3>Parent Portal</h3><p class="muted">Guardians can view children, attendance, fees, homework, announcements and report cards.</p><button class="primary" data-open-portal="/parent">Open Parent Portal</button></div><div class="panel"><h3>Student Portal</h3><p class="muted">Students can view homework, results, timetable and school announcements.</p><button class="primary" data-open-portal="/student">Open Student Portal</button></div><div class="panel"><h3>Public Admissions</h3><p class="muted">Prospective families can apply online and check application status.</p><button class="primary" data-open-portal="/admissions">Open Admissions</button></div></div><div class="notice" style="margin-top:12px">Parent and Student portal PINs are generated from the relevant student record. Production deployment will replace development preview access for staff with the Core OS sign-in flow.</div>';
+   var rr=await Promise.all([raw('/api/roles/capabilities'),raw('/api/staff/module-memberships')]);
+   var roleData=rr[0],portalMemberships=rr[1],roles=(roleData.roles||[]).filter(function(r){return r.is_active});
+   function portalPath(r){return r.portal_mode==='teacher'?'/teacher':'/'}
+   function roleCount(key){return portalMemberships.filter(function(m){return m.role===key&&m.status==='active'}).length}
+   E('content').innerHTML='<div class="section"><div><h1>Portals & Interfaces</h1><p class="muted">Every active School role is shown here and linked to the workspace configured for that role.</p></div></div>'+
+   '<div class="grid">'+roles.map(function(r){return'<div class="panel"><div class="section compact"><div><span class="badge">'+esc(r.portal_mode==='teacher'?'Teacher workspace':'Administration workspace')+'</span><h3 style="margin-top:8px">'+esc(r.name)+'</h3></div><b>'+esc(roleCount(r.key))+'</b></div><p class="muted">'+esc(r.description||'No role description')+'</p><p class="muted">'+(r.can_teach?'Teaching assignments enabled':'Non-teaching role')+'</p><button class="primary" data-open-portal="'+esc(portalPath(r))+'">Open '+esc(r.name)+' workspace</button></div>'}).join('')+
+   '<div class="panel"><h3>Parent Portal</h3><p class="muted">Guardians can view children, attendance, fees, homework, announcements and approved report cards.</p><button class="primary" data-open-portal="/parent">Open Parent Portal</button></div>'+
+   '<div class="panel"><h3>Student Portal</h3><p class="muted">Students can view homework, results, timetable and school announcements.</p><button class="primary" data-open-portal="/student">Open Student Portal</button></div>'+
+   '<div class="panel"><h3>Public Admissions</h3><p class="muted">Prospective families can apply online and track their application using the admission reference.</p><button class="primary" data-open-portal="/admissions">Open Admissions</button></div></div>'+
+   '<div class="notice" style="margin-top:12px">Creating or editing a School role automatically changes what appears here. The role workspace is controlled by its Portal Mode under Access Management → Roles & Privileges.</div>';
    E('content').onclick=function(e){var p=e.target.dataset.openPortal;if(p)window.open(p,'_blank')}
  }
  else if(p==='systemcheck'){
