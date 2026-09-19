@@ -37,13 +37,28 @@ const CORE_CONTEXT_CACHE_MS=15_000;
 function authCacheKey(auth:string){return createHash('sha256').update(auth).digest('hex')}
 
 function bearerToken(auth:string){return auth.replace(/^Bearer\s+/i,'').trim()}
+function cookieValue(cookieHeader:string|undefined,name:string){
+  if(!cookieHeader)return'';
+  for(const part of cookieHeader.split(';')){
+    const p=part.trim(),eq=p.indexOf('=');
+    if(eq>0&&p.slice(0,eq)===name)return decodeURIComponent(p.slice(eq+1));
+  }
+  return'';
+}
+function requestSchoolToken(request:FastifyRequest){
+  const auth=request.headers.authorization;
+  if(auth){
+    const token=bearerToken(auth);
+    if(token.startsWith('rxs_'))return token;
+  }
+  const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
+  return cookieToken.startsWith('rxs_')?cookieToken:'';
+}
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
 async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
-  const auth=request.headers.authorization;
-  if(!auth)return null;
-  const token=bearerToken(auth);
-  if(!token.startsWith('rxs_'))return null;
+  const token=requestSchoolToken(request);
+  if(!token)return null;
   const row=await maybeOne<{core_context:CoreContext}>(
     db,
     `UPDATE school_sessions
