@@ -282,6 +282,22 @@ async function postFinanceJournal(client:any,input:{
   return entry;
 }
 
+async function reverseFinanceJournal(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string){
+  const original=await one<any>(client,'SELECT * FROM finance_journal_entries WHERE id=$1 AND organisation_id=$2',[originalId,organisationId]);
+  if(original.reversal_entry_id)return one<any>(client,'SELECT * FROM finance_journal_entries WHERE id=$1',[original.reversal_entry_id]);
+  const lines=(await client.query('SELECT * FROM finance_journal_lines WHERE journal_entry_id=$1 ORDER BY id',[originalId])).rows;
+  if(!lines.length)throw fail(409,'The original journal has no lines to reverse');
+  const reversal=await postFinanceJournal(client,{
+    organisationId,entryDate:new Date().toISOString().slice(0,10),
+    description:'REVERSAL: '+original.description+' • '+reason,
+    sourceType,sourceId,reference:original.reference??null,actorOsUserId,
+    lines:lines.map((x:any)=>({accountId:x.account_id,debit:Number(x.credit),credit:Number(x.debit),description:'Reversal of '+(x.description||original.entry_no)}))
+  });
+  await client.query('UPDATE finance_journal_entries SET reversed_at=now(),reversed_by_os_user_id=$1,reversal_entry_id=$2 WHERE id=$3',
+    [actorOsUserId,reversal.id,originalId]);
+  return reversal;
+}
+
 async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserId?:string|null){
   const p=await one<any>(client,`SELECT p.*,s.first_name,s.last_name,s.admission_no,f.name fee_name
     FROM payments p JOIN students s ON s.id=p.student_id
@@ -2685,8 +2701,14 @@ app.get('/api/payments',async request=>{
 });
 app.post('/api/payments/:id/void',async request=>{
   const a=await authorize(request,db,config,'fees.void');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({reason:z.string().min(2).max(500)}).parse(request.body);
-  const row=await one<any>(db,'UPDATE payments SET voided_at=now(),voided_by_os_user_id=$1,void_reason=$2 WHERE id=$3 AND organisation_id=$4 AND voided_at IS NULL RETURNING *',[a.core.id,b.reason,id,a.core.organisation_id]);
-  if(row.student_fee_id){const calc=await one<any>(db,`SELECT sf.id,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid FROM student_fees sf LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.id=$1 GROUP BY sf.id`,[row.student_fee_id]);const status=Number(calc.paid)>=Number(calc.due)?'paid':Number(calc.paid)>0?'part_paid':'unpaid';await db.query('UPDATE student_fees SET status=$1 WHERE id=$2',[status,row.student_fee_id])}
+  const row=await tx(db,async client=>{
+    const current=await one<any>(client,'SELECT * FROM payments WHERE id=$1 AND organisation_id=$2 AND voided_at IS NULL FOR UPDATE',[id,a.core.organisation_id]);
+    const updated=await one<any>(client,'UPDATE payments SET voided_at=now(),voided_by_os_user_id=$1,void_reason=$2 WHERE id=$3 RETURNING *',[a.core.id,b.reason,id]);
+    if(updated.student_fee_id)await updateStudentFeeStatus(client,updated.student_fee_id);
+    const journal=await maybeOne<any>(client,`SELECT * FROM finance_journal_entries WHERE organisation_id=$1 AND source_type='student_payment' AND source_id=$2 AND status='posted' ORDER BY created_at LIMIT 1`,[a.core.organisation_id,id]);
+    if(journal)await reverseFinanceJournal(client,a.core.organisation_id,journal.id,a.core.id,b.reason,'student_payment_void',id);
+    return updated;
+  });
   await audit(a.core.organisation_id,a.core.id,'payment.voided','payment',id,{reason:b.reason});return row;
 });
 
@@ -5027,7 +5049,7 @@ app.patch('/api/system/errors/:id',async request=>{
 
 await registerFinanceLeaveRoutes(app,{
   db,config,authorize,maybeOne,one,tx,fail,audit,fetchCoreUsers,coreServiceHeaders,deliverCommunication,
-  postFinanceJournal,postStudentPaymentLedger,
+  postFinanceJournal,postStudentPaymentLedger,reverseFinanceJournal,
   clearCoreUsersCache:(organisationId:string)=>coreUsersCache.delete(organisationId)
 });
 
