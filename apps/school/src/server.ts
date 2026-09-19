@@ -155,6 +155,20 @@ async function updateStudentFeeStatus(client:any,studentFeeId:string){
   return{paid,due,status,balance:Math.max(0,due-paid)};
 }
 
+async function assignMandatoryFees(client:any,organisationId:string,studentId:string,academicYearId:string,classroomId:string){
+  const classroom=await one<any>(client,'SELECT id,grade_level_id FROM classrooms WHERE id=$1 AND organisation_id=$2',[classroomId,organisationId]);
+  const rows=(await client.query(`SELECT id,amount FROM fee_items
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND mandatory=true
+      AND (grade_level_id IS NULL OR grade_level_id=$3)`,
+    [organisationId,academicYearId,classroom.grade_level_id])).rows;
+  for(const fee of rows){
+    await client.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due)
+      VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING`,
+      [organisationId,studentId,fee.id,fee.amount]);
+  }
+  return rows.length;
+}
+
 async function settleOnlinePayment(reference:string){
   const intent=await maybeOne<any>(db,'SELECT * FROM payment_intents WHERE reference=$1',[reference]);
   if(!intent)throw fail(404,'Payment reference not found');
@@ -721,7 +735,19 @@ app.post('/api/students/:id/guardians',async(request,reply)=>{
   const row=await tx(db,async c=>{const g=await one<any>(c,'INSERT INTO guardians(organisation_id,first_name,last_name,phone,email,address) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.firstName,b.lastName,b.phone,b.email??null,b.address??null]);if(b.isPrimary)await c.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[id]);await c.query('INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary) VALUES($1,$2,$3,$4)',[id,g.id,b.relationship,b.isPrimary]);return g});await audit(a.core.organisation_id,a.core.id,'guardian.linked','student',id,{guardianId:row.id});return reply.code(201).send(row);
 });
 app.post('/api/enrolments',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.edit');const b=z.object({studentId:z.string().uuid(),academicYearId:z.string().uuid(),classroomId:z.string().uuid()}).parse(request.body);const row=await one<any>(db,'INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id) VALUES($1,$2,$3,$4) ON CONFLICT(student_id,academic_year_id) DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status=\'active\',enrolled_at=now() RETURNING *',[a.core.organisation_id,b.studentId,b.academicYearId,b.classroomId]);await audit(a.core.organisation_id,a.core.id,'student.enrolled','enrolment',row.id);return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'students.edit');
+  const b=z.object({studentId:z.string().uuid(),academicYearId:z.string().uuid(),classroomId:z.string().uuid()}).parse(request.body);
+  const result=await tx(db,async client=>{
+    const row=await one<any>(client,`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id)
+      VALUES($1,$2,$3,$4)
+      ON CONFLICT(student_id,academic_year_id)
+      DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()
+      RETURNING *`,[a.core.organisation_id,b.studentId,b.academicYearId,b.classroomId]);
+    const feesAssigned=await assignMandatoryFees(client,a.core.organisation_id,b.studentId,b.academicYearId,b.classroomId);
+    return{row,feesAssigned};
+  });
+  await audit(a.core.organisation_id,a.core.id,'student.enrolled','enrolment',result.row.id,{feesAssigned:result.feesAssigned});
+  return reply.code(201).send({...result.row,feesAssigned:result.feesAssigned});
 });
 
 app.get('/api/attendance',async request=>{
@@ -1945,6 +1971,7 @@ app.post('/api/promotions/batch',async request=>{
           ON CONFLICT(student_id,academic_year_id)
           DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()`,
           [a.core.organisation_id,r.studentId,b.toAcademicYearId,r.toClassroomId]);
+        await assignMandatoryFees(client,a.core.organisation_id,r.studentId,b.toAcademicYearId,r.toClassroomId!);
         await client.query("UPDATE students SET status='active',updated_at=now() WHERE id=$1",[r.studentId]);
         if(r.outcome==='promoted')promoted++;else repeated++;
       }
@@ -2349,11 +2376,12 @@ app.post('/api/admissions/:id/enrol',async(request,reply)=>{
     const classroom=await one<any>(client,'SELECT id,academic_year_id FROM classrooms WHERE id=$1 AND organisation_id=$2 AND is_active=true',[b.classroomId,a.core.organisation_id]);
     await client.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status)
       VALUES($1,$2,$3,$4,'active')`,[a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id]);
+    const feesAssigned=await assignMandatoryFees(client,a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id);
     await client.query(`UPDATE admission_applications SET status='enrolled',student_id=$1,reviewed_by_os_user_id=$2,reviewed_at=now(),updated_at=now()
       WHERE id=$3`,[student.id,a.core.id,id]);
     await client.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
       VALUES($1,$2,'approved','enrolled','Applicant enrolled and student record created',$3)`,[a.core.organisation_id,id,a.core.id]);
-    return{student,guardian,classroom};
+    return{student,guardian,classroom,feesAssigned};
   });
   await audit(a.core.organisation_id,a.core.id,'admission.enrolled','admission_application',id,{studentId:result.student.id,classroomId:b.classroomId});
   await notifyContact({
