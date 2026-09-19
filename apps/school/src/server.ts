@@ -3013,6 +3013,77 @@ app.get('/api/teacher/dashboard',async request=>{
   };
 });
 
+
+app.get('/api/test-access/status',async()=>{
+  return{enabled:config.ENABLE_TEST_PORTAL_ACCESS};
+});
+app.get('/api/test-access/students',async()=>{
+  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  return (await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,c.name classroom_name,g.name grade_name
+    FROM students s
+    LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active'
+    LEFT JOIN classrooms c ON c.id=e.classroom_id
+    LEFT JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE s.organisation_id=$1 AND s.status='active'
+    ORDER BY c.name NULLS LAST,s.last_name,s.first_name`,[school.organisation_id])).rows;
+});
+app.post('/api/test-access/student-login',async request=>{
+  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  const b=z.object({studentId:z.string().uuid()}).parse(request.body);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND status=\'active\'',[b.studentId]);
+  const token=randomBytes(48).toString('base64url');
+  await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at)
+    VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
+  return{token,expiresIn:28800,testAccess:true};
+});
+app.get('/api/test-access/teachers',async()=>{
+  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  const memberships=(await db.query(`SELECT os_user_id,role FROM school_memberships
+    WHERE organisation_id=$1 AND status='active' AND role IN('teacher','headteacher','school_admin')
+    ORDER BY role,created_at`,[school.organisation_id])).rows;
+  const users=await fetchCoreUsers(school.organisation_id);
+  const rows=memberships.map((m:any)=>{
+    const u=users.find((x:any)=>x.id===m.os_user_id)||{};
+    return{
+      id:m.os_user_id,role:m.role,email:u.email||'',first_name:u.first_name||'Teacher',
+      last_name:u.last_name||'',job_title:u.job_title||'Teacher'
+    };
+  });
+  return rows;
+});
+app.post('/api/test-access/teacher-login',async(request,reply)=>{
+  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
+  const b=z.object({osUserId:z.string().uuid()}).parse(request.body);
+  const school=await one<any>(db,'SELECT organisation_id,school_name FROM school_profiles ORDER BY created_at LIMIT 1');
+  const membership=await one<any>(db,`SELECT * FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+    [school.organisation_id,b.osUserId]);
+  const users=await fetchCoreUsers(school.organisation_id);
+  const u=users.find((x:any)=>x.id===b.osUserId)||{};
+  const coreContext={
+    id:b.osUserId,
+    email:u.email||('test-'+b.osUserId+'@revolt-x.local'),
+    first_name:u.first_name||'Test',
+    last_name:u.last_name||'Teacher',
+    status:'active',
+    membership_id:'test-'+b.osUserId,
+    membership_status:'active',
+    organisation_id:school.organisation_id,
+    organisation_name:school.school_name,
+    organisation_slug:'revolt-x-school-test',
+    sessionId:'test-'+randomBytes(8).toString('hex'),
+    permissions:[],
+    preview:true
+  };
+  const session=await createSchoolStaffSession(coreContext,'preview');
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  await audit(school.organisation_id,b.osUserId,'teacher.test_authenticated','school_session',null,{role:membership.role});
+  return reply.send({accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,testAccess:true});
+});
+
 app.post('/api/students/:id/portal-reset',async request=>{
   const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');
