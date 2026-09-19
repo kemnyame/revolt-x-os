@@ -1,0 +1,33 @@
+name: Export Revolt-X School Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/export-school-build.yml"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+
+      - name: Create source ZIP
+        run: |
+          mkdir -p export
+          zip -r export/revolt-x-school-current-build.zip apps/school             -x "apps/school/node_modules/*"                "apps/school/dist/*"                "apps/school/.env"
+
+      - name: Add build metadata
+        run: |
+          printf "Repository: kemnyame/revolt-x-os\nBranch: main\nCommit: %s\nGenerated: %s\n" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > export/BUILD_INFO.txt
+
+      - name: Upload current build
+        uses: actions/upload-artifact@v4
+        with:
+          name: revolt-x-school-current-build
+          path: |
+            export/revolt-x-school-current-build.zip
+            export/BUILD_INFO.txt
+          if-no-files-found: error
+          retention-days: 7
