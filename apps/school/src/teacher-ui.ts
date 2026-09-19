@@ -71,7 +71,7 @@ async function openWorkspace(){
 }
 async function boot(){
   var setup=new URLSearchParams(location.search).get('setup');
-  if(setup){showPasswordSetup(setup);return}
+  if(setup){history.replaceState({},document.title,'/teacher');showPasswordSetup(setup);return}
   token=sessionStorage.getItem('rx_teacher_token')||'';
   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_teacher_token');token=''}
   if(!token){showTeacherLogin();return}
