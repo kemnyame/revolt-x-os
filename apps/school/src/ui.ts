@@ -22,6 +22,7 @@ input,select,textarea{width:100%;padding:10px;background:#07141d;border:1px soli
 .timetable-week{display:grid;grid-template-columns:repeat(5,minmax(180px,1fr));gap:10px;margin-top:12px;overflow:auto}.timetable-day{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;min-width:180px}.timetable-day h3{margin:2px 0 10px}.timetable-card{background:#091821;border:1px solid var(--line);border-radius:9px;padding:9px;margin-bottom:8px}.timetable-card .time{font-size:11px;color:var(--green);margin-bottom:4px}.timetable-card b,.timetable-card span,.timetable-card small{display:block}.timetable-card span,.timetable-card small{color:var(--muted);margin-top:2px}.assessment-scheme{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px}.submission-card{display:grid;grid-template-columns:minmax(180px,1.3fr) minmax(130px,.8fr) minmax(100px,.5fr) minmax(180px,1fr);gap:10px;align-items:end;padding:12px;border:1px solid var(--line);border-radius:10px;background:#091821;margin:8px 0}.submission-card label{font-size:10px;color:var(--muted)}@media(max-width:900px){.submission-card{grid-template-columns:1fr 1fr}}@media(max-width:540px){.submission-card{grid-template-columns:1fr}}.assessment-card{display:flex;justify-content:space-between;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px}.assessment-card h3{margin:7px 0 2px}.assessment-card p{margin:0;font-size:11px}.scheme-total{display:inline-block;border-radius:14px;padding:7px 11px;font-weight:800}.scheme-total.ok{background:#15342b;color:#73e6c6}.scheme-total.warn{background:#342b18;color:#ffdc97}
 .staff-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:18px 0 10px;border-bottom:1px solid var(--line);padding-bottom:8px}.staff-tab{border:1px solid transparent;background:transparent;color:#9eb3be;padding:8px 11px;border-radius:8px}.staff-tab.active,.staff-tab:hover{background:#142a36;color:white;border-color:var(--line)}.privilege-head{display:grid;grid-template-columns:260px 1fr;gap:14px;align-items:end;margin-bottom:16px}.privilege-head select{margin-bottom:0}.privilege-group{border-top:1px solid var(--line);padding:14px 0}.privilege-group h4{margin:0 0 9px}.privilege-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.privilege-item{display:flex;gap:9px;align-items:flex-start;padding:10px;background:#091821;border:1px solid var(--line);border-radius:9px}.privilege-item input{width:auto;margin:3px 0 0}.privilege-item b{display:block;color:white}.privilege-item small{display:block;color:var(--muted);margin-top:2px;text-transform:capitalize}
 .report-controls{margin-bottom:12px}.report-card{background:#fff;color:#172027;border-radius:18px;padding:0;max-width:1020px;margin:18px auto;box-shadow:0 18px 55px #0005;overflow:hidden;border:1px solid #dce8e9}.report-school-head{display:grid;grid-template-columns:74px 1fr auto;gap:16px;align-items:center;background:linear-gradient(120deg,#0e725d 0%,#168b78 42%,#276fce 100%);color:#fff;padding:22px 26px;border:0}.report-logo{width:64px;height:64px;border-radius:18px;background:#ffffff22;border:1px solid #ffffff55;color:#fff;display:grid;place-items:center;font-weight:900;font-size:22px;box-shadow:inset 0 0 18px #ffffff16}.report-school-head h1{margin:0;font-size:25px;letter-spacing:-.02em}.report-school-head p{margin:4px 0;color:#e5fff7}.report-school-head small{color:#d9eeff}.report-term{text-align:right;display:grid;gap:3px}.report-term b{font-size:16px}.report-term span{color:#ecf8ff}.report-term .badge{background:#fff;color:#125f55}.report-student-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:18px 26px 10px}.report-student-grid div{border:1px solid #d8e8e8;border-radius:11px;padding:10px 12px;background:linear-gradient(135deg,#f8fcfc,#eef8fb)}.report-student-grid div:nth-child(3n+1){border-top:3px solid #22a889}.report-student-grid div:nth-child(3n+2){border-top:3px solid #3e8ee6}.report-student-grid div:nth-child(3n){border-top:3px solid #efb94d}.report-student-grid span{display:block;color:#617780;font-size:10px;text-transform:uppercase;letter-spacing:.05em}.report-student-grid b{display:block;margin-top:3px}.report-summary{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:8px 26px 0;padding:0;background:transparent}.report-summary div{text-align:center;padding:12px 8px;border-radius:12px;background:#eef8f5;border:1px solid #d2ebe3}.report-summary div:nth-child(2){background:#edf5ff;border-color:#d5e5fb}.report-summary div:nth-child(3){background:#fff8e8;border-color:#f3e0b4}.report-summary div:nth-child(4){background:#f1f8ff;border-color:#d9e9f8}.report-summary div:nth-child(5){background:#fff1f3;border-color:#f0d8dc}.report-summary span{display:block;font-size:10px;color:#657780;text-transform:uppercase}.report-summary b{font-size:20px;color:#173b3b}.report-section{margin:20px 26px 0}.report-section h3{font-size:14px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px;color:#165f58;border-left:4px solid #28aa8b;padding-left:8px}.report-table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:11px;border:1px solid #d9e5e6}.report-table th,.report-table td{padding:10px;border-bottom:1px solid #e0e9ea;text-align:left}.report-table td+td,.report-table th+th{border-left:1px solid #e0e9ea}.report-table tr:last-child td{border-bottom:0}.report-table th{background:linear-gradient(90deg,#e1f5ef,#e6f0fb);font-size:10px;text-transform:uppercase;color:#315d60}.report-table tbody tr:nth-child(even){background:#f9fcfc}.report-note{font-size:10px;color:#697a82;margin:0 0 8px}.report-component{margin:2px 0;font-size:10px}.report-component b{color:#17705f}.report-component small{color:#73828a}.report-attendance{display:flex;gap:8px;flex-wrap:wrap}.report-attendance span{border:1px solid #d5e5e4;border-radius:10px;padding:9px 13px;min-width:120px;background:#f5fbf9}.report-attendance b{font-size:16px;margin-right:4px;color:#14715f}.report-comments{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:20px 26px 0}.report-comments>div{border:1px solid #d8e6e7;border-radius:12px;padding:14px;background:#f7fbfc;border-left:5px solid #31ad8d}.report-comments>div+div{border-left-color:#428fe0;background:#f5f9ff}.report-comments h4{margin:0 0 4px;font-size:11px;text-transform:uppercase;color:#56727a}.report-comments p{min-height:20px;margin:0 0 12px}.report-signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin:38px 26px 0}.report-signatures div{border-top:1px solid #86969e;padding-top:7px}.report-signatures span{display:block;font-size:10px;color:#6d7b83;text-transform:uppercase}.report-signatures b{font-size:12px}.report-footer{text-align:center;color:#7b8990;font-size:9px;border-top:1px solid #e1e6e8;margin-top:26px;padding:11px 26px 14px;background:#f8fbfb}.report-actions{justify-content:center;margin:12px 0 22px}
+.redesigned-manager{grid-template-columns:280px minmax(0,1fr);align-items:start}.class-setup-panel{min-width:0}.dual-subject-builder{display:grid;grid-template-columns:minmax(230px,.8fr)56px minmax(420px,1.6fr);gap:12px;align-items:stretch}.subject-bank,.subject-selected-bank{border:1px solid var(--line);border-radius:12px;padding:12px;background:#081720;min-width:0}.subject-bank-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.subject-bank-head h4{margin:0}.subject-bank-head small{display:block;color:var(--muted)}.subject-drop-zone{min-height:280px;max-height:620px;overflow:auto;border:1px dashed #31505e;border-radius:10px;padding:8px;background:#07131b;transition:.15s}.subject-drop-zone.drag-over{border-color:var(--green);background:#0c2724;box-shadow:inset 0 0 0 2px #45ddb233}.subject-bank-card{display:flex;align-items:center;gap:9px;padding:10px;border:1px solid var(--line);border-radius:9px;background:#0c1c27;margin-bottom:7px;cursor:grab}.subject-bank-card input,.selected-subject-title input,.coverage-class-card input{width:auto;margin:0}.subject-bank-card span:nth-child(2){flex:1}.subject-bank-card b,.subject-bank-card small{display:block}.subject-bank-card small{color:var(--muted)}.drag-handle{color:#69828e;letter-spacing:-2px}.subject-transfer{display:flex;flex-direction:column;justify-content:center;align-items:center;color:var(--muted);gap:4px}.subject-transfer span{font-size:26px;color:var(--green)}.subject-transfer small{text-align:center}.selected-subject-row{display:grid;grid-template-columns:minmax(150px,.8fr) minmax(230px,1.3fr) 120px auto;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0c1c27;margin-bottom:8px}.selected-subject-title{display:flex;align-items:center;gap:8px;min-width:0}.selected-subject-title div{min-width:0}.selected-subject-title b,.selected-subject-title small{display:block}.selected-subject-title small{color:var(--muted)}.selected-subject-assignment label,.selected-subject-load label{font-size:10px;margin:0 0 3px}.selected-subject-assignment select,.selected-subject-load input{margin:0 0 6px;padding:9px}.selected-subject-load{display:grid;grid-template-columns:1fr}.assignment-chip button{border:0;background:transparent;color:#fff;margin:0;padding:0 0 0 6px;font-size:15px;cursor:pointer}.inherited-chip{opacity:.8;border-style:dashed}.academic-savebar{position:sticky;bottom:10px;z-index:8;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:13px 14px;border:1px solid #2c6d5c;border-radius:12px;background:#0a211dcc;backdrop-filter:blur(12px);box-shadow:0 12px 35px #0007}.academic-savebar b,.academic-savebar span{display:block}.academic-savebar .unsaved{box-shadow:0 0 0 3px #45ddb222}.teacher-coverage .three{align-items:end}.coverage-class-grid{display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:8px;max-height:420px;overflow:auto}.coverage-class-card{display:flex;gap:9px;padding:11px;border:1px solid var(--line);border-radius:9px;background:#091821}.coverage-class-card b,.coverage-class-card small{display:block}.coverage-class-card small{color:var(--muted)}
 @media(max-width:1050px){.academic-summary{grid-template-columns:repeat(2,1fr)}.subject-assignment-row{grid-template-columns:1fr 1fr}.grid{grid-template-columns:repeat(2,1fr)}.three{grid-template-columns:1fr 1fr}.academic-manager{grid-template-columns:240px minmax(0,1fr)}.curriculum-row{grid-template-columns:1fr}.report-summary{grid-template-columns:repeat(3,1fr)}.assessment-scheme{grid-template-columns:repeat(3,1fr)}.privilege-grid{grid-template-columns:1fr}}
 @media(max-width:820px){.academic-controlbar{grid-template-columns:1fr}.subject-assignment-row{grid-template-columns:1fr}.global-search{width:100%;order:3}.top .right{width:100%}.shell{grid-template-columns:74px 1fr}.side{width:74px}.brand{font-size:0}.brand span{font-size:14px}.schoolname,.nav small{display:none}.nav button{font-size:0;text-align:center}.nav button:before{content:attr(data-i);font-size:18px}.main{padding:16px 12px}.two,.three{grid-template-columns:1fr}.academic-manager{grid-template-columns:1fr}.class-browser{min-height:auto}.teacher-box{grid-template-columns:1fr}.report-student-grid{grid-template-columns:1fr 1fr}.report-comments{grid-template-columns:1fr}.report-school-head{grid-template-columns:58px 1fr}.report-term{grid-column:1/-1;text-align:left}.student360-columns{grid-template-columns:1fr}}
 @media(max-width:540px){.academic-summary,.subject-picker{grid-template-columns:1fr}.assessment-scheme{grid-template-columns:1fr}.privilege-head{grid-template-columns:1fr}.grid{grid-template-columns:1fr}.row{flex-direction:column}.top{align-items:flex-start;flex-direction:column}.attendance-row{grid-template-columns:1fr 1fr 1fr}.attendance-row .student{grid-column:1/-1}.info-grid{grid-template-columns:1fr}.report-student-grid,.report-summary,.report-signatures{grid-template-columns:1fr}.report-card{padding:16px}.student360-head{align-items:flex-start}.teacher-assign{flex-direction:column;align-items:stretch}}
@@ -194,179 +195,199 @@ async function page(p){
    if(!ys.some(function(y){return y.id===selectedYear}))selectedYear=activeYear?activeYear.id:'';
    var yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});
    var activeTerm=yearTerms.find(function(t){return t.status==='active'});
-   var selectedSession=sessionStorage.getItem('rx_academic_session');
-   if(selectedSession===null)selectedSession=activeTerm?activeTerm.id:'';
+   var storedSession=sessionStorage.getItem('rx_academic_session');
+   var selectedSession=storedSession===null?(activeTerm?activeTerm.id:''):storedSession;
    if(selectedSession&&!yearTerms.some(function(t){return t.id===selectedSession}))selectedSession=activeTerm?activeTerm.id:'';
-   var selectedClass=sessionStorage.getItem('rx_academic_class')||null;
-   var managerTab=sessionStorage.getItem('rx_academic_tab')||'class';if(managerTab==='assign')managerTab='class';
-   function userName(id){var u=users.find(function(x){return x.id===id});return u?u.first_name+' '+u.last_name:'Unknown staff member'}
-   function roleName(id){var u=users.find(function(x){return x.id===id});return u?(u.job_title||'Teacher'):'Teacher'}
-   function yearClasses(){return cls.filter(function(x){return x.academic_year_id===selectedYear})}
+   var selectedClass=sessionStorage.getItem('rx_academic_class')||'';
+   var managerTab=sessionStorage.getItem('rx_academic_tab')||'class';
+   if(['class','teachers','subjects'].indexOf(managerTab)<0)managerTab='class';
+   var draft=null,dirty=false;
+
+   function userName(id){var u=users.find(function(x){return x.id===id});return u?(u.first_name+' '+u.last_name):'Unknown teacher'}
+   function yearClasses(){return cls.filter(function(x){return x.academic_year_id===selectedYear&&x.is_active})}
    function selectedSessionName(){if(!selectedSession)return'Whole academic year';var t=terms.find(function(x){return x.id===selectedSession});return t?t.name:'Selected term'}
-   function classAssignments(classId,subjectId){
-     return assignments.filter(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId})
+   function exactAssignment(classId,subjectId){
+     return assignments.find(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId&&((selectedSession&&a.term_id===selectedSession)||(!selectedSession&&!a.term_id))})||null
    }
-   function scopedAssignment(classId,subjectId){
-     var rows=classAssignments(classId,subjectId);
-     return selectedSession?(rows.find(function(a){return a.term_id===selectedSession})||rows.find(function(a){return !a.term_id})||null):(rows.find(function(a){return !a.term_id})||null)
+   function inheritedAssignment(classId,subjectId){
+     if(!selectedSession)return null;
+     return assignments.find(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===classId&&a.subject_id===subjectId&&!a.term_id})||null
+   }
+   function effectiveTeacher(classId,subjectId){
+     var exact=exactAssignment(classId,subjectId),inherited=inheritedAssignment(classId,subjectId);
+     return exact?exact.teacher_os_user_id:(inherited?inherited.teacher_os_user_id:null)
+   }
+   function teacherOptions(selected){
+     var html='<option value="">No session-specific teacher</option>';
+     if(selected&&!teachers.some(function(t){return t.id===selected}))html+='<option value="'+esc(selected)+'" selected>'+esc(userName(selected))+'</option>';
+     return html+teachers.map(function(t){return'<option value="'+t.id+'"'+(t.id===selected?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')
+   }
+   function markDirty(){
+     dirty=true;var b=E('saveClassSetup');if(b){b.textContent='Save Class Setup • Unsaved changes';b.classList.add('unsaved')}
    }
    function classCard(x){
-     var ct=x.class_teacher_os_user_id?userName(x.class_teacher_os_user_id):'● Pending Class Teacher';
-     return '<button class="class-card'+(selectedClass===x.id?' selected':'')+'" data-pick-class="'+x.id+'"><span><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name)+' • '+esc(x.stream||'No stream')+'</small><small>'+esc(ct)+'</small></span><span class="class-count">'+esc(x.student_count||0)+' students<br>'+esc(x.subject_count||0)+' subjects</span></button>'
+     var ct=effectiveTeacher(x.id,null)||(!selectedSession?x.class_teacher_os_user_id:null);
+     return '<button class="class-card'+(selectedClass===x.id?' selected':'')+'" data-pick-class="'+x.id+'"><span><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name)+' • '+esc(x.stream||'No stream')+'</small><small>'+(ct?'Class Teacher: '+esc(userName(ct)):'● Class Teacher pending')+'</small></span><span class="class-count">'+esc(x.student_count||0)+' students<br>'+esc(x.subject_count||0)+' subjects</span></button>'
    }
    function renderClassList(){
-     var list=yearClasses(),q=(E('academicClassSearch')?E('academicClassSearch').value:'').trim().toLowerCase();
-     if(q)list=list.filter(function(x){return (x.name+' '+x.grade_name+' '+(x.stream||'')+' '+userName(x.class_teacher_os_user_id)).toLowerCase().includes(q)});
+     var list=yearClasses(),input=E('academicClassSearch'),q=input?input.value.trim().toLowerCase():'';
+     if(q)list=list.filter(function(x){return(x.name+' '+x.grade_name+' '+(x.stream||'')+' '+userName(effectiveTeacher(x.id,null))).toLowerCase().includes(q)});
      var box=E('classCards');if(box)box.innerHTML=list.length?list.map(classCard).join(''):'<div class="empty">No matching classes.</div>'
    }
-   function assignmentBadges(rows){
-     if(!rows.length)return'<span class="badge warn">● Pending teacher assignment</span>';
-     return rows.map(function(a){
-       var scope=a.term_id?(terms.find(function(t){return t.id===a.term_id})||{}).name||'Term':'Whole year';
-       return '<span class="teacher-chip"><b>'+esc(userName(a.teacher_os_user_id))+'</b> · '+esc(scope)+' <button data-delete-ta="'+a.id+'" title="Remove teacher assignment">×</button></span>'
-     }).join('')
-   }
-   function renderOverview(){
-     var list=yearClasses(),activeClasses=list.filter(function(x){return x.is_active}),subjectLinks=classSubs.filter(function(x){return x.academic_year_id===selectedYear&&x.is_active});
-     var teaching=assignments.filter(function(a){return a.academic_year_id===selectedYear&&a.is_active&&(selectedSession?a.term_id===selectedSession:!a.term_id)});
-     return '<div class="academic-summary"><div class="panel stat"><span class="muted">Classes</span><b>'+activeClasses.length+'</b><small>'+esc((ys.find(function(y){return y.id===selectedYear})||{}).name||'')+'</small></div><div class="panel stat"><span class="muted">Class subjects</span><b>'+subjectLinks.length+'</b><small>Curriculum links</small></div><div class="panel stat"><span class="muted">Teacher assignments</span><b>'+teaching.length+'</b><small>'+esc(selectedSessionName())+'</small></div><div class="panel stat"><span class="muted">Teachers available</span><b>'+teachers.length+'</b><small>Active School staff</small></div></div>'
-   }
-   function renderDetail(id){
-     var box=E('classDetail');if(!box)return;
-     var x=cls.find(function(r){return r.id===id&&r.academic_year_id===selectedYear});
-     if(!x){box.innerHTML='<div class="empty">Choose a class from the left to manage its subjects and teachers.</div>';return}
-     selectedClass=x.id;sessionStorage.setItem('rx_academic_class',x.id);
-     var links=classSubs.filter(function(cs){return cs.classroom_id===x.id&&cs.academic_year_id===selectedYear&&cs.is_active});
-     var stage=gs.find(function(g){return g.id===x.grade_level_id});
-     var classTeacherAssignment=scopedAssignment(x.id,null),classTeacher=classTeacherAssignment?classTeacherAssignment.teacher_os_user_id:(selectedSession?'':x.class_teacher_os_user_id||'');
-     var classTeacherAssignments=classAssignments(x.id,null);
-     box.innerHTML='<div class="class-head"><div><span class="badge">'+esc(x.grade_name)+'</span><h2>'+esc(x.name)+'</h2><p class="muted">'+esc(x.student_count||0)+' students • '+esc(links.length)+' subjects • Capacity '+esc(x.capacity||'—')+'</p></div><button class="mini" data-edit-class="'+x.id+'">Edit class</button></div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>1. Class Teacher</h3><p class="muted">Assign the Class Teacher for <b>'+esc(selectedSessionName())+'</b>. A term-specific assignment overrides the whole-year Class Teacher for that session.</p></div></div><div class="teacher-chip-area" style="margin-bottom:10px">'+assignmentBadges(classTeacherAssignments)+'</div><div class="teacher-assign"><select id="classTeacherSelect"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(classTeacher===t.id?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')+'</select><button class="primary" data-save-class-teacher="'+x.id+'">Assign for '+esc(selectedSessionName())+'</button></div></div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>2. Subjects in this Class</h3><p class="muted">Add the subjects studied by this class, set their weekly scheduling load, then assign the responsible teacher for <b>'+esc(selectedSessionName())+'</b>.</p></div><button class="primary" data-add-class-subject="'+x.id+'">Add subjects</button></div>'+
-       (links.length?'<div class="subject-assignment-list">'+links.map(function(link){
-         var allAssignments=classAssignments(x.id,link.subject_id),current=scopedAssignment(x.id,link.subject_id);
-         return '<div class="subject-assignment-row"><div class="subject-main"><span class="badge info">'+esc(link.subject_code)+'</span><div><b>'+esc(link.subject_name)+'</b><small>'+esc(link.stage)+' • '+esc(link.weekly_periods||3)+' periods/week</small></div></div><div><label>Existing assignments</label><div class="teacher-chip-area">'+assignmentBadges(allAssignments)+'</div></div><div><label>Assign / replace for '+esc(selectedSessionName())+'</label><div class="inline-assign"><select data-subject-teacher-select="'+link.id+'"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(current&&current.teacher_os_user_id===t.id?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+'</option>'}).join('')+'</select><button class="mini primary-lite" data-save-subject-teacher="'+link.id+'" data-subject-id="'+link.subject_id+'" data-class-id="'+x.id+'">Save teacher</button></div></div><div class="subject-row-actions"><button class="mini" data-weekly-periods="'+link.id+'">Scheduling load</button><button class="mini danger" data-remove-class-subject="'+link.id+'">Remove subject</button></div></div>'
-       }).join('')+'</div>':'<div class="empty">No subjects have been added to this class. Use “Add subjects” to build the class curriculum.</div>')+'</div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>3. Ready for Teaching</h3><p class="muted">This check confirms whether the class can flow correctly into Teacher Portal, assessments, homework and timetable scheduling.</p></div></div><div class="academic-readiness"><span>'+badge(classTeacher?'Class teacher assigned':'Class teacher missing')+'</span><span>'+badge(links.length?links.length+' subjects added':'No subjects')+'</span><span>'+badge(links.filter(function(l){return classAssignments(x.id,l.subject_id).length>0}).length+'/'+links.length+' subjects have teachers')+'</span></div></div>'
-   }
-   function renderSubjectCatalogue(){
-     var box=E('managerPane');if(!box)return;
-     box.innerHTML='<div class="section compact"><div><h2>Subject Catalogue</h2><p class="muted">Create the subjects once, then add them to the appropriate classes.</p></div><button id="addSubjectCatalogue" class="primary">New subject</button></div><div class="toolbar"><input id="subjectCatalogueSearch" placeholder="Search subject or code"></div><div id="subjectCatalogueTable"></div>';
-     function draw(){var q=E('subjectCatalogueSearch').value.trim().toLowerCase(),rows=q?subs.filter(function(s){return (s.code+' '+s.name+' '+s.stage).toLowerCase().includes(q)}):subs;E('subjectCatalogueTable').innerHTML=table(rows,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}},{key:'id',label:'Used by classes',render:function(r){return esc(classSubs.filter(function(x){return x.subject_id===r.id&&x.is_active}).length)}}],function(r){return'<button class="mini" data-edit-subject="'+r.id+'">Edit</button><button class="mini danger" data-delete-subject="'+r.id+'">Delete</button>'})}
-     draw();E('subjectCatalogueSearch').oninput=draw;
-     E('addSubjectCatalogue').onclick=function(){form('Add subject to catalogue',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify(v)})})}
-   }
-   function renderQuickAssignment(){
-     var box=E('managerPane');if(!box)return;
-     var classesForYear=yearClasses(),initialClass=selectedClass&&classesForYear.some(function(x){return x.id===selectedClass})?selectedClass:(classesForYear[0]&&classesForYear[0].id)||'';
-     function classSubjectsFor(cid){return classSubs.filter(function(x){return x.classroom_id===cid&&x.academic_year_id===selectedYear&&x.is_active})}
-     function responsibilityOptions(cid){var rows=classSubjectsFor(cid);return '<option value="class_teacher">Class Teacher</option>'+rows.map(function(x){return'<option value="'+x.subject_id+'">'+esc(x.subject_name)+'</option>'}).join('')}
-     function existingText(cid,responsibility){
-       if(!cid)return'Choose a class.';
-       if(responsibility==='class_teacher'){
-         var cl=cls.find(function(x){return x.id===cid}),current=cl&&cl.class_teacher_os_user_id;
-         return current?'Current Class Teacher: '+userName(current):'No Class Teacher is currently assigned.';
-       }
-       var rows=assignments.filter(function(a){return a.is_active&&a.academic_year_id===selectedYear&&a.classroom_id===cid&&a.subject_id===responsibility&&(selectedSession?a.term_id===selectedSession:!a.term_id)});
-       return rows.length?'Current Subject Teacher: '+rows.map(function(a){return userName(a.teacher_os_user_id)}).join(', '):'No teacher is currently assigned to this subject for '+selectedSessionName()+'.';
-     }
-     function curriculum(cid){
-       var cl=cls.find(function(x){return x.id===cid}),links=classSubjectsFor(cid);
-       if(!cl)return'<div class="empty">Choose a class.</div>';
-       return '<div class="section compact"><div><h3>'+esc(cl.name)+' Curriculum</h3><p class="muted">Subjects, credit hours and timetable load for this class.</p></div><button id="quickAddSubjects" class="ghost">Add subjects to class</button></div>'+
-         (links.length?table(links,[{key:'subject_name',label:'Subject',render:function(r){return'<b>'+esc(r.subject_name)+'</b><br><span class="muted">'+esc(r.subject_code)+'</span>'}},{key:'credit_hours',label:'Credit hours/week'},{key:'weekly_periods',label:'Minimum periods/week'},{key:'subject_id',label:'Teacher',render:function(r){var a=scopedAssignment(cid,r.subject_id);return a?esc(userName(a.teacher_os_user_id)):'Not assigned'}}],function(r){return'<button class="mini" data-edit-load="'+r.id+'">Load</button>'}):'<div class="empty">No subjects have been added to this class yet.</div>');
-     }
-     box.innerHTML='<div class="assignment-wizard"><div class="panel"><div class="section compact"><div><h2>Teacher, Class & Subject Assignment</h2><p class="muted">Select a teacher, select the class, then choose Class Teacher or the exact subject. Existing assignments are checked before saving.</p></div></div>'+
-       '<label>Teacher</label><select id="quickTeacher"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')+'</select>'+
-       '<label>Class</label><select id="quickClass">'+classesForYear.map(function(x){return'<option value="'+x.id+'"'+(x.id===initialClass?' selected':'')+'>'+esc(x.name)+' • '+esc(x.grade_name)+'</option>'}).join('')+'</select>'+
-       '<label>Responsibility</label><select id="quickResponsibility">'+responsibilityOptions(initialClass)+'</select>'+
-       '<div id="existingAssignment" class="notice" style="margin:10px 0">'+esc(existingText(initialClass,'class_teacher'))+'</div>'+
-       '<label><input id="quickReplace" type="checkbox" style="width:auto;margin-right:8px"> Replace an existing assignment when necessary</label>'+
-       '<button id="saveQuickAssignment" class="primary" style="width:100%;margin-top:12px">Save assignment</button></div>'+
-       '<div id="quickCurriculum" class="panel">'+curriculum(initialClass)+'</div></div>';
-     function syncQuick(){
-       var cid=E('quickClass').value;selectedClass=cid;sessionStorage.setItem('rx_academic_class',cid);
-       E('quickResponsibility').innerHTML=responsibilityOptions(cid);
-       E('existingAssignment').textContent=existingText(cid,E('quickResponsibility').value);
-       E('quickCurriculum').innerHTML=curriculum(cid);wireCurriculum()
-     }
-     E('quickClass').onchange=syncQuick;E('quickResponsibility').onchange=function(){E('existingAssignment').textContent=existingText(E('quickClass').value,this.value)};
-     E('saveQuickAssignment').onclick=async function(){
-       var teacher=E('quickTeacher').value,cid=E('quickClass').value,res=E('quickResponsibility').value,replace=E('quickReplace').checked;
-       if(!teacher)return toast('Choose a teacher',true);if(!cid)return toast('Choose a class',true);
-       var subjectId=res==='class_teacher'?null:res,termId=res==='class_teacher'?null:(selectedSession||null);
-       try{
-         await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify({teacherOsUserId:teacher,academicYearId:selectedYear,termId:termId,classroomId:cid,subjectId:subjectId,replaceExisting:replace})});
-         await page('assignments');successDialog('Assignment saved','The teacher, class and subject assignment was saved successfully.')
-       }catch(err){if(err.status===409&&!replace)toast(err.message+' Tick “Replace existing assignment” only if you intend to reassign it.',true)}
+   function buildDraft(classId){
+     var x=cls.find(function(r){return r.id===classId}),links=classSubs.filter(function(cs){return cs.classroom_id===classId&&cs.academic_year_id===selectedYear&&cs.is_active});
+     draft={
+       classroomId:classId,
+       classTeacherOsUserId:(exactAssignment(classId,null)||{}).teacher_os_user_id||'',
+       subjects:links.map(function(link){var exact=exactAssignment(classId,link.subject_id);return{
+         linkId:link.id,subjectId:link.subject_id,weeklyPeriods:Number(link.weekly_periods||3),creditHours:Number(link.credit_hours||2),
+         teacherOsUserId:exact?exact.teacher_os_user_id:''
+       }})
      };
-     function addSubjects(){
-       var cid=E('quickClass').value,x=cls.find(function(r){return r.id===cid}),stage=gs.find(function(g){return g.id===x.grade_level_id}),links=classSubjectsFor(cid);
-       var opts=subs.filter(function(s){return s.is_active&&(s.stage==='both'||s.stage===(stage&&stage.stage))&&!links.some(function(l){return l.subject_id===s.id})});
-       if(!opts.length)return toast('All suitable subjects are already added to this class',true);
-       modal('<h2>Add subjects to '+esc(x.name)+'</h2><input id="quickSubjectSearch" placeholder="Search subjects"><div id="quickSubjectList" class="subject-picker"></div><button id="quickSaveSubjects" class="primary" style="width:100%;margin-top:12px">Add selected subjects</button>');
-       function draw(){var q=E('quickSubjectSearch').value.trim().toLowerCase(),rows=q?opts.filter(function(s){return(s.code+' '+s.name).toLowerCase().includes(q)}):opts;E('quickSubjectList').innerHTML=rows.map(function(s){return'<label class="subject-picker-item"><input type="checkbox" value="'+s.id+'" data-quick-subject><span><b>'+esc(s.name)+'</b><small>'+esc(s.code)+'</small></span></label>'}).join('')}draw();E('quickSubjectSearch').oninput=draw;
-       E('quickSaveSubjects').onclick=async function(){var ids=[];E('quickSubjectList').querySelectorAll('[data-quick-subject]:checked').forEach(function(i){ids.push(i.value)});if(!ids.length)return toast('Select at least one subject',true);await raw('/api/class-subjects/bulk',{method:'POST',body:JSON.stringify({academicYearId:selectedYear,classroomId:cid,subjectIds:ids})});close();await page('assignments');successDialog('Subjects added',ids.length+' subject'+(ids.length===1?' was':'s were')+' added to the class successfully.')}
-     }
-     function wireCurriculum(){var btn=E('quickAddSubjects');if(btn)btn.onclick=addSubjects;E('quickCurriculum').querySelectorAll('[data-edit-load]').forEach(function(b){b.onclick=function(){var link=classSubs.find(function(r){return r.id===b.dataset.editLoad});form('Scheduling load',[{key:'creditHours',label:'Credit hours per week',type:'number'},{key:'weeklyPeriods',label:'Minimum periods per week',type:'number'}],{creditHours:link.credit_hours||2,weeklyPeriods:link.weekly_periods||3},function(v){return raw('/api/class-subjects/'+link.id,{method:'PATCH',body:JSON.stringify({creditHours:Number(v.creditHours),weeklyPeriods:Number(v.weeklyPeriods)})})})}})}
-     wireCurriculum()
+     dirty=false;return x
    }
-   function renderTeacherOverview(){
-     var box=E('managerPane');if(!box)return;
-     var rows=assignments.filter(function(a){return a.academic_year_id===selectedYear&&a.is_active&&(selectedSession?a.term_id===selectedSession:!a.term_id)});
-     box.innerHTML='<div class="section compact"><div><h2>Teacher Assignment Overview</h2><p class="muted">Teaching assignments for '+esc(selectedSessionName())+'. Class Teacher assignments are shown as “Class Teacher”.</p></div></div><div class="toolbar"><input id="assignmentSearch" placeholder="Search teacher, class or subject"></div><div id="assignmentTable"></div>';
-     function draw(){var q=E('assignmentSearch').value.trim().toLowerCase(),filtered=q?rows.filter(function(a){return (userName(a.teacher_os_user_id)+' '+a.classroom_name+' '+(a.subject_name||'Class Teacher')).toLowerCase().includes(q)}):rows;E('assignmentTable').innerHTML=table(filtered,[{key:'teacher_os_user_id',label:'Teacher',render:function(a){return'<b>'+esc(userName(a.teacher_os_user_id))+'</b><br><span class="muted">'+esc(roleName(a.teacher_os_user_id))+'</span>'}},{key:'classroom_name',label:'Class'},{key:'subject_name',label:'Responsibility',render:function(a){return a.subject_name?esc(a.subject_name):'<b>Class Teacher</b>'}},{key:'term_name',label:'Session',render:function(a){return esc(a.term_name||'Whole academic year')}}],function(a){return'<button class="mini danger" data-delete-ta="'+a.id+'">Remove</button>'})}
-     draw();E('assignmentSearch').oninput=draw
+   function selectedSubject(id){return draft&&draft.subjects.find(function(x){return x.subjectId===id})}
+   function stageSubjects(x){
+     var grade=gs.find(function(g){return g.id===x.grade_level_id});
+     return subs.filter(function(s){return s.is_active&&(s.stage==='both'||s.stage===(grade&&grade.stage))})
+   }
+   function addSubjectToDraft(id){
+     if(!draft||selectedSubject(id))return;
+     draft.subjects.push({linkId:null,subjectId:id,weeklyPeriods:3,creditHours:2,teacherOsUserId:''});markDirty();renderSubjectBuilder()
+   }
+   function removeSubjectFromDraft(id){
+     if(!draft)return;draft.subjects=draft.subjects.filter(function(x){return x.subjectId!==id});markDirty();renderSubjectBuilder()
+   }
+   function syncDraftInputs(){
+     if(!draft)return;
+     E('selectedSubjectList').querySelectorAll('[data-selected-subject]').forEach(function(row){
+       var item=selectedSubject(row.dataset.selectedSubject);if(!item)return;
+       var t=row.querySelector('[data-draft-teacher]'),w=row.querySelector('[data-draft-periods]'),h=row.querySelector('[data-draft-hours]');
+       item.teacherOsUserId=t?t.value:'';
+       item.weeklyPeriods=Math.max(1,Number(w&&w.value||3));
+       item.creditHours=Math.max(.25,Number(h&&h.value||2))
+     });
+   }
+   function subjectCard(s){
+     return '<label class="subject-bank-card" draggable="true" data-available-drag="'+s.id+'"><input type="checkbox" data-available-check="'+s.id+'"><span><b>'+esc(s.name)+'</b><small>'+esc(s.code)+' • '+esc(s.stage)+'</small></span><span class="drag-handle">⋮⋮</span></label>'
+   }
+   function selectedRow(item){
+     var sub=subs.find(function(s){return s.id===item.subjectId})||{},exact=exactAssignment(draft.classroomId,item.subjectId),inherited=inheritedAssignment(draft.classroomId,item.subjectId);
+     var assignment='';
+     if(exact)assignment='<span class="teacher-chip assignment-chip"><b>'+esc(userName(exact.teacher_os_user_id))+'</b> · '+esc(selectedSessionName())+' <button type="button" data-clear-draft-teacher="'+item.subjectId+'" title="Clear this session teacher">×</button></span>';
+     else if(inherited)assignment='<span class="teacher-chip inherited-chip"><b>'+esc(userName(inherited.teacher_os_user_id))+'</b> · inherited from whole year</span>';
+     else assignment='<span class="badge warn">● Teacher pending</span>';
+     return '<div class="selected-subject-row" draggable="true" data-selected-drag="'+item.subjectId+'" data-selected-subject="'+item.subjectId+'">'+
+       '<div class="selected-subject-title"><input type="checkbox" data-selected-check="'+item.subjectId+'"><span class="badge info">'+esc(sub.code||'SUB')+'</span><div><b>'+esc(sub.name||'Subject')+'</b><small>'+esc(sub.stage||'')+'</small></div></div>'+
+       '<div class="selected-subject-assignment"><label>Current assignment</label><div class="teacher-chip-area">'+assignment+'</div><label>Teacher for '+esc(selectedSessionName())+'</label><select data-draft-teacher>'+teacherOptions(item.teacherOsUserId)+'</select></div>'+
+       '<div class="selected-subject-load"><label>Periods / week</label><input type="number" min="1" max="20" value="'+esc(item.weeklyPeriods)+'" data-draft-periods><label>Credit hours</label><input type="number" min=".25" max="20" step=".25" value="'+esc(item.creditHours)+'" data-draft-hours></div>'+
+       '<button type="button" class="mini danger remove-from-class" data-remove-draft-subject="'+item.subjectId+'">Remove</button></div>'
+   }
+   function renderSubjectBuilder(){
+     if(!draft)return;
+     var x=cls.find(function(r){return r.id===draft.classroomId}),all=stageSubjects(x),selectedIds=draft.subjects.map(function(i){return i.subjectId}),available=all.filter(function(s){return selectedIds.indexOf(s.id)<0});
+     var q=E('availableSubjectSearch')?E('availableSubjectSearch').value.trim().toLowerCase():'';
+     if(q)available=available.filter(function(s){return(s.code+' '+s.name).toLowerCase().includes(q)});
+     E('availableSubjectList').innerHTML=available.length?available.map(subjectCard).join(''):'<div class="empty">No subjects available.</div>';
+     E('selectedSubjectList').innerHTML=draft.subjects.length?draft.subjects.map(selectedRow).join(''):'<div class="empty">Drag subjects here or use Add Selected / Add All.</div>';
+     wireSubjectBuilder()
+   }
+   function wireSubjectBuilder(){
+     var available=E('availableSubjectList'),selected=E('selectedSubjectList');
+     available.querySelectorAll('[data-available-drag]').forEach(function(row){row.ondragstart=function(ev){ev.dataTransfer.setData('text/plain','add:'+row.dataset.availableDrag)}});
+     selected.querySelectorAll('[data-selected-drag]').forEach(function(row){row.ondragstart=function(ev){syncDraftInputs();ev.dataTransfer.setData('text/plain','remove:'+row.dataset.selectedDrag)}});
+     [available,selected].forEach(function(zone){zone.ondragover=function(ev){ev.preventDefault();zone.classList.add('drag-over')};zone.ondragleave=function(){zone.classList.remove('drag-over')}});
+     selected.ondrop=function(ev){ev.preventDefault();selected.classList.remove('drag-over');var data=ev.dataTransfer.getData('text/plain');if(data.indexOf('add:')===0)addSubjectToDraft(data.slice(4))};
+     available.ondrop=function(ev){ev.preventDefault();available.classList.remove('drag-over');var data=ev.dataTransfer.getData('text/plain');if(data.indexOf('remove:')===0)removeSubjectFromDraft(data.slice(7))};
+     selected.querySelectorAll('select,input[type="number"]').forEach(function(el){el.onchange=function(){syncDraftInputs();markDirty()}});
+   }
+   function renderClassDetail(id){
+     var box=E('classDetail'),x=buildDraft(id);if(!x){box.innerHTML='<div class="empty">Choose a class.</div>';return}
+     selectedClass=id;sessionStorage.setItem('rx_academic_class',id);
+     var exactCT=exactAssignment(id,null),inheritedCT=inheritedAssignment(id,null);
+     var ctStatus=exactCT?'<span class="teacher-chip"><b>'+esc(userName(exactCT.teacher_os_user_id))+'</b> · '+esc(selectedSessionName())+' <button type="button" data-clear-class-teacher title="Clear this session Class Teacher">×</button></span>':inheritedCT?'<span class="teacher-chip inherited-chip"><b>'+esc(userName(inheritedCT.teacher_os_user_id))+'</b> · inherited from whole year</span>':'<span class="badge warn">● No Class Teacher for this session</span>';
+     box.innerHTML='<div class="class-head"><div><span class="badge">'+esc(x.grade_name)+'</span><h2>'+esc(x.name)+'</h2><p class="muted">'+esc(x.student_count||0)+' students • '+esc(x.subject_count||0)+' subjects • '+esc(selectedSessionName())+'</p></div><button class="mini" data-edit-class="'+x.id+'">Edit class</button></div>'+
+       '<div class="academic-block"><div class="academic-block-head"><div><h3>1. Class Teacher</h3><p class="muted">Set a teacher for this session. If no term override is selected, a whole-year assignment remains inherited.</p></div></div><div class="teacher-chip-area">'+ctStatus+'</div><label>Class Teacher for '+esc(selectedSessionName())+'</label><select id="classTeacherDraft">'+teacherOptions(draft.classTeacherOsUserId)+'</select></div>'+
+       '<div class="academic-block curriculum-builder"><div class="academic-block-head"><div><h3>2. Subjects & Subject Teachers</h3><p class="muted">Move subjects into the class, set weekly load and choose the teacher. Nothing is written until Save Class Setup.</p></div></div>'+
+       '<div class="dual-subject-builder"><div class="subject-bank"><div class="subject-bank-head"><div><h4>Available Subjects</h4><small>Drag or select subjects to add.</small></div><button id="addAllSubjects" class="mini ghost">Add all</button></div><input id="availableSubjectSearch" placeholder="Search available subjects"><div id="availableSubjectList" class="subject-drop-zone"></div><button id="addCheckedSubjects" class="ghost" style="width:100%;margin-top:10px">Add Selected →</button></div>'+
+       '<div class="subject-transfer"><span>⇄</span><small>Drag between boxes</small></div>'+
+       '<div class="subject-selected-bank"><div class="subject-bank-head"><div><h4>Subjects in '+esc(x.name)+'</h4><small>Teacher and load are saved together.</small></div><button id="removeCheckedSubjects" class="mini danger">Remove selected</button></div><div id="selectedSubjectList" class="subject-drop-zone selected-zone"></div></div></div></div>'+
+       '<div class="academic-savebar"><div><b>Class setup record</b><span id="classSetupStatus" class="muted">Changes to Class Teacher, subjects, teachers and scheduling load are saved together.</span></div><div class="actions"><button id="openClassSchedule" class="ghost">Preview / Schedule Class</button><button id="saveClassSetup" class="primary">Save Class Setup</button></div></div>';
+     renderSubjectBuilder();
+     E('availableSubjectSearch').oninput=renderSubjectBuilder;
+     E('classTeacherDraft').onchange=function(){draft.classTeacherOsUserId=this.value;markDirty()};
+     E('addCheckedSubjects').onclick=function(){var ids=[];E('availableSubjectList').querySelectorAll('[data-available-check]:checked').forEach(function(i){ids.push(i.dataset.availableCheck)});ids.forEach(addSubjectToDraft)};
+     E('addAllSubjects').onclick=function(){var all=stageSubjects(x),selectedIds=draft.subjects.map(function(i){return i.subjectId});all.filter(function(sub){return selectedIds.indexOf(sub.id)<0}).forEach(function(sub){draft.subjects.push({linkId:null,subjectId:sub.id,weeklyPeriods:3,creditHours:2,teacherOsUserId:''})});markDirty();renderSubjectBuilder()};
+     E('removeCheckedSubjects').onclick=function(){syncDraftInputs();var ids=[];E('selectedSubjectList').querySelectorAll('[data-selected-check]:checked').forEach(function(i){ids.push(i.dataset.selectedCheck)});if(!ids.length)return toast('Select at least one subject to remove',true);draft.subjects=draft.subjects.filter(function(i){return ids.indexOf(i.subjectId)<0});markDirty();renderSubjectBuilder()};
+     E('saveClassSetup').onclick=async function(){
+       syncDraftInputs();var btn=E('saveClassSetup');btn.disabled=true;btn.textContent='Saving class setup...';
+       try{
+         await raw('/api/academic-manager/classes/'+draft.classroomId+'/setup',{method:'PUT',body:JSON.stringify({
+           academicYearId:selectedYear,termId:selectedSession||null,classTeacherOsUserId:draft.classTeacherOsUserId||null,
+           subjects:draft.subjects.map(function(i){return{subjectId:i.subjectId,weeklyPeriods:Number(i.weeklyPeriods),creditHours:Number(i.creditHours),teacherOsUserId:i.teacherOsUserId||null}})
+         })});
+         sessionStorage.setItem('rx_academic_class',draft.classroomId);await page('assignments');successDialog('Class setup saved',x.name+' is ready for '+selectedSessionName()+'.')
+       }catch(err){btn.disabled=false;btn.textContent='Save Class Setup';toast(err.message,true)}
+     };
+     E('openClassSchedule').onclick=async function(){
+       if(dirty)return toast('Save the Class Setup before scheduling so the timetable uses the latest subjects and teachers.',true);
+       try{
+         var plan=await raw('/api/timetable/auto-schedule',{method:'POST',silent:true,body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,classroomId:draft.classroomId,regenerateAuto:false,dryRun:true})});
+         modal('<h2>Schedule '+esc(x.name)+'</h2><p class="muted">The scheduler is using this class\'s saved subjects, teacher assignments, weekly loads, school-day rules, breaks and teacher availability.</p><div class="grid"><div class="panel stat"><span class="muted">Periods proposed</span><b>'+esc(plan.created)+'</b></div><div class="panel stat"><span class="muted">Needs attention</span><b>'+esc(plan.unscheduled.length)+'</b></div></div>'+(plan.unscheduled.length?'<div class="notice warn">'+plan.unscheduled.map(function(v){return'<b>'+esc(v.subjectName||'Subject')+':</b> '+esc(v.reason)}).join('<br>')+'</div>':'<div class="notice">This class can be scheduled without unresolved assignment problems.</div>')+'<div class="actions"><button id="goTimetable" class="ghost">Open Full Timetable</button><button id="applyClassSchedule" class="primary">Apply Schedule for this Class</button></div>');
+         E('goTimetable').onclick=function(){sessionStorage.setItem('rx_timetable_year',selectedYear);sessionStorage.setItem('rx_timetable_term',selectedSession||'');sessionStorage.setItem('rx_timetable_class',draft.classroomId);close();page('timetable')};
+         E('applyClassSchedule').onclick=async function(){var b=E('applyClassSchedule');b.disabled=true;b.textContent='Scheduling...';try{var r=await raw('/api/timetable/auto-schedule',{method:'POST',body:JSON.stringify({academicYearId:selectedYear,termId:selectedSession||null,classroomId:draft.classroomId,regenerateAuto:true,dryRun:false})});close();successDialog('Class timetable updated',r.created+' period(s) were scheduled. '+r.unscheduled.length+' item(s) still need attention.')}catch(err){b.disabled=false;b.textContent='Apply Schedule for this Class';toast(err.message,true)}}
+       }catch(err){toast(err.message,true)}
+     }
    }
    function renderClassWorkspace(){
-     var box=E('managerPane');if(!box)return;
-     var list=yearClasses();if(!selectedClass||!list.some(function(x){return x.id===selectedClass}))selectedClass=list[0]?list[0].id:null;
-     box.innerHTML='<div class="academic-manager"><div class="panel class-browser"><div class="section compact"><div><h3>Classes</h3><p class="muted">Choose a class to configure.</p></div><button id="addClass" class="mini primary-lite">New class</button></div><input id="academicClassSearch" placeholder="Search class, grade or teacher"><div id="classCards"></div></div><div id="classDetail" class="panel"></div></div>';
-     renderClassList();renderDetail(selectedClass);
+     var box=E('managerPane'),list=yearClasses();
+     if(!selectedClass||!list.some(function(x){return x.id===selectedClass}))selectedClass=list[0]?list[0].id:'';
+     box.innerHTML='<div class="academic-manager redesigned-manager"><div class="panel class-browser"><div class="section compact"><div><h3>Classes</h3><p class="muted">Choose one class record to configure.</p></div><button id="addClass" class="mini primary-lite">New class</button></div><input id="academicClassSearch" placeholder="Search class, grade or teacher"><div id="classCards"></div></div><div id="classDetail" class="panel class-setup-panel"></div></div>';
+     renderClassList();if(selectedClass)renderClassDetail(selectedClass);else E('classDetail').innerHTML='<div class="empty">Create or select a class to begin.</div>';
      E('academicClassSearch').oninput=renderClassList;
      E('addClass').onclick=function(){form('Create class',[{key:'academicYearId',label:'Academic year',type:'select',options:ys.map(function(y){return{value:y.id,label:y.name}})},{key:'gradeLevelId',label:'Grade level',type:'select',options:gs.filter(function(g){return g.is_active}).map(function(g){return{value:g.id,label:g.name}})},{key:'name',label:'Class name'},{key:'stream',label:'Stream / Section'},{key:'capacity',label:'Capacity',type:'number'}],{academicYearId:selectedYear},function(v){return raw('/api/classes',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,gradeLevelId:v.gradeLevelId,name:v.name,stream:v.stream||undefined,capacity:v.capacity?Number(v.capacity):undefined})})})}
    }
+   function renderTeacherCoverage(){
+     var box=E('managerPane'),classesForYear=yearClasses(),allSubjects=subs.filter(function(s){return s.is_active});
+     box.innerHTML='<div class="panel teacher-coverage"><div class="section compact"><div><h2>Teacher Coverage</h2><p class="muted">Assign one teacher across several classes in one record. Use this for all-subject Class Teachers or specialist teachers who teach the same subject across classes.</p></div></div>'+
+       '<div class="three"><div><label>Teacher</label><select id="coverageTeacher"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')+'</select></div><div><label>Assignment pattern</label><select id="coverageMode"><option value="all_subjects">All subjects in selected classes</option><option value="subject_across_classes">One subject across selected classes</option><option value="class_teacher">Class Teacher for selected classes</option></select></div><div id="coverageSubjectWrap" class="hide"><label>Subject</label><select id="coverageSubject">'+allSubjects.map(function(s){return'<option value="'+s.id+'">'+esc(s.name)+' • '+esc(s.code)+'</option>'}).join('')+'</select></div></div>'+
+       '<div class="section compact"><div><h3>Select classes</h3><p class="muted">Only subjects already added to a class can receive a specialist Subject Teacher.</p></div><div class="actions"><button id="coverageAll" class="mini ghost">Select all</button><button id="coverageNone" class="mini ghost">Clear</button></div></div><input id="coverageSearch" placeholder="Search classes"><div id="coverageClasses" class="coverage-class-grid"></div>'+
+       '<div class="academic-savebar"><div><b>Teacher coverage record</b><span class="muted">Assignments are saved together for '+esc(selectedSessionName())+'.</span></div><button id="saveCoverage" class="primary">Save Teacher Coverage</button></div></div>';
+     function drawClasses(){var q=E('coverageSearch').value.trim().toLowerCase(),rows=q?classesForYear.filter(function(x){return(x.name+' '+x.grade_name).toLowerCase().includes(q)}):classesForYear;E('coverageClasses').innerHTML=rows.map(function(x){return'<label class="coverage-class-card"><input type="checkbox" data-coverage-class="'+x.id+'"><span><b>'+esc(x.name)+'</b><small>'+esc(x.grade_name)+' • '+esc(x.subject_count||0)+' subjects</small></span></label>'}).join('')}
+     drawClasses();E('coverageSearch').oninput=drawClasses;
+     E('coverageMode').onchange=function(){E('coverageSubjectWrap').classList.toggle('hide',this.value!=='subject_across_classes')};
+     E('coverageAll').onclick=function(){E('coverageClasses').querySelectorAll('[data-coverage-class]').forEach(function(x){x.checked=true})};
+     E('coverageNone').onclick=function(){E('coverageClasses').querySelectorAll('[data-coverage-class]').forEach(function(x){x.checked=false})};
+     E('saveCoverage').onclick=async function(){var teacher=E('coverageTeacher').value,ids=[];E('coverageClasses').querySelectorAll('[data-coverage-class]:checked').forEach(function(x){ids.push(x.dataset.coverageClass)});if(!teacher)return toast('Choose a teacher',true);if(!ids.length)return toast('Select at least one class',true);var mode=E('coverageMode').value,body={academicYearId:selectedYear,termId:selectedSession||null,teacherOsUserId:teacher,mode:mode,classroomIds:ids};if(mode==='subject_across_classes')body.subjectId=E('coverageSubject').value;var btn=E('saveCoverage');btn.disabled=true;btn.textContent='Saving coverage...';try{var r=await raw('/api/teacher-assignments/bulk',{method:'POST',body:JSON.stringify(body)});await page('assignments');successDialog('Teacher coverage saved',r.saved+' assignment'+(r.saved===1?'':'s')+' were saved for '+selectedSessionName()+'.')}catch(err){btn.disabled=false;btn.textContent='Save Teacher Coverage';toast(err.message,true)}}
+   }
+   function renderSubjectCatalogue(){
+     var box=E('managerPane');
+     box.innerHTML='<div class="section compact"><div><h2>Subject Catalogue</h2><p class="muted">Create each subject once. Add it to classes from Class Setup.</p></div><button id="addSubjectCatalogue" class="primary">New subject</button></div><div class="toolbar"><input id="subjectCatalogueSearch" placeholder="Search subject or code"></div><div id="subjectCatalogueTable"></div>';
+     function draw(){var q=E('subjectCatalogueSearch').value.trim().toLowerCase(),rows=q?subs.filter(function(s){return(s.code+' '+s.name+' '+s.stage).toLowerCase().includes(q)}):subs;E('subjectCatalogueTable').innerHTML=table(rows,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}},{key:'id',label:'Classes',render:function(r){return esc(classSubs.filter(function(x){return x.subject_id===r.id&&x.is_active}).length)}}],function(r){return'<button class="mini" data-edit-subject="'+r.id+'">Edit</button><button class="mini danger" data-delete-subject="'+r.id+'">Delete</button>'})}
+     draw();E('subjectCatalogueSearch').oninput=draw;E('addSubjectCatalogue').onclick=function(){form('Add subject to catalogue',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify(v)})})}
+   }
    function renderManager(){
      yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});
-     E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">Manage every class from one place. Choose the academic year and term, select a class, assign its Class Teacher, add subjects and assign Subject Teachers.</p></div></div>'+
-       (academicManagerDirectoryError?'<div class="notice warn">Teacher names are temporarily unavailable because the Core staff directory could not be reached. The class and subject structure is still available.</div>':'')+
-       renderOverview()+
-       '<div class="panel academic-controlbar"><div><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div><div><label>Term / Teaching session</label><select id="academicSessionFilter"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedSession?' selected':'')+'>'+esc(t.name)+(t.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div></div>'+
-       '<div class="notice"><b>Class setup workflow:</b> 1) choose the class, 2) assign its Class Teacher for the selected session, 3) add the subjects taught in the class, 4) set the weekly periods, and 5) assign each Subject Teacher. Any missing teacher or subject assignment remains visibly pending and will also be flagged by timetable scheduling.</div>'+
-       '<div class="academic-tabs"><button class="'+(managerTab==='class'?'active':'')+'" data-manager-tab="class">Classes & Teaching Setup</button><button class="'+(managerTab==='subjects'?'active':'')+'" data-manager-tab="subjects">Subject Catalogue</button><button class="'+(managerTab==='teachers'?'active':'')+'" data-manager-tab="teachers">Teacher Assignment Matrix</button></div><div id="managerPane"></div>';
-     E('academicYearFilter').onchange=function(){selectedYear=this.value;sessionStorage.setItem('rx_academic_year',selectedYear);var ts=terms.filter(function(t){return t.academic_year_id===selectedYear}),at=ts.find(function(t){return t.status==='active'});selectedSession=at?at.id:'';sessionStorage.setItem('rx_academic_session',selectedSession);selectedClass=null;sessionStorage.removeItem('rx_academic_class');renderManager()};
+     E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">One stable class record for curriculum, Class Teacher, Subject Teachers and timetable load.</p></div></div>'+
+       (academicManagerDirectoryError?'<div class="notice warn">Teacher names are temporarily unavailable because the Core staff directory could not be reached.</div>':'')+
+       '<div class="panel academic-controlbar"><div><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div><div><label>Teaching session</label><select id="academicSessionFilter"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedSession?' selected':'')+'>'+esc(t.name)+(t.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div></div>'+
+       '<div class="academic-tabs"><button class="'+(managerTab==='class'?'active':'')+'" data-manager-tab="class">Class Setup</button><button class="'+(managerTab==='teachers'?'active':'')+'" data-manager-tab="teachers">Teacher Coverage</button><button class="'+(managerTab==='subjects'?'active':'')+'" data-manager-tab="subjects">Subject Catalogue</button></div><div id="managerPane"></div>';
+     E('academicYearFilter').onchange=function(){selectedYear=this.value;sessionStorage.setItem('rx_academic_year',selectedYear);var ts=terms.filter(function(t){return t.academic_year_id===selectedYear}),at=ts.find(function(t){return t.status==='active'});selectedSession=at?at.id:'';sessionStorage.setItem('rx_academic_session',selectedSession);selectedClass='';sessionStorage.removeItem('rx_academic_class');renderManager()};
      E('academicSessionFilter').onchange=function(){selectedSession=this.value;sessionStorage.setItem('rx_academic_session',selectedSession);renderManager()};
      E('content').querySelectorAll('[data-manager-tab]').forEach(function(b){b.onclick=function(){managerTab=b.dataset.managerTab;sessionStorage.setItem('rx_academic_tab',managerTab);renderManager()}});
-     if(managerTab==='subjects')renderSubjectCatalogue();else if(managerTab==='teachers')renderTeacherOverview();else renderClassWorkspace()
+     if(managerTab==='teachers')renderTeacherCoverage();else if(managerTab==='subjects')renderSubjectCatalogue();else renderClassWorkspace()
    }
    renderManager();
-   E('content').onclick=async function(e){
-     var id=e.target.dataset.pickClass;if(id){selectedClass=id;sessionStorage.setItem('rx_academic_class',id);renderClassList();return renderDetail(id)}
-     id=e.target.dataset.editClass;if(id){var x=cls.find(function(r){return r.id===id});return form('Edit class',[{key:'name',label:'Class name'},{key:'stream',label:'Stream / Section'},{key:'capacity',label:'Capacity',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{name:x.name,stream:x.stream||'',capacity:x.capacity||'',isActive:String(x.is_active)},function(v){return raw('/api/classes/'+id,{method:'PATCH',body:JSON.stringify({name:v.name,stream:v.stream||null,capacity:v.capacity?Number(v.capacity):null,isActive:v.isActive==='true'})})})}
-     id=e.target.dataset.saveClassTeacher;if(id){
-       var tid=E('classTeacherSelect').value;if(!tid)return toast('Choose a class teacher',true);
-       try{await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify({teacherOsUserId:tid,academicYearId:selectedYear,termId:selectedSession||null,classroomId:id,subjectId:null,replaceExisting:true})});toast('Class teacher assigned for '+selectedSessionName());return page('assignments')}catch(err){return toast(err.message,true)}
-     }
-     id=e.target.dataset.addClassSubject;if(id){
-       var x=cls.find(function(r){return r.id===id}),stage=gs.find(function(g){return g.id===x.grade_level_id}),links=classSubs.filter(function(cs){return cs.classroom_id===id&&cs.academic_year_id===selectedYear&&cs.is_active});
-       var opts=subs.filter(function(s){return s.is_active&&(s.stage==='both'||s.stage===(stage&&stage.stage))&&!links.some(function(l){return l.subject_id===s.id})});
-       if(!opts.length)return toast('All suitable subjects are already assigned to this class',true);
-       modal('<h2>Add subjects to '+esc(x.name)+'</h2><p class="muted">Select all subjects that this class should study for '+esc((ys.find(function(y){return y.id===selectedYear})||{}).name||'the academic year')+'.</p><input id="bulkSubjectSearch" placeholder="Search subjects"><div id="bulkSubjectList" class="subject-picker"></div><button id="saveBulkSubjects" class="primary" style="width:100%;margin-top:12px">Add selected subjects</button>');
-       function drawSubjectPicker(){var q=E('bulkSubjectSearch').value.trim().toLowerCase(),rows=q?opts.filter(function(s){return(s.code+' '+s.name).toLowerCase().includes(q)}):opts;E('bulkSubjectList').innerHTML=rows.map(function(s){return'<label class="subject-picker-item"><input type="checkbox" value="'+s.id+'" data-bulk-subject><span><b>'+esc(s.name)+'</b><small>'+esc(s.code)+' • '+esc(s.stage)+'</small></span></label>'}).join('')}
-       drawSubjectPicker();E('bulkSubjectSearch').oninput=drawSubjectPicker;
-       E('saveBulkSubjects').onclick=async function(){var ids=[];E('bulkSubjectList').querySelectorAll('[data-bulk-subject]:checked').forEach(function(i){ids.push(i.value)});if(!ids.length)return toast('Select at least one subject',true);await raw('/api/class-subjects/bulk',{method:'POST',body:JSON.stringify({academicYearId:selectedYear,classroomId:id,subjectIds:ids})});close();toast(ids.length+' subject'+(ids.length===1?'':'s')+' added');page('assignments')}
-       return
-     }
-     id=e.target.dataset.weeklyPeriods;if(id){var link=classSubs.find(function(r){return r.id===id});return form('Subject scheduling load',[{key:'creditHours',label:'Credit hours per week',type:'number'},{key:'weeklyPeriods',label:'Minimum periods per week',type:'number'}],{creditHours:link&&link.credit_hours||2,weeklyPeriods:link&&link.weekly_periods||3},function(v){return raw('/api/class-subjects/'+id,{method:'PATCH',body:JSON.stringify({creditHours:Number(v.creditHours),weeklyPeriods:Number(v.weeklyPeriods)})})})}
-     id=e.target.dataset.saveSubjectTeacher;if(id){
-       var classId=e.target.dataset.classId,subjectId=e.target.dataset.subjectId,sel=E('content').querySelector('[data-subject-teacher-select="'+id+'"]'),tid=sel&&sel.value;
-       if(!tid)return toast('Choose a teacher first',true);
-       try{await raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify({teacherOsUserId:tid,academicYearId:selectedYear,termId:selectedSession||null,classroomId:classId,subjectId:subjectId,replaceExisting:true})});toast('Subject teacher assigned for '+selectedSessionName());return page('assignments')}catch(err){return toast(err.message,true)}
-     }
-     id=e.target.dataset.removeClassSubject;if(id){return confirmDo('Remove this subject from the class? Existing assessments or timetable entries will prevent removal.',function(){return raw('/api/class-subjects/'+id,{method:'DELETE'})})}
-     id=e.target.dataset.deleteTa;if(id){return confirmDo('Remove this teacher assignment?',function(){return raw('/api/teacher-assignments/'+id,{method:'DELETE'})})}
-     id=e.target.dataset.editSubject;if(id){var s=subs.find(function(r){return r.id===id});return form('Edit subject',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{code:s.code,name:s.name,stage:s.stage,isActive:String(s.is_active)},function(v){return raw('/api/subjects/'+id,{method:'PATCH',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,isActive:v.isActive==='true'})})})}
-     id=e.target.dataset.deleteSubject;if(id){return confirmDo('Delete this subject? It cannot be deleted while it is used by classes, assessments or timetables.',function(){return raw('/api/subjects/'+id,{method:'DELETE'})})}
+   E('content').onclick=function(e){
+     var target=e.target.closest('[data-pick-class],[data-edit-class],[data-clear-draft-teacher],[data-remove-draft-subject],[data-clear-class-teacher],[data-edit-subject],[data-delete-subject]');
+     if(!target)return;
+     var id=target.dataset.pickClass;if(id){syncDraftInputs();if(dirty&&!confirm('You have unsaved Class Setup changes. Discard them and open another class?'))return;selectedClass=id;sessionStorage.setItem('rx_academic_class',id);renderClassList();return renderClassDetail(id)}
+     id=target.dataset.editClass;if(id){var x=cls.find(function(r){return r.id===id});return form('Edit class',[{key:'name',label:'Class name'},{key:'stream',label:'Stream / Section'},{key:'capacity',label:'Capacity',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{name:x.name,stream:x.stream||'',capacity:x.capacity||'',isActive:String(x.is_active)},function(v){return raw('/api/classes/'+id,{method:'PATCH',body:JSON.stringify({name:v.name,stream:v.stream||null,capacity:v.capacity?Number(v.capacity):null,isActive:v.isActive==='true'})})})}
+     id=target.dataset.clearDraftTeacher;if(id){syncDraftInputs();var item=selectedSubject(id);if(item){item.teacherOsUserId='';markDirty();renderSubjectBuilder()}return}
+     id=target.dataset.removeDraftSubject;if(id){syncDraftInputs();return removeSubjectFromDraft(id)}
+     if(Object.hasOwn(target.dataset,'clearClassTeacher')){draft.classTeacherOsUserId='';E('classTeacherDraft').value='';markDirty();var chip=target.closest('.teacher-chip');if(chip)chip.remove();return}
+     id=target.dataset.editSubject;if(id){var sub=subs.find(function(r){return r.id===id});return form('Edit subject',[{key:'code',label:'Code'},{key:'name',label:'Subject name'},{key:'stage',label:'Stage',type:'select',options:['primary','jhs','both']},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{code:sub.code,name:sub.name,stage:sub.stage,isActive:String(sub.is_active)},function(v){return raw('/api/subjects/'+id,{method:'PATCH',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,isActive:v.isActive==='true'})})})}
+     id=target.dataset.deleteSubject;if(id)return confirmDo('Delete this subject? It cannot be deleted while it is used by classes, assessments or timetables.',function(){return raw('/api/subjects/'+id,{method:'DELETE'})})
    }
  }
  else if(p==='admissions'){
