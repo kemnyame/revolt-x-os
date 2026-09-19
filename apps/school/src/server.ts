@@ -80,6 +80,37 @@ const fail=(statusCode:number,message:string)=>Object.assign(new Error(message),
 async function audit(organisationId:string,userId:string,action:string,resourceType:string,resourceId?:string|null,metadata:any={}){
   await db.query('INSERT INTO school_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,metadata) VALUES($1,$2,$3,$4,$5,$6)',[organisationId,userId,action,resourceType,resourceId??null,JSON.stringify(metadata)]);
 }
+async function changeLog(input:{
+  organisationId:string;
+  actorOsUserId?:string|null;
+  action:string;
+  resourceType:string;
+  resourceId?:string|null;
+  performedOn?:string|null;
+  oldValue?:any;
+  newValue?:any;
+  metadata?:any;
+}){
+  await db.query(`INSERT INTO school_change_logs(
+    organisation_id,actor_os_user_id,action,resource_type,resource_id,performed_on,old_value,new_value,metadata
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[
+    input.organisationId,input.actorOsUserId??null,input.action,input.resourceType,input.resourceId??null,input.performedOn??null,
+    input.oldValue==null?null:JSON.stringify(input.oldValue),input.newValue==null?null:JSON.stringify(input.newValue),
+    JSON.stringify(input.metadata??{})
+  ]);
+}
+async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'='core_exchange'){
+  const localToken='rxs_'+randomBytes(48).toString('base64url');
+  const tokenHash=createHash('sha256').update(localToken).digest('hex');
+  const expiresAt=new Date(Date.now()+8*60*60*1000);
+  await db.query(`INSERT INTO school_sessions(
+      token_hash,organisation_id,os_user_id,core_context,source,expires_at
+    ) VALUES($1,$2,$3,$4,$5,$6)`,[
+      tokenHash,coreContext.organisation_id,coreContext.id,JSON.stringify(coreContext),source,expiresAt.toISOString()
+    ]);
+  return{localToken,expiresAt};
+}
+
 async function activeYear(org:string){
   return maybeOne<any>(db,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' ORDER BY start_date DESC LIMIT 1",[org]);
 }
@@ -518,6 +549,59 @@ app.post('/api/system/core-wake',async(_request,reply)=>{
   });
 });
 
+app.post('/api/auth/teacher-login',async(request,reply)=>{
+  const b=z.object({email:z.string().trim().toLowerCase().email(),password:z.string().min(8).max(200)}).parse(request.body);
+  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const loginRes=await fetch(base+'/v1/auth/login',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({email:b.email,password:b.password,organisationId:school.organisation_id}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!loginRes)throw fail(503,'Core OS could not be reached');
+  const loginPayload=await loginRes.json().catch(()=>null) as any;
+  if(!loginRes.ok)throw fail(loginRes.status,loginPayload?.error?.message||'Invalid email or password');
+
+  const ctxRes=await fetch(base+'/v1/auth/context',{
+    headers:{authorization:'Bearer '+loginPayload.accessToken},
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!ctxRes)throw fail(503,'Core OS user context could not be reached');
+  const coreContext=await ctxRes.json().catch(()=>null) as any;
+  if(!ctxRes.ok||!coreContext)throw fail(ctxRes.status||503,coreContext?.error?.message||'Core OS authentication failed');
+
+  const membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+    [coreContext.organisation_id,coreContext.id]);
+  if(!membership)throw fail(403,'This account does not have active Teacher workspace access');
+
+  const session=await createSchoolStaffSession(coreContext,'core_exchange');
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  await audit(coreContext.organisation_id,coreContext.id,'teacher.authenticated','school_session',null,{role:membership.role});
+  return reply.send({accessToken:session.localToken,expiresIn:8*60*60,schoolRole:membership.role});
+});
+
+app.post('/api/auth/teacher-set-password',async(request,reply)=>{
+  const b=z.object({
+    token:z.string().min(32).max(300),
+    password:z.string().min(12).max(200)
+      .regex(/[A-Z]/,'Password must contain an uppercase letter')
+      .regex(/[a-z]/,'Password must contain a lowercase letter')
+      .regex(/[0-9]/,'Password must contain a number')
+  }).parse(request.body);
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const res=await fetch(base+'/v1/auth/password-reset/confirm',{
+    method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({token:b.token,password:b.password}),
+    signal:AbortSignal.timeout(15000)
+  }).catch(()=>null);
+  if(!res)throw fail(503,'Core OS could not be reached');
+  const payload=await res.json().catch(()=>null) as any;
+  if(!res.ok)throw fail(res.status,payload?.error?.message||'Password setup failed');
+  return reply.send({reset:true});
+});
+
 app.post('/api/auth/preview',async(_r,p)=>{
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const transient=new Set([429,502,503,504]);
@@ -595,15 +679,8 @@ app.post('/api/auth/preview',async(_r,p)=>{
 
   if(!coreContext)return p.code(lastStatus).send({error:{message:lastMessage}});
 
-  const localToken='rxs_'+randomBytes(48).toString('base64url');
-  const tokenHash=createHash('sha256').update(localToken).digest('hex');
-  const expiresAt=new Date(Date.now()+8*60*60*1000);
-
-  await db.query(`INSERT INTO school_sessions(
-      token_hash,organisation_id,os_user_id,core_context,source,expires_at
-    ) VALUES($1,$2,$3,$4,'preview',$5)`,[
-      tokenHash,coreContext.organisation_id,coreContext.id,JSON.stringify(coreContext),expiresAt.toISOString()
-    ]);
+  const localSession=await createSchoolStaffSession(coreContext,'preview');
+  const localToken=localSession.localToken;
 
   await db.query(`DELETE FROM school_sessions
     WHERE expires_at<now()-interval '1 day' OR revoked_at IS NOT NULL`).catch(()=>null);
