@@ -223,7 +223,15 @@ app.post('/api/attendance/mark',async request=>{
   await tx(db,async c=>{for(const r of b.records)await c.query(`INSERT INTO attendance_records(organisation_id,student_id,classroom_id,attendance_date,status,note,marked_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(student_id,classroom_id,attendance_date) DO UPDATE SET status=EXCLUDED.status,note=EXCLUDED.note,marked_by_os_user_id=EXCLUDED.marked_by_os_user_id,updated_at=now()`,[a.core.organisation_id,r.studentId,b.classroomId,b.date,r.status,r.note??null,a.core.id])});await audit(a.core.organisation_id,a.core.id,'attendance.marked','classroom',b.classroomId,{date:b.date,count:b.records.length});return{saved:b.records.length};
 });
 
-app.get('/api/assessments',async request=>{const a=await authorize(request,db,config);const q=z.object({termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name FROM assessments a JOIN subjects s ON s.id=a.subject_id JOIN classrooms c ON c.id=a.classroom_id JOIN terms t ON t.id=a.term_id WHERE a.organisation_id=$1 AND ($2::uuid IS NULL OR a.term_id=$2) AND ($3::uuid IS NULL OR a.classroom_id=$3) ORDER BY a.assessment_date DESC NULLS LAST,a.created_at DESC`,[a.core.organisation_id,q.termId??null,q.classroomId??null])).rows});
+app.get('/api/assessments',async request=>{
+  const a=await authorize(request,db,config);const q=z.object({termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);
+  let rows=(await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name FROM assessments a JOIN subjects s ON s.id=a.subject_id JOIN classrooms c ON c.id=a.classroom_id JOIN terms t ON t.id=a.term_id WHERE a.organisation_id=$1 AND ($2::uuid IS NULL OR a.term_id=$2) AND ($3::uuid IS NULL OR a.classroom_id=$3) ORDER BY a.assessment_date DESC NULLS LAST,a.created_at DESC`,[a.core.organisation_id,q.termId??null,q.classroomId??null])).rows;
+  if(a.role==='teacher'){
+    const allowed=(await db.query(`SELECT DISTINCT classroom_id,subject_id FROM teacher_assignments WHERE organisation_id=$1 AND teacher_os_user_id=$2 AND is_active=true UNION SELECT id,NULL::uuid FROM classrooms WHERE organisation_id=$1 AND class_teacher_os_user_id=$2`,[a.core.organisation_id,a.core.id])).rows;
+    rows=rows.filter((r:any)=>allowed.some((x:any)=>x.classroom_id===r.classroom_id&&(x.subject_id==null||x.subject_id===r.subject_id)));
+  }
+  return rows;
+});
 app.post('/api/assessments',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.manage');const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),name:z.string().min(2).max(160),assessmentType:z.enum(['classwork','homework','project','test','exam','other']),maxScore:z.number().positive(),weight:z.number().positive().max(100).default(100),assessmentDate:z.string().date().optional()}).parse(request.body);await ensureTeacherScope(a,b.classroomId,b.subjectId);
   const row=await one<any>(db,'INSERT INTO assessments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,name,assessment_type,max_score,weight,assessment_date,created_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,b.name,b.assessmentType,b.maxScore,b.weight,b.assessmentDate??null,a.core.id]);await audit(a.core.organisation_id,a.core.id,'assessment.created','assessment',row.id);return reply.code(201).send(row);
@@ -674,6 +682,23 @@ app.get('/api/teacher/classes',async request=>{
     (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count
     FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE c.organisation_id=$1 AND c.is_active=true ORDER BY g.level_order,c.name`,[a.core.organisation_id])).rows;
+});
+app.get('/api/teacher/students',async request=>{
+  const a=await authorize(request,db,config);
+  if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher portal access is not enabled for this school role');
+  if(a.role==='teacher'){
+    return (await db.query(`SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name
+      FROM enrolments e
+      JOIN students s ON s.id=e.student_id
+      JOIN classrooms c ON c.id=e.classroom_id
+      JOIN grade_levels g ON g.id=c.grade_level_id
+      LEFT JOIN teacher_assignments ta ON ta.classroom_id=c.id AND ta.organisation_id=c.organisation_id AND ta.teacher_os_user_id=$2 AND ta.is_active=true
+      WHERE e.organisation_id=$1 AND e.status='active' AND (c.class_teacher_os_user_id=$2 OR ta.id IS NOT NULL)
+      ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id])).rows;
+  }
+  return (await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name
+    FROM enrolments e JOIN students s ON s.id=e.student_id JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE e.organisation_id=$1 AND e.status='active' ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id])).rows;
 });
 app.get('/api/teacher/dashboard',async request=>{
   const a=await authorize(request,db,config);
