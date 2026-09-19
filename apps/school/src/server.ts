@@ -23,6 +23,36 @@ const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{origin:config.CORS_ORIGINS==='*'?true:config.CORS_ORIGINS.split(',').map(x=>x.trim()),credentials:true});
 
+const requestStartedAt=new Map<string,number>();
+function requestSessionToken(request:any){
+  const auth=String(request.headers?.authorization||'');
+  if(/^Bearer\s+rxs_/i.test(auth))return auth.replace(/^Bearer\s+/i,'').trim();
+  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_school_session='));
+  return cookie?decodeURIComponent(cookie.slice('rx_school_session='.length)):'';
+}
+async function requestActor(request:any){
+  const token=requestSessionToken(request);
+  if(!token||!token.startsWith('rxs_'))return{organisationId:null,userId:null};
+  const hash=createHash('sha256').update(token).digest('hex');
+  const row=await maybeOne<any>(db,'SELECT organisation_id,os_user_id FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',[hash]);
+  return{organisationId:row?.organisation_id??null,userId:row?.os_user_id??null};
+}
+app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
+app.addHook('onResponse',async(request,reply)=>{
+  if(!request.url.startsWith('/api/'))return;
+  const started=requestStartedAt.get(String(request.id))??Date.now();requestStartedAt.delete(String(request.id));
+  try{
+    const actor=await requestActor(request);
+    const status=reply.statusCode;
+    await db.query(`INSERT INTO system_request_logs(
+      organisation_id,actor_os_user_id,request_id,method,path,status_code,duration_ms,outcome
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[
+      actor.organisationId,actor.userId,String(request.id),request.method,String(request.url).split('?')[0],
+      status,Date.now()-started,status>=500?'server_error':status>=400?'client_error':'success'
+    ]);
+  }catch(error){request.log.warn({error},'Could not persist system request log')}
+});
+
 const fail=(statusCode:number,message:string)=>Object.assign(new Error(message),{statusCode});
 async function audit(organisationId:string,userId:string,action:string,resourceType:string,resourceId?:string|null,metadata:any={}){
   await db.query('INSERT INTO school_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,metadata) VALUES($1,$2,$3,$4,$5,$6)',[organisationId,userId,action,resourceType,resourceId??null,JSON.stringify(metadata)]);
@@ -3274,14 +3304,71 @@ app.get('/api/system/diagnostics',async request=>{
   return{generatedAt:new Date().toISOString(),summary,checks};
 });
 
-app.get('/api/audit',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query('SELECT * FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id])).rows});
+app.get('/api/audit',async request=>{
+  const a=await authorize(request,db,config,'system.logs.view');
+  const q=z.object({q:z.string().max(120).optional(),action:z.string().max(120).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT * FROM school_audit_logs WHERE organisation_id=$1
+    AND ($2::text IS NULL OR action=$2)
+    AND ($3::text IS NULL OR action ILIKE $3 OR resource_type ILIKE $3 OR COALESCE(resource_id,'') ILIKE $3 OR metadata::text ILIKE $3)
+    ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,q.action??null,like,q.limit])).rows;
+});
+app.get('/api/system/request-logs',async request=>{
+  const a=await authorize(request,db,config,'system.logs.view');
+  const q=z.object({q:z.string().max(120).optional(),status:z.coerce.number().int().optional(),method:z.string().max(12).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT * FROM system_request_logs WHERE organisation_id=$1
+    AND ($2::int IS NULL OR status_code=$2) AND ($3::text IS NULL OR method=$3)
+    AND ($4::text IS NULL OR path ILIKE $4 OR request_id ILIKE $4)
+    ORDER BY created_at DESC LIMIT $5`,[a.core.organisation_id,q.status??null,q.method??null,like,q.limit])).rows;
+});
+app.get('/api/system/errors',async request=>{
+  const a=await authorize(request,db,config,'system.logs.view');
+  const q=z.object({state:z.enum(['open','resolved','all']).default('open'),q:z.string().max(120).optional(),limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
+  const like=q.q?'%'+q.q+'%':null;
+  return (await db.query(`SELECT * FROM system_errors WHERE (organisation_id=$1 OR organisation_id IS NULL)
+    AND ($2='all' OR ($2='open' AND resolved_at IS NULL) OR ($2='resolved' AND resolved_at IS NOT NULL))
+    AND ($3::text IS NULL OR message ILIKE $3 OR COALESCE(error_code,'') ILIKE $3 OR COALESCE(path,'') ILIKE $3 OR COALESCE(request_id,'') ILIKE $3)
+    ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,q.state,like,q.limit])).rows;
+});
+app.patch('/api/system/errors/:id',async request=>{
+  const a=await authorize(request,db,config,'system.errors.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({resolved:z.boolean(),resolutionNote:z.string().max(4000).optional()}).parse(request.body);
+  const row=await one<any>(db,`UPDATE system_errors SET resolved_at=CASE WHEN $1 THEN now() ELSE NULL END,
+    resolved_by_os_user_id=CASE WHEN $1 THEN $2 ELSE NULL END,resolution_note=$3
+    WHERE id=$4 AND (organisation_id=$5 OR organisation_id IS NULL) RETURNING *`,
+    [b.resolved,a.core.id,b.resolutionNote??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,b.resolved?'system_error.resolved':'system_error.reopened','system_error',id,{resolutionNote:b.resolutionNote??null});
+  return row;
+});
 
-app.setErrorHandler((error:any,_request,reply)=>{
-  let status=Number(error.statusCode)||400;
+app.setErrorHandler(async(error:any,request,reply)=>{
+  let status=Number(error.statusCode)||(error?.name==='ZodError'?400:500);
   if(error.code==='23505')status=409;
   if(error.code==='23503')status=409;
-  const message=error.code==='23505'?'A record with the same unique value already exists':error.code==='23503'?'This record is still in use and cannot be deleted':(error.message||'Unexpected school service error');
-  reply.code(status>=400&&status<600?status:500).send({error:{message}});
+  if(error.code==='42P08')status=500;
+  const message=error.code==='23505'
+    ?'A record with the same unique value already exists'
+    :error.code==='23503'
+      ?'This record is still in use and cannot be deleted'
+      :error.code==='42P08'
+        ?'The database could not safely process this action. The error has been logged for review.'
+        :(error.message||'Unexpected school service error');
+  let errorId:string|undefined;
+  try{
+    const actor=await requestActor(request);
+    const row=await one<any>(db,`INSERT INTO system_errors(
+      organisation_id,actor_os_user_id,request_id,method,path,status_code,error_code,message,details
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,[
+      actor.organisationId,actor.userId,String(request.id),request.method,String(request.url).split('?')[0],status,
+      error.code??error.name??null,String(error.message||message).slice(0,8000),
+      JSON.stringify({validation:error.validation??null,stack:config.NODE_ENV==='production'?null:String(error.stack||'').slice(0,12000)})
+    ]);
+    errorId=row.id;
+  }catch(logError){request.log.error({logError},'Could not persist application error')}
+  request.log.error({err:error,errorId,status},'School request failed');
+  reply.code(status>=400&&status<600?status:500).send({error:{message,errorId}});
 });
 
 let shutting=false;
