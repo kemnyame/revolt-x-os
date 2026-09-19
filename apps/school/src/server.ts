@@ -1512,6 +1512,274 @@ app.get('/api/search',async request=>{
   return[...rows,...staff].slice(0,q.limit);
 });
 
+
+app.get('/api/communications/status',async request=>{
+  const a=await authorize(request,db,config,'communications.view');
+  const rules=(await db.query('SELECT event_key,channel,enabled,updated_at FROM notification_rules WHERE organisation_id=$1 ORDER BY event_key,channel',[a.core.organisation_id])).rows;
+  return{providers:providerStatus(config),rules};
+});
+app.put('/api/communications/rules',async request=>{
+  const a=await authorize(request,db,config,'communications.manage');
+  const b=z.object({rules:z.array(z.object({
+    eventKey:z.string().min(1).max(100),
+    channel:z.enum(['email','sms','whatsapp']),
+    enabled:z.boolean()
+  })).min(1).max(100)}).parse(request.body);
+  await tx(db,async client=>{
+    for(const r of b.rules){
+      await client.query(`INSERT INTO notification_rules(organisation_id,event_key,channel,enabled,updated_by_os_user_id,updated_at)
+        VALUES($1,$2,$3,$4,$5,now())
+        ON CONFLICT(organisation_id,event_key,channel)
+        DO UPDATE SET enabled=EXCLUDED.enabled,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,updated_at=now()`,
+        [a.core.organisation_id,r.eventKey,r.channel,r.enabled,a.core.id]);
+    }
+  });
+  await audit(a.core.organisation_id,a.core.id,'notification_rules.updated','notification_rule',null,{count:b.rules.length});
+  return{updated:b.rules.length};
+});
+app.get('/api/communications/outbox',async request=>{
+  const a=await authorize(request,db,config,'communications.view');
+  const q=z.object({status:z.enum(['queued','pending_configuration','sending','sent','failed']).optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  return (await db.query(`SELECT * FROM communication_outbox
+    WHERE organisation_id=$1 AND ($2::text IS NULL OR status=$2)
+    ORDER BY created_at DESC LIMIT $3`,[a.core.organisation_id,q.status??null,q.limit])).rows;
+});
+app.post('/api/communications/send',async(request,reply)=>{
+  const a=await authorize(request,db,config,'communications.send');
+  const b=z.object({
+    channels:z.array(z.enum(['email','sms','whatsapp'])).min(1).max(3),
+    recipientName:z.string().max(200).optional(),
+    email:z.string().email().optional(),
+    phone:z.string().min(5).max(60).optional(),
+    subject:z.string().max(300).optional(),
+    body:z.string().min(1).max(5000)
+  }).parse(request.body);
+  const results:any[]=[];
+  for(const channel of b.channels){
+    const address=channel==='email'?b.email:b.phone;
+    if(!address)throw fail(400,channel==='email'?'Email address is required':'Phone number is required');
+    results.push(await deliverCommunication({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel,
+      recipientName:b.recipientName,recipientAddress:address,subject:b.subject,body:b.body,
+      templateKey:'manual.message'
+    }));
+  }
+  await audit(a.core.organisation_id,a.core.id,'communication.sent','communication_outbox',null,{channels:b.channels});
+  return reply.code(201).send(results);
+});
+
+app.get('/api/payments/provider-status',async request=>{
+  const a=await authorize(request,db,config,'payments.configure');
+  const s=providerStatus(config);
+  return{payments:s.payments,email:s.email,sms:s.sms,whatsapp:s.whatsapp};
+});
+app.get('/api/fees/payment-requests',async request=>{
+  const a=await authorize(request,db,config,'fees.view');
+  const q=z.object({status:z.enum(['open','paid','cancelled','expired']).optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  return (await db.query(`SELECT pr.*,s.admission_no,s.first_name,s.last_name,f.name fee_name,
+      g.first_name guardian_first_name,g.last_name guardian_last_name,g.phone guardian_phone,g.email guardian_email
+    FROM fee_payment_requests pr
+    JOIN students s ON s.id=pr.student_id
+    LEFT JOIN student_fees sf ON sf.id=pr.student_fee_id
+    LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    LEFT JOIN guardians g ON g.id=pr.guardian_id
+    WHERE pr.organisation_id=$1 AND ($2::text IS NULL OR pr.status=$2)
+    ORDER BY pr.created_at DESC LIMIT $3`,[a.core.organisation_id,q.status??null,q.limit])).rows;
+});
+app.post('/api/fees/payment-requests',async(request,reply)=>{
+  const a=await authorize(request,db,config,'payments.initiate');
+  const b=z.object({
+    studentId:z.string().uuid(),
+    studentFeeId:z.string().uuid().optional(),
+    guardianId:z.string().uuid().optional(),
+    amount:z.number().positive(),
+    note:z.string().max(1000).optional(),
+    expiresAt:z.string().datetime().optional()
+  }).parse(request.body);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
+  let fee:any=null;
+  if(b.studentFeeId){
+    fee=await one<any>(db,`SELECT sf.*,f.name fee_name,(sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+      FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id
+      WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[b.studentFeeId,b.studentId,a.core.organisation_id]);
+    if(b.amount>Number(fee.balance)+0.001)throw fail(400,'Payment request cannot exceed the outstanding fee balance');
+  }
+  const guardian=b.guardianId
+    ?await one<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
+      WHERE g.id=$1 AND sg.student_id=$2`,[b.guardianId,b.studentId])
+    :await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
+      WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[b.studentId]);
+  if(!guardian)throw fail(409,'Link a guardian to the student before sending a payment request');
+  const row=await one<any>(db,`INSERT INTO fee_payment_requests(
+      organisation_id,student_id,student_fee_id,guardian_id,amount,note,requested_by_os_user_id,expires_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[
+      a.core.organisation_id,b.studentId,b.studentFeeId??null,guardian.id,b.amount,b.note??null,a.core.id,b.expiresAt??null
+    ]);
+  const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+  await notifyContact({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_requested',
+    name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
+    subject:'School fee payment request',
+    body:`${school.school_name} has requested a fee payment of ${school.currency||'GHS'} ${Number(b.amount).toFixed(2)} for ${student.first_name} ${student.last_name}${fee?' - '+fee.fee_name:''}. Sign in to the Parent Portal to review and pay.`,
+    relatedType:'fee_payment_request',relatedId:row.id
+  });
+  await audit(a.core.organisation_id,a.core.id,'fee_payment_request.created','fee_payment_request',row.id,{studentId:b.studentId,amount:b.amount});
+  return reply.code(201).send(row);
+});
+app.post('/api/fees/payment-requests/:id/cancel',async request=>{
+  const a=await authorize(request,db,config,'payments.initiate');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const row=await one<any>(db,`UPDATE fee_payment_requests SET status='cancelled',updated_at=now()
+    WHERE id=$1 AND organisation_id=$2 AND status='open' RETURNING *`,[id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'fee_payment_request.cancelled','fee_payment_request',id);
+  return row;
+});
+
+app.get('/api/payment-intents',async request=>{
+  const a=await authorize(request,db,config,'fees.view');
+  const q=z.object({limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  return (await db.query(`SELECT pi.*,s.admission_no,s.first_name,s.last_name,f.name fee_name
+    FROM payment_intents pi JOIN students s ON s.id=pi.student_id
+    LEFT JOIN student_fees sf ON sf.id=pi.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    WHERE pi.organisation_id=$1 ORDER BY pi.created_at DESC LIMIT $2`,[a.core.organisation_id,q.limit])).rows;
+});
+
+app.post('/api/payment-intents',async(request,reply)=>{
+  const a=await authorize(request,db,config,'payments.initiate');
+  if(!providerStatus(config).payments.configured)throw fail(503,'Online payment provider is not configured');
+  const b=z.object({
+    studentId:z.string().uuid(),
+    studentFeeId:z.string().uuid().optional(),
+    guardianId:z.string().uuid().optional(),
+    amount:z.number().positive(),
+    method:z.enum(['card','mobile_money'])
+  }).parse(request.body);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
+  const guardian=b.guardianId
+    ?await one<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE g.id=$1 AND sg.student_id=$2`,[b.guardianId,b.studentId])
+    :await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[b.studentId]);
+  if(!guardian?.email)throw fail(409,'The guardian needs an email address before an online payment can be initialized');
+  if(b.studentFeeId){
+    const open=await one<any>(db,`SELECT (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+      FROM student_fees sf WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[b.studentFeeId,b.studentId,a.core.organisation_id]);
+    if(b.amount>Number(open.balance)+0.001)throw fail(400,'Payment cannot exceed the outstanding fee balance');
+  }
+  const reference='RXS-'+Date.now().toString(36).toUpperCase()+'-'+randomBytes(4).toString('hex').toUpperCase();
+  const intent=await one<any>(db,`INSERT INTO payment_intents(
+      organisation_id,student_id,student_fee_id,guardian_id,amount,currency,method,provider,reference,status,initiated_by_type,initiated_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,'paystack',$8,'initialized','school',$9) RETURNING *`,[
+      a.core.organisation_id,b.studentId,b.studentFeeId??null,guardian.id,b.amount,config.PAYSTACK_CURRENCY,b.method,reference,a.core.id
+    ]);
+  try{
+    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    const initialized=await initializePaystack(config,{
+      email:guardian.email,amount:b.amount,currency:config.PAYSTACK_CURRENCY,reference,
+      channels:[b.method],callbackUrl:base+'/payment/callback',
+      metadata:{schoolPaymentIntentId:intent.id,studentId:b.studentId,studentFeeId:b.studentFeeId||null}
+    });
+    const updated=await one<any>(db,`UPDATE payment_intents SET status='pending',authorization_url=$1,provider_access_code=$2,updated_at=now()
+      WHERE id=$3 RETURNING *`,[initialized.authorizationUrl,initialized.accessCode,intent.id]);
+    await audit(a.core.organisation_id,a.core.id,'payment_intent.created','payment_intent',intent.id,{method:b.method,amount:b.amount});
+    return reply.code(201).send(updated);
+  }catch(error:any){
+    await db.query("UPDATE payment_intents SET status='failed',failure_reason=$1,updated_at=now() WHERE id=$2",[String(error?.message||error),intent.id]);
+    throw error;
+  }
+});
+
+app.get('/api/parent/students/:id/payment-requests',async request=>{
+  const g=await guardianAuth(request);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await ensureGuardianStudent(g.guardian_id,id);
+  return (await db.query(`SELECT pr.*,f.name fee_name
+    FROM fee_payment_requests pr
+    LEFT JOIN student_fees sf ON sf.id=pr.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    WHERE pr.organisation_id=$1 AND pr.student_id=$2 AND pr.guardian_id=$3 AND pr.status='open'
+      AND (pr.expires_at IS NULL OR pr.expires_at>now())
+    ORDER BY pr.created_at DESC`,[g.organisation_id,id,g.guardian_id])).rows;
+});
+app.post('/api/parent/payment-intents',async(request,reply)=>{
+  const g=await guardianAuth(request);
+  if(!providerStatus(config).payments.configured)throw fail(503,'Online payment is not yet configured by the school');
+  const b=z.object({
+    studentId:z.string().uuid(),
+    studentFeeId:z.string().uuid().optional(),
+    paymentRequestId:z.string().uuid().optional(),
+    amount:z.number().positive(),
+    method:z.enum(['card','mobile_money'])
+  }).parse(request.body);
+  await ensureGuardianStudent(g.guardian_id,b.studentId);
+  if(!g.email)throw fail(409,'Add an email address to your guardian record before making an online payment');
+  let requestRow:any=null;
+  if(b.paymentRequestId){
+    requestRow=await one<any>(db,`SELECT * FROM fee_payment_requests
+      WHERE id=$1 AND organisation_id=$2 AND student_id=$3 AND guardian_id=$4 AND status='open'
+      AND (expires_at IS NULL OR expires_at>now())`,[b.paymentRequestId,g.organisation_id,b.studentId,g.guardian_id]);
+    if(Math.abs(Number(requestRow.amount)-b.amount)>0.001)throw fail(400,'Payment amount must match the school payment request');
+  }
+  const feeId=b.studentFeeId??requestRow?.student_fee_id??null;
+  if(feeId){
+    const open=await one<any>(db,`SELECT (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+      FROM student_fees sf WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[feeId,b.studentId,g.organisation_id]);
+    if(b.amount>Number(open.balance)+0.001)throw fail(400,'Payment cannot exceed the outstanding fee balance');
+  }
+  const reference='RXP-'+Date.now().toString(36).toUpperCase()+'-'+randomBytes(4).toString('hex').toUpperCase();
+  const intent=await one<any>(db,`INSERT INTO payment_intents(
+      organisation_id,student_id,student_fee_id,payment_request_id,guardian_id,amount,currency,method,provider,reference,status,initiated_by_type,initiated_by_guardian_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'paystack',$9,'initialized','guardian',$10) RETURNING *`,[
+      g.organisation_id,b.studentId,feeId,b.paymentRequestId??null,g.guardian_id,b.amount,config.PAYSTACK_CURRENCY,b.method,reference,g.guardian_id
+    ]);
+  try{
+    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    const initialized=await initializePaystack(config,{
+      email:g.email,amount:b.amount,currency:config.PAYSTACK_CURRENCY,reference,
+      channels:[b.method],callbackUrl:base+'/payment/callback',
+      metadata:{schoolPaymentIntentId:intent.id,studentId:b.studentId,guardianId:g.guardian_id}
+    });
+    const updated=await one<any>(db,`UPDATE payment_intents SET status='pending',authorization_url=$1,provider_access_code=$2,updated_at=now()
+      WHERE id=$3 RETURNING *`,[initialized.authorizationUrl,initialized.accessCode,intent.id]);
+    return reply.code(201).send(updated);
+  }catch(error:any){
+    await db.query("UPDATE payment_intents SET status='failed',failure_reason=$1,updated_at=now() WHERE id=$2",[String(error?.message||error),intent.id]);
+    throw error;
+  }
+});
+app.get('/payment/callback',async(request,reply)=>{
+  const q=z.object({reference:z.string().min(1).max(120)}).parse(request.query);
+  try{
+    const intent=await settleOnlinePayment(q.reference);
+    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    return reply.redirect(base+'/parent?payment='+encodeURIComponent(intent.status)+'&reference='+encodeURIComponent(q.reference));
+  }catch{
+    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    return reply.redirect(base+'/parent?payment=failed&reference='+encodeURIComponent(q.reference));
+  }
+});
+app.post('/api/payments/paystack/webhook',async(request,reply)=>{
+  const event=request.body as any;
+  const reference=String(event?.data?.reference||'');
+  if(event?.event!=='charge.success'||!reference)return reply.code(200).send({ok:true});
+  try{
+    const intent=await settleOnlinePayment(reference);
+    if(intent.status==='success'){
+      const guardian=intent.guardian_id?await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1',[intent.guardian_id]):null;
+      const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1',[intent.student_id]);
+      if(guardian&&student){
+        await notifyContact({
+          organisationId:intent.organisation_id,eventKey:'fees.payment_received',
+          name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
+          subject:'School fee payment received',
+          body:`Payment of ${intent.currency} ${Number(intent.amount).toFixed(2)} for ${student.first_name} ${student.last_name} has been received successfully. Reference: ${intent.reference}.`,
+          relatedType:'payment_intent',relatedId:intent.id
+        });
+      }
+    }
+  }catch(error:any){
+    console.error('Paystack webhook settlement failed',error?.message||error);
+  }
+  return reply.code(200).send({ok:true});
+});
+
 app.get('/api/audit',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query('SELECT * FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id])).rows});
 
 app.setErrorHandler((error:any,_request,reply)=>{
