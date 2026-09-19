@@ -1224,12 +1224,139 @@ app.patch('/api/announcements/:id',async request=>{
 app.delete('/api/announcements/:id',async(request,reply)=>{const a=await authorize(request,db,config,'communications.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);await one<any>(db,'DELETE FROM school_announcements WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);return reply.code(204).send()});
 
 app.get('/api/report-comments/:studentId',async request=>{
-  const a=await authorize(request,db,config,'reports.view');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const q=z.object({termId:z.string().uuid()}).parse(request.query);
+  const a=await authorize(request,db,config,'reports.view');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const q=z.object({termId:z.string().uuid()}).parse(request.query);
   return (await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]))??null;
 });
 app.put('/api/report-comments/:studentId',async request=>{
-  const a=await authorize(request,db,config,'reports.edit');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const b=z.object({termId:z.string().uuid(),classTeacherComment:z.string().max(4000).nullable().optional(),headteacherComment:z.string().max(4000).nullable().optional(),conduct:z.string().max(80).nullable().optional(),interest:z.string().max(1000).nullable().optional(),nextTermBegins:z.string().date().nullable().optional()}).parse(request.body);
-  const row=await one<any>(db,`INSERT INTO report_comments(organisation_id,student_id,term_id,class_teacher_comment,headteacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(student_id,term_id) DO UPDATE SET class_teacher_comment=EXCLUDED.class_teacher_comment,headteacher_comment=EXCLUDED.headteacher_comment,conduct=EXCLUDED.conduct,interest=EXCLUDED.interest,next_term_begins=EXCLUDED.next_term_begins,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,updated_at=now() RETURNING *`,[a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.headteacherComment??null,b.conduct??null,b.interest??null,b.nextTermBegins??null,a.core.id]);return row;
+  const a=await authorize(request,db,config,'reports.edit');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    termId:z.string().uuid(),
+    classTeacherComment:z.string().max(4000).nullable().optional(),
+    conduct:z.string().max(80).nullable().optional(),
+    interest:z.string().max(1000).nullable().optional(),
+    nextTermBegins:z.string().date().nullable().optional()
+  }).parse(request.body);
+  const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
+  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
+    ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
+  await ensureTeacherScope(a,current.classroom_id,null);
+  if(a.role==='teacher'&&current.class_teacher_os_user_id!==a.core.id)throw fail(403,'Only the assigned class teacher can complete report remarks for this class');
+  const existing=await maybeOne<any>(db,'SELECT workflow_status FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
+  const row=await one<any>(db,`INSERT INTO report_comments(
+      organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id,workflow_status
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft')
+    ON CONFLICT(student_id,term_id) DO UPDATE SET
+      class_teacher_comment=EXCLUDED.class_teacher_comment,conduct=EXCLUDED.conduct,interest=EXCLUDED.interest,
+      next_term_begins=EXCLUDED.next_term_begins,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,
+      workflow_status=CASE WHEN report_comments.workflow_status='returned' THEN 'draft' ELSE report_comments.workflow_status END,
+      return_note=NULL,updated_at=now()
+    RETURNING *`,[
+      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,b.nextTermBegins??null,a.core.id
+    ]);
+  await audit(a.core.organisation_id,a.core.id,'report.remarks_saved','report_comment',row.id,{studentId,termId:b.termId});
+  return row;
+});
+app.post('/api/report-comments/:studentId/submit',async request=>{
+  const a=await authorize(request,db,config,'reports.submit');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const b=z.object({termId:z.string().uuid()}).parse(request.body);
+  const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
+  const current=await one<any>(db,`SELECT c.id classroom_id,c.class_teacher_os_user_id
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 AND e.organisation_id=$3
+    ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id,a.core.organisation_id]);
+  await ensureTeacherScope(a,current.classroom_id,null);
+  if(a.role==='teacher'&&current.class_teacher_os_user_id!==a.core.id)throw fail(403,'Only the assigned class teacher can submit this report');
+  const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
+  if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
+  const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1,submitted_at=now(),
+    return_note=NULL,updated_at=now() WHERE id=$2 RETURNING *`,[a.core.id,report.id]);
+  await audit(a.core.organisation_id,a.core.id,'report.submitted','report_comment',report.id,{studentId,termId:b.termId,classroomId:current.classroom_id});
+  return updated;
+});
+app.get('/api/report-review-queue',async request=>{
+  const a=await authorize(request,db,config,'reports.approve');
+  const q=z.object({status:z.enum(['submitted','approved','returned']).optional(),termId:z.string().uuid().optional()}).parse(request.query);
+  let rows=(await db.query(`SELECT rc.*,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,t.name term_name,y.name academic_year,
+      c.class_teacher_os_user_id
+    FROM report_comments rc
+    JOIN students s ON s.id=rc.student_id
+    JOIN terms t ON t.id=rc.term_id JOIN academic_years y ON y.id=t.academic_year_id
+    JOIN enrolments e ON e.student_id=s.id AND e.academic_year_id=t.academic_year_id
+    JOIN classrooms c ON c.id=e.classroom_id
+    WHERE rc.organisation_id=$1 AND ($2::text IS NULL OR rc.workflow_status=$2) AND ($3::uuid IS NULL OR rc.term_id=$3)
+    ORDER BY CASE rc.workflow_status WHEN 'submitted' THEN 0 WHEN 'returned' THEN 1 ELSE 2 END,rc.updated_at DESC`,
+    [a.core.organisation_id,q.status??null,q.termId??null])).rows;
+  if(a.role!=='school_admin'&&a.role!=='headteacher'){
+    const assigned=(await db.query('SELECT classroom_id FROM report_reviewer_assignments WHERE organisation_id=$1 AND reviewer_os_user_id=$2 AND is_active=true',[a.core.organisation_id,a.core.id])).rows.map((x:any)=>x.classroom_id);
+    rows=rows.filter((r:any)=>assigned.includes(r.classroom_id));
+  }
+  return rows;
+});
+app.post('/api/report-comments/:studentId/review',async request=>{
+  const a=await authorize(request,db,config,'reports.approve');
+  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    termId:z.string().uuid(),
+    action:z.enum(['approve','return']),
+    headteacherComment:z.string().max(4000).nullable().optional(),
+    returnNote:z.string().max(2000).nullable().optional(),
+    nextTermBegins:z.string().date().nullable().optional()
+  }).parse(request.body);
+  const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
+  if(report.workflow_status!=='submitted')throw fail(409,'Only submitted reports can be reviewed');
+  const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[b.termId]);
+  const current=await one<any>(db,`SELECT c.id classroom_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
+  if(a.role!=='school_admin'&&a.role!=='headteacher'){
+    const assignment=await maybeOne<any>(db,'SELECT 1 FROM report_reviewer_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND reviewer_os_user_id=$3 AND is_active=true',[a.core.organisation_id,current.classroom_id,a.core.id]);
+    if(!assignment)throw fail(403,'You are not assigned to review reports for this class');
+  }
+  if(b.action==='return'&&!b.returnNote)throw fail(400,'Give the class teacher a reason for returning the report');
+  const status=b.action==='approve'?'approved':'returned';
+  const updated=await one<any>(db,`UPDATE report_comments SET workflow_status=$1,
+      headteacher_comment=CASE WHEN $1='approved' THEN $2 ELSE headteacher_comment END,
+      next_term_begins=CASE WHEN $1='approved' AND $3 THEN $4::date ELSE next_term_begins END,
+      return_note=CASE WHEN $1='returned' THEN $5 ELSE NULL END,
+      reviewed_by_os_user_id=$6,reviewed_at=now(),updated_at=now()
+    WHERE id=$7 RETURNING *`,[
+      status,b.headteacherComment??null,Object.hasOwn(b,'nextTermBegins'),b.nextTermBegins??null,b.returnNote??null,a.core.id,report.id
+    ]);
+  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1',[studentId]);
+  const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
+    WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[studentId]);
+  if(guardian&&status==='approved'){
+    await notifyContact({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.approved',
+      name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
+      subject:'Student report card approved',
+      body:`The report card for ${student.first_name} ${student.last_name} has been approved and is now available in the Parent Portal.`,
+      relatedType:'report_comment',relatedId:report.id
+    });
+  }
+  await audit(a.core.organisation_id,a.core.id,'report.'+status,'report_comment',report.id,{studentId,termId:b.termId});
+  return updated;
+});
+app.get('/api/report-reviewers',async request=>{
+  const a=await authorize(request,db,config,'staff.view');
+  return (await db.query(`SELECT rra.*,c.name classroom_name FROM report_reviewer_assignments rra
+    JOIN classrooms c ON c.id=rra.classroom_id WHERE rra.organisation_id=$1 ORDER BY c.name,rra.created_at`,[a.core.organisation_id])).rows;
+});
+app.post('/api/report-reviewers',async(request,reply)=>{
+  const a=await authorize(request,db,config,'staff.edit');
+  const b=z.object({classroomId:z.string().uuid(),reviewerOsUserId:z.string().uuid(),isActive:z.boolean().default(true)}).parse(request.body);
+  const row=await one<any>(db,`INSERT INTO report_reviewer_assignments(organisation_id,classroom_id,reviewer_os_user_id,is_active)
+    VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,classroom_id,reviewer_os_user_id)
+    DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *`,[a.core.organisation_id,b.classroomId,b.reviewerOsUserId,b.isActive]);
+  await audit(a.core.organisation_id,a.core.id,'report_reviewer.assigned','report_reviewer_assignment',row.id,{classroomId:b.classroomId,reviewerOsUserId:b.reviewerOsUserId});
+  return reply.code(201).send(row);
 });
 
 app.post('/api/promotions/batch',async request=>{
