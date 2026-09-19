@@ -994,6 +994,15 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
     const missing=teacherIds.filter(id=>!valid.includes(id));
     if(missing.length)throw fail(409,'One or more selected teachers do not have active teaching access');
   }
+  if(b.classTeacherOsUserId){
+    const other=await maybeOne<any>(db,`SELECT c.name classroom_name FROM teacher_assignments ta
+      JOIN classrooms c ON c.id=ta.classroom_id
+      WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
+        AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4
+      ORDER BY (ta.term_id IS NULL) DESC,ta.created_at LIMIT 1`,
+      [a.core.organisation_id,b.academicYearId,b.classTeacherOsUserId,classroomId]);
+    if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}. Choose a different Class Teacher.`);
+  }
 
   const result=await tx(db,async client=>{
     const current=(await client.query(`SELECT * FROM class_subjects
@@ -1001,20 +1010,16 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
       [a.core.organisation_id,b.academicYearId,classroomId])).rows;
     const removed=current.filter((x:any)=>!subjectIds.includes(x.subject_id));
 
+    let archivedTimetableEntries=0;
     for(const row of removed){
-      const used=(await client.query(`SELECT
-        (SELECT count(*)::int FROM assessments WHERE classroom_id=$1 AND subject_id=$2) assessments,
-        (SELECT count(*)::int FROM timetable_entries WHERE classroom_id=$1 AND subject_id=$2) timetable,
-        (SELECT count(*)::int FROM homework_assignments WHERE classroom_id=$1 AND subject_id=$2) homework,
-        (SELECT count(*)::int FROM lesson_notes WHERE classroom_id=$1 AND subject_id=$2) lesson_notes`,
-        [classroomId,row.subject_id])).rows[0];
-      if(Number(used.assessments)+Number(used.timetable)+Number(used.homework)+Number(used.lesson_notes)>0){
-        const subject=await one<any>(client,'SELECT name FROM subjects WHERE id=$1',[row.subject_id]);
-        throw fail(409,`${subject.name} already has academic or timetable records and cannot be removed from this class. Keep it selected or archive the dependent records first.`);
-      }
-      await client.query('DELETE FROM teacher_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND subject_id=$3',
-        [a.core.organisation_id,classroomId,row.subject_id]);
-      await client.query('DELETE FROM class_subjects WHERE id=$1',[row.id]);
+      await client.query(`UPDATE teacher_assignments SET is_active=false
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id=$4 AND is_active=true`,
+        [a.core.organisation_id,b.academicYearId,classroomId,row.subject_id]);
+      const deleted=await client.query(`DELETE FROM timetable_entries
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id=$4`,
+        [a.core.organisation_id,b.academicYearId,classroomId,row.subject_id]);
+      archivedTimetableEntries+=deleted.rowCount||0;
+      await client.query('UPDATE class_subjects SET is_active=false,updated_at=now() WHERE id=$1',[row.id]);
     }
 
     for(const item of b.subjects){
@@ -1073,7 +1078,8 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
       termId:b.termId??null,
       classTeacherOsUserId:b.classTeacherOsUserId??null,
       subjectCount:b.subjects.length,
-      removedSubjects:removed.length
+      removedSubjects:removed.length,
+      removedTimetablePeriods:archivedTimetableEntries
     };
   });
 
@@ -1111,7 +1117,14 @@ app.post('/api/teacher-assignments/bulk',async request=>{
 
   let pairs:{classroomId:string;subjectId:string|null}[]=[];
   if(b.mode==='class_teacher'){
-    pairs=uniqueClasses.map(classroomId=>({classroomId,subjectId:null}));
+    if(uniqueClasses.length!==1)throw fail(409,'A teacher can be Class Teacher for only one class. Select one class only.');
+    const other=await maybeOne<any>(db,`SELECT c.name classroom_name FROM teacher_assignments ta
+      JOIN classrooms c ON c.id=ta.classroom_id
+      WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
+        AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4 LIMIT 1`,
+      [a.core.organisation_id,b.academicYearId,b.teacherOsUserId,uniqueClasses[0]]);
+    if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}.`);
+    pairs=[{classroomId:uniqueClasses[0],subjectId:null}];
   }else if(b.mode==='all_subjects'){
     pairs=(await db.query(`SELECT classroom_id,subject_id FROM class_subjects
       WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true AND classroom_id=ANY($3::uuid[])
@@ -2303,6 +2316,13 @@ app.patch('/api/classes/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:z.string().uuid().nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const before=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(Object.hasOwn(b,'classTeacherOsUserId')&&b.classTeacherOsUserId){
+    const other=await maybeOne<any>(db,`SELECT name FROM classrooms
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true
+        AND class_teacher_os_user_id=$3 AND id<>$4 LIMIT 1`,
+      [a.core.organisation_id,before.academic_year_id,b.classTeacherOsUserId,id]);
+    if(other)throw fail(409,`This teacher is already Class Teacher for ${other.name}. A teacher can be Class Teacher for only one active class.`);
+  }
   const row=await one<any>(db,`UPDATE classrooms SET name=COALESCE($1,name),stream=CASE WHEN $2 THEN $3 ELSE stream END,capacity=CASE WHEN $4 THEN $5 ELSE capacity END,class_teacher_os_user_id=CASE WHEN $6 THEN $7 ELSE class_teacher_os_user_id END,is_active=COALESCE($8,is_active) WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.name??null,Object.hasOwn(b,'stream'),b.stream??null,Object.hasOwn(b,'capacity'),b.capacity??null,Object.hasOwn(b,'classTeacherOsUserId'),b.classTeacherOsUserId??null,b.isActive??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'class.updated','classroom',id);
   await changeLog({organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'class.updated',resourceType:'classroom',resourceId:id,performedOn:row.name,oldValue:before,newValue:row});
@@ -2553,6 +2573,16 @@ async function validateTeachingAssignment(input:{
       WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id=$4 AND is_active=true`,
       [input.organisationId,input.academicYearId,input.classroomId,input.subjectId]);
     if(!classSubject)throw fail(409,'Add this subject to the selected class before assigning a teacher');
+  }
+
+  if(!input.subjectId){
+    const other=await maybeOne<any>(db,`SELECT c.name classroom_name FROM teacher_assignments ta
+      JOIN classrooms c ON c.id=ta.classroom_id
+      WHERE ta.organisation_id=$1 AND ta.academic_year_id=$2 AND ta.teacher_os_user_id=$3
+        AND ta.subject_id IS NULL AND ta.is_active=true AND ta.classroom_id<>$4
+      ORDER BY (ta.term_id IS NULL) DESC,ta.created_at LIMIT 1`,
+      [input.organisationId,input.academicYearId,input.teacherOsUserId,input.classroomId]);
+    if(other)throw fail(409,`This teacher is already Class Teacher for ${other.classroom_name}. A teacher can be Class Teacher for only one active class in an academic year.`);
   }
 
   return{membership,classroom};
@@ -3856,7 +3886,7 @@ app.get('/api/teacher/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
   if(!['teacher','headteacher','school_admin'].includes(a.role))throw fail(403,'Teacher timetable access is not enabled for this role');
   const q=z.object({termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
-  const filterTeacher=a.role==='teacher'?a.core.id:null;
+  const filterTeacher=a.core.id;
   return (await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
