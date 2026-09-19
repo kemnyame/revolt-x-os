@@ -388,10 +388,20 @@ app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
 app.post('/api/auth/preview',async(_r,p)=>{
-  const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/preview-session',{method:'POST',signal:AbortSignal.timeout(10000)}).catch(()=>null);
-  if(!res)throw fail(503,'Core Revolt-X OS could not be reached');
-  const body=await res.json().catch(async()=>({error:{message:await res.text().catch(()=> 'Core OS preview request failed')}}));
-  return p.code(res.status).send(body);
+  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/preview-session';
+  let last:Response|null=null;
+  for(let attempt=0;attempt<3;attempt++){
+    const res=await fetch(url,{method:'POST',signal:AbortSignal.timeout(15000)}).catch(()=>null);
+    if(res&&!([429,502,503,504].includes(res.status))){
+      const body=await res.json().catch(async()=>({error:{message:await res.text().catch(()=> 'Core OS preview request failed')}}));
+      return p.code(res.status).send(body);
+    }
+    last=res;
+    if(attempt<2)await new Promise(resolve=>setTimeout(resolve,750*(attempt+1)));
+  }
+  if(!last)throw fail(503,'Core Revolt-X OS could not be reached');
+  const body=await last.json().catch(async()=>({error:{message:await last!.text().catch(()=> 'Core OS preview request failed')}}));
+  return p.code(last.status).send(body);
 });
 
 app.get('/api/context',async request=>{
