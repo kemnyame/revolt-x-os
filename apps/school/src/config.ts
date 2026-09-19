@@ -24,6 +24,7 @@ const schema = z.object({
   TWILIO_MESSAGING_SERVICE_SID: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_SMS_FROM: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_WHATSAPP_FROM: z.preprocess(emptyToUndefined,z.string().optional()),
+  TWILIO_WHATSAPP_CONTENT_SID: z.preprocess(emptyToUndefined,z.string().optional()),
 
   PAYSTACK_SECRET_KEY: z.preprocess(emptyToUndefined,z.string().optional()),
   PAYSTACK_CURRENCY: z.string().default('GHS')
