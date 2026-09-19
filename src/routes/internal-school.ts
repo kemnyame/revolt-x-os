@@ -109,6 +109,72 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }
   });
 
+  app.patch('/v1/internal/school/users/:membershipId',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const b=z.object({
+      organisationId:z.string().uuid(),
+      actorUserId:z.string().uuid(),
+      firstName:z.string().trim().min(1).max(100).optional(),
+      lastName:z.string().trim().min(1).max(100).optional(),
+      email:z.string().trim().toLowerCase().email().nullable().optional(),
+      jobTitle:z.string().trim().max(160).nullable().optional(),
+      employeeNumber:z.string().trim().max(80).nullable().optional()
+    }).refine(v=>Object.keys(v).some(k=>!['organisationId','actorUserId'].includes(k))).parse(request.body);
+
+    try{
+      return transaction(db,async q=>{
+        const before=await one<any>(q,`SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
+          FROM organisation_memberships m JOIN users u ON u.id=m.user_id
+          WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
+
+        if(b.firstName!==undefined||b.lastName!==undefined||Object.hasOwn(b,'email')){
+          const nextEmail=Object.hasOwn(b,'email')
+            ?(b.email??('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local'))
+            :before.email;
+          await q.query(`UPDATE users SET
+            first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),email=$3,updated_at=now()
+            WHERE id=$4`,[b.firstName??null,b.lastName??null,nextEmail,before.user_id]);
+        }
+        await q.query(`UPDATE organisation_memberships SET
+          job_title=CASE WHEN $1 THEN $2 ELSE job_title END,
+          employee_number=CASE WHEN $3 THEN $4 ELSE employee_number END
+          WHERE id=$5`,[
+          Object.hasOwn(b,'jobTitle'),b.jobTitle??null,Object.hasOwn(b,'employeeNumber'),b.employeeNumber??null,p.membershipId
+        ]);
+        const row=await one<any>(q,`SELECT u.id,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,
+          u.first_name,u.last_name,u.status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at
+          FROM organisation_memberships m JOIN users u ON u.id=m.user_id
+          WHERE m.id=$1 AND m.organisation_id=$2`,[p.membershipId,b.organisationId]);
+        await audit(q,{organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
+          action:'school_service.user_updated',resourceType:'membership',resourceId:p.membershipId,beforeState:before,afterState:row});
+        return row;
+      });
+    }catch(e:any){
+      if(e.code==='23505')throw conflict('Email or employee number is already in use');
+      throw e;
+    }
+  });
+
+  app.post('/v1/internal/school/users/:membershipId/unlock',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const b=z.object({organisationId:z.string().uuid(),actorUserId:z.string().uuid()}).parse(request.body);
+    return transaction(db,async q=>{
+      const before=await one<any>(q,`SELECT m.*,u.status user_status FROM organisation_memberships m
+        JOIN users u ON u.id=m.user_id WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,
+        [p.membershipId,b.organisationId]);
+      await q.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1",[before.user_id]);
+      const row=await one<any>(q,"UPDATE organisation_memberships SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",
+        [p.membershipId,b.organisationId]);
+      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
+        [before.user_id,b.organisationId]);
+      await audit(q,{organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
+        action:'school_service.user_unlocked',resourceType:'membership',resourceId:p.membershipId,beforeState:before,afterState:row});
+      return row;
+    });
+  });
+
   app.post('/v1/internal/school/users/:membershipId/password-setup',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
