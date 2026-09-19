@@ -949,6 +949,213 @@ app.post('/api/class-subjects/bulk',async(request,reply)=>{
   return reply.code(201).send({classroomId:b.classroomId,added:rows.length,subjects:rows});
 });
 
+
+app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
+  const {classroomId}=z.object({classroomId:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    termId:z.string().uuid().nullable().optional(),
+    classTeacherOsUserId:z.string().uuid().nullable().optional(),
+    subjects:z.array(z.object({
+      subjectId:z.string().uuid(),
+      weeklyPeriods:z.number().int().min(1).max(20),
+      creditHours:z.number().min(0.25).max(20),
+      teacherOsUserId:z.string().uuid().nullable().optional()
+    })).max(40)
+  }).parse(request.body);
+
+  const classroom=await one<any>(db,`SELECT c.*,g.stage,g.name grade_name
+    FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE c.id=$1 AND c.organisation_id=$2 AND c.academic_year_id=$3 AND c.is_active=true`,
+    [classroomId,a.core.organisation_id,b.academicYearId]);
+  if(b.termId)await one<any>(db,'SELECT id FROM terms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',
+    [b.termId,a.core.organisation_id,b.academicYearId]);
+
+  const subjectIds=[...new Set(b.subjects.map(x=>x.subjectId))];
+  if(subjectIds.length!==b.subjects.length)throw fail(400,'Each subject can appear only once in a class setup');
+  if(subjectIds.length){
+    const subjectRows=(await db.query(`SELECT id,name,stage FROM subjects
+      WHERE organisation_id=$1 AND is_active=true AND id=ANY($2::uuid[])`,
+      [a.core.organisation_id,subjectIds])).rows;
+    if(subjectRows.length!==subjectIds.length)throw fail(400,'One or more selected subjects are unavailable');
+    const invalid=subjectRows.filter((s:any)=>s.stage!=='both'&&s.stage!==classroom.stage);
+    if(invalid.length)throw fail(400,`These subjects are not configured for ${classroom.grade_name}: ${invalid.map((x:any)=>x.name).join(', ')}`);
+  }
+
+  const teacherIds=[...new Set([
+    ...(b.classTeacherOsUserId?[b.classTeacherOsUserId]:[]),
+    ...b.subjects.map(x=>x.teacherOsUserId).filter(Boolean)
+  ] as string[])];
+  if(teacherIds.length){
+    const valid=(await db.query(`SELECT os_user_id FROM school_memberships
+      WHERE organisation_id=$1 AND status='active' AND role IN('teacher','headteacher','school_admin')
+        AND os_user_id=ANY($2::uuid[])`,[a.core.organisation_id,teacherIds])).rows.map((x:any)=>x.os_user_id);
+    const missing=teacherIds.filter(id=>!valid.includes(id));
+    if(missing.length)throw fail(409,'One or more selected teachers do not have active teaching access');
+  }
+
+  const result=await tx(db,async client=>{
+    const current=(await client.query(`SELECT * FROM class_subjects
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND is_active=true`,
+      [a.core.organisation_id,b.academicYearId,classroomId])).rows;
+    const removed=current.filter((x:any)=>!subjectIds.includes(x.subject_id));
+
+    for(const row of removed){
+      const used=(await client.query(`SELECT
+        (SELECT count(*)::int FROM assessments WHERE classroom_id=$1 AND subject_id=$2) assessments,
+        (SELECT count(*)::int FROM timetable_entries WHERE classroom_id=$1 AND subject_id=$2) timetable,
+        (SELECT count(*)::int FROM homework_assignments WHERE classroom_id=$1 AND subject_id=$2) homework,
+        (SELECT count(*)::int FROM lesson_notes WHERE classroom_id=$1 AND subject_id=$2) lesson_notes`,
+        [classroomId,row.subject_id])).rows[0];
+      if(Number(used.assessments)+Number(used.timetable)+Number(used.homework)+Number(used.lesson_notes)>0){
+        const subject=await one<any>(client,'SELECT name FROM subjects WHERE id=$1',[row.subject_id]);
+        throw fail(409,`${subject.name} already has academic or timetable records and cannot be removed from this class. Keep it selected or archive the dependent records first.`);
+      }
+      await client.query('DELETE FROM teacher_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND subject_id=$3',
+        [a.core.organisation_id,classroomId,row.subject_id]);
+      await client.query('DELETE FROM class_subjects WHERE id=$1',[row.id]);
+    }
+
+    for(const item of b.subjects){
+      await client.query(`INSERT INTO class_subjects(
+          organisation_id,academic_year_id,classroom_id,subject_id,weekly_periods,credit_hours,is_active
+        ) VALUES($1,$2,$3,$4,$5,$6,true)
+        ON CONFLICT(academic_year_id,classroom_id,subject_id)
+        DO UPDATE SET weekly_periods=EXCLUDED.weekly_periods,credit_hours=EXCLUDED.credit_hours,is_active=true,updated_at=now()`,
+        [a.core.organisation_id,b.academicYearId,classroomId,item.subjectId,item.weeklyPeriods,item.creditHours]);
+
+      await client.query(`UPDATE teacher_assignments SET is_active=false
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id=$4
+          AND term_id IS NOT DISTINCT FROM $5::uuid AND is_active=true`,
+        [a.core.organisation_id,b.academicYearId,classroomId,item.subjectId,b.termId??null]);
+
+      if(item.teacherOsUserId){
+        const existing=(await client.query(`SELECT id FROM teacher_assignments
+          WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id=$4
+            AND term_id IS NOT DISTINCT FROM $5::uuid AND teacher_os_user_id=$6
+          ORDER BY created_at DESC LIMIT 1`,
+          [a.core.organisation_id,b.academicYearId,classroomId,item.subjectId,b.termId??null,item.teacherOsUserId])).rows[0];
+        if(existing)await client.query('UPDATE teacher_assignments SET is_active=true WHERE id=$1',[existing.id]);
+        else await client.query(`INSERT INTO teacher_assignments(
+          organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active
+        ) VALUES($1,$2,$3,$4,$5,$6,true)`,
+          [a.core.organisation_id,b.academicYearId,b.termId??null,classroomId,item.subjectId,item.teacherOsUserId]);
+      }
+    }
+
+    await client.query(`UPDATE teacher_assignments SET is_active=false
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id IS NULL
+        AND term_id IS NOT DISTINCT FROM $4::uuid AND is_active=true`,
+      [a.core.organisation_id,b.academicYearId,classroomId,b.termId??null]);
+
+    if(b.classTeacherOsUserId){
+      const existing=(await client.query(`SELECT id FROM teacher_assignments
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3 AND subject_id IS NULL
+          AND term_id IS NOT DISTINCT FROM $4::uuid AND teacher_os_user_id=$5
+        ORDER BY created_at DESC LIMIT 1`,
+        [a.core.organisation_id,b.academicYearId,classroomId,b.termId??null,b.classTeacherOsUserId])).rows[0];
+      if(existing)await client.query('UPDATE teacher_assignments SET is_active=true WHERE id=$1',[existing.id]);
+      else await client.query(`INSERT INTO teacher_assignments(
+        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active
+      ) VALUES($1,$2,$3,$4,NULL,$5,true)`,
+        [a.core.organisation_id,b.academicYearId,b.termId??null,classroomId,b.classTeacherOsUserId]);
+    }
+
+    if(!b.termId){
+      await client.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2 AND organisation_id=$3',
+        [b.classTeacherOsUserId??null,classroomId,a.core.organisation_id]);
+    }
+
+    return{
+      classroomId,
+      academicYearId:b.academicYearId,
+      termId:b.termId??null,
+      classTeacherOsUserId:b.classTeacherOsUserId??null,
+      subjectCount:b.subjects.length,
+      removedSubjects:removed.length
+    };
+  });
+
+  await audit(a.core.organisation_id,a.core.id,'academic_manager.class_setup_saved','classroom',classroomId,result);
+  await changeLog({
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'academic_manager.class_setup_saved',
+    resourceType:'classroom',resourceId:classroomId,performedOn:classroom.name,
+    oldValue:null,newValue:{termId:b.termId??null,classTeacherOsUserId:b.classTeacherOsUserId??null,subjects:b.subjects}
+  });
+  return result;
+});
+
+app.post('/api/teacher-assignments/bulk',async request=>{
+  const a=await authorize(request,db,config,'teaching_assignments.manage');
+  const b=z.object({
+    academicYearId:z.string().uuid(),
+    termId:z.string().uuid().nullable().optional(),
+    teacherOsUserId:z.string().uuid(),
+    mode:z.enum(['class_teacher','all_subjects','subject_across_classes']),
+    classroomIds:z.array(z.string().uuid()).min(1).max(60),
+    subjectId:z.string().uuid().nullable().optional()
+  }).parse(request.body);
+
+  await one<any>(db,`SELECT os_user_id FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role IN('teacher','headteacher','school_admin')`,
+    [a.core.organisation_id,b.teacherOsUserId]);
+  if(b.termId)await one<any>(db,'SELECT id FROM terms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',
+    [b.termId,a.core.organisation_id,b.academicYearId]);
+
+  const uniqueClasses=[...new Set(b.classroomIds)];
+  const classRows=(await db.query(`SELECT id,name FROM classrooms
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true AND id=ANY($3::uuid[])`,
+    [a.core.organisation_id,b.academicYearId,uniqueClasses])).rows;
+  if(classRows.length!==uniqueClasses.length)throw fail(400,'One or more selected classes are unavailable');
+
+  let pairs:{classroomId:string;subjectId:string|null}[]=[];
+  if(b.mode==='class_teacher'){
+    pairs=uniqueClasses.map(classroomId=>({classroomId,subjectId:null}));
+  }else if(b.mode==='all_subjects'){
+    pairs=(await db.query(`SELECT classroom_id,subject_id FROM class_subjects
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true AND classroom_id=ANY($3::uuid[])
+      ORDER BY classroom_id,subject_id`,[a.core.organisation_id,b.academicYearId,uniqueClasses])).rows.map((x:any)=>({classroomId:x.classroom_id,subjectId:x.subject_id}));
+    if(!pairs.length)throw fail(409,'The selected classes do not have any subjects configured');
+  }else{
+    if(!b.subjectId)throw fail(400,'Choose the subject to assign across classes');
+    pairs=(await db.query(`SELECT classroom_id,subject_id FROM class_subjects
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true AND classroom_id=ANY($3::uuid[]) AND subject_id=$4`,
+      [a.core.organisation_id,b.academicYearId,uniqueClasses,b.subjectId])).rows.map((x:any)=>({classroomId:x.classroom_id,subjectId:x.subject_id}));
+    if(!pairs.length)throw fail(409,'That subject has not been added to any of the selected classes');
+  }
+
+  const result=await tx(db,async client=>{
+    let saved=0;
+    for(const pair of pairs){
+      await client.query(`UPDATE teacher_assignments SET is_active=false
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3
+          AND subject_id IS NOT DISTINCT FROM $4::uuid AND term_id IS NOT DISTINCT FROM $5::uuid AND is_active=true`,
+        [a.core.organisation_id,b.academicYearId,pair.classroomId,pair.subjectId,b.termId??null]);
+      const existing=(await client.query(`SELECT id FROM teacher_assignments
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$3
+          AND subject_id IS NOT DISTINCT FROM $4::uuid AND term_id IS NOT DISTINCT FROM $5::uuid AND teacher_os_user_id=$6
+        ORDER BY created_at DESC LIMIT 1`,
+        [a.core.organisation_id,b.academicYearId,pair.classroomId,pair.subjectId,b.termId??null,b.teacherOsUserId])).rows[0];
+      if(existing)await client.query('UPDATE teacher_assignments SET is_active=true WHERE id=$1',[existing.id]);
+      else await client.query(`INSERT INTO teacher_assignments(
+        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active
+      ) VALUES($1,$2,$3,$4,$5,$6,true)`,
+        [a.core.organisation_id,b.academicYearId,b.termId??null,pair.classroomId,pair.subjectId,b.teacherOsUserId]);
+      if(pair.subjectId===null&&!b.termId){
+        await client.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2 AND organisation_id=$3',
+          [b.teacherOsUserId,pair.classroomId,a.core.organisation_id]);
+      }
+      saved++;
+    }
+    return{saved,eligiblePairs:pairs.length,selectedClasses:uniqueClasses.length};
+  });
+  await audit(a.core.organisation_id,a.core.id,'teacher_assignment.bulk_saved','teacher_assignment',null,{
+    teacherOsUserId:b.teacherOsUserId,mode:b.mode,termId:b.termId??null,...result
+  });
+  return result;
+});
+
 app.patch('/api/class-subjects/:id',async request=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
