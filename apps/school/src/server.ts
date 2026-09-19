@@ -1308,6 +1308,93 @@ app.post('/api/admissions/:id/enrol',async(request,reply)=>{
   return reply.code(201).send(result);
 });
 
+
+app.get('/api/roles/capabilities',async request=>{
+  const a=await authorize(request,db,config,'roles.view');
+  const capabilities=(await db.query(`SELECT * FROM school_capabilities ORDER BY sort_order,module,action,label`)).rows;
+  const mappings=(await db.query(`SELECT role,capability_key,allowed FROM school_role_capabilities ORDER BY role,capability_key`)).rows;
+  return{
+    currentRole:a.role,
+    roles:['school_admin','headteacher','teacher','bursar','registrar'],
+    capabilities,
+    mappings
+  };
+});
+app.put('/api/roles/:role/capabilities',async request=>{
+  const a=await authorize(request,db,config,'roles.manage');
+  const {role}=z.object({role:z.enum(['headteacher','teacher','bursar','registrar'])}).parse(request.params);
+  const b=z.object({permissions:z.array(z.object({capabilityKey:z.string().min(1).max(100),allowed:z.boolean()})).min(1).max(100)}).parse(request.body);
+  const known=(await db.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>x.key);
+  for(const p of b.permissions)if(!known.includes(p.capabilityKey))throw fail(400,`Unknown school capability: ${p.capabilityKey}`);
+  await tx(db,async client=>{
+    for(const p of b.permissions){
+      await client.query(`INSERT INTO school_role_capabilities(role,capability_key,allowed,updated_at)
+        VALUES($1,$2,$3,now())
+        ON CONFLICT(role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
+        [role,p.capabilityKey,p.allowed]);
+    }
+  });
+  await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{count:b.permissions.length});
+  return{role,updated:b.permissions.length};
+});
+
+app.get('/api/search',async request=>{
+  const a=await authorize(request,db,config);
+  const q=z.object({q:z.string().trim().min(1).max(100),limit:z.coerce.number().int().min(1).max(30).default(15)}).parse(request.query);
+  const like='%'+q.q+'%';
+  const rows=(await db.query(`
+    SELECT * FROM (
+      SELECT 'student' type,s.id::text id,(s.first_name||' '||s.last_name) title,
+             (s.admission_no||COALESCE(' • '||c.name,'')) subtitle,'students' section,1 rank
+      FROM students s
+      LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active'
+      LEFT JOIN classrooms c ON c.id=e.classroom_id
+      WHERE s.organisation_id=$1 AND (
+        s.first_name ILIKE $2 OR s.last_name ILIKE $2 OR s.admission_no ILIKE $2 OR
+        (s.first_name||' '||s.last_name) ILIKE $2
+      )
+      UNION ALL
+      SELECT 'guardian',g.id::text,(g.first_name||' '||g.last_name),
+             (g.phone||COALESCE(' • '||g.email,'')),'students',2
+      FROM guardians g WHERE g.organisation_id=$1 AND (
+        g.first_name ILIKE $2 OR g.last_name ILIKE $2 OR g.phone ILIKE $2 OR COALESCE(g.email,'') ILIKE $2
+      )
+      UNION ALL
+      SELECT 'class',c.id::text,c.name,(gl.name||' • '||COALESCE(c.stream,'No stream')),'classes',3
+      FROM classrooms c JOIN grade_levels gl ON gl.id=c.grade_level_id
+      WHERE c.organisation_id=$1 AND (c.name ILIKE $2 OR gl.name ILIKE $2)
+      UNION ALL
+      SELECT 'subject',s.id::text,s.name,(s.code||' • '||s.stage),'classes',4
+      FROM subjects s WHERE s.organisation_id=$1 AND (s.name ILIKE $2 OR s.code ILIKE $2)
+      UNION ALL
+      SELECT 'admission',aa.id::text,(aa.first_name||' '||aa.last_name),
+             (aa.application_no||' • '||aa.status),'admissions',5
+      FROM admission_applications aa WHERE aa.organisation_id=$1 AND (
+        aa.first_name ILIKE $2 OR aa.last_name ILIKE $2 OR aa.application_no ILIKE $2 OR aa.guardian_phone ILIKE $2
+      )
+      UNION ALL
+      SELECT 'fee',f.id::text,f.name,('GHS '||f.amount::text),'fees',6
+      FROM fee_items f WHERE f.organisation_id=$1 AND f.name ILIKE $2
+    ) x
+    ORDER BY rank,title
+    LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
+  const auth=request.headers.authorization;
+  let staff:any[]=[];
+  if(auth){
+    try{
+      const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(5000)});
+      if(res.ok){
+        const users=await res.json() as any[];
+        const needle=q.q.toLowerCase();
+        staff=users.filter(u=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,5).map(u=>({
+          type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
+        }));
+      }
+    }catch{}
+  }
+  return[...rows,...staff].slice(0,q.limit);
+});
+
 app.get('/api/audit',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query('SELECT * FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id])).rows});
 
 app.setErrorHandler((error:any,_request,reply)=>{
