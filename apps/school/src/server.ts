@@ -631,6 +631,15 @@ app.post('/api/class-subjects',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'class_subject.assigned','class_subject',row.id,{classroomId:b.classroomId,subjectId:b.subjectId});
   return reply.code(201).send(row);
 });
+app.patch('/api/class-subjects/:id',async request=>{
+  const a=await authorize(request,db,config,'academic.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({weeklyPeriods:z.number().int().min(1).max(20)}).parse(request.body);
+  const row=await one<any>(db,`UPDATE class_subjects SET weekly_periods=$1,updated_at=now()
+    WHERE id=$2 AND organisation_id=$3 RETURNING *`,[b.weeklyPeriods,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'class_subject.schedule_requirement_updated','class_subject',id,{weeklyPeriods:b.weeklyPeriods});
+  return row;
+});
 app.delete('/api/class-subjects/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM class_subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
@@ -855,7 +864,16 @@ app.get('/api/assessments',async request=>{
       AND ($6::uuid IS NULL OR a.teacher_os_user_id=$6)
     ORDER BY ac.sort_order NULLS LAST,a.assessment_date DESC NULLS LAST,a.created_at DESC`,
     [a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,q.categoryId??null,q.teacherOsUserId??null])).rows;
-  if(a.role==='teacher')rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
+  if(a.role==='teacher'){
+    const allowed=(await db.query(`SELECT DISTINCT c.id classroom_id,cs.subject_id
+      FROM classrooms c JOIN class_subjects cs ON cs.classroom_id=c.id AND cs.is_active=true
+      WHERE c.organisation_id=$1 AND c.class_teacher_os_user_id=$2
+      UNION
+      SELECT ta.classroom_id,ta.subject_id FROM teacher_assignments ta
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL`,
+      [a.core.organisation_id,a.core.id])).rows;
+    rows=rows.filter((r:any)=>allowed.some((x:any)=>x.classroom_id===r.classroom_id&&x.subject_id===r.subject_id));
+  }
   return rows;
 });
 app.post('/api/assessments',async(request,reply)=>{
@@ -896,10 +914,10 @@ app.post('/api/assessments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.get('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 app.get('/api/report-cards/:studentId',async request=>{
@@ -992,6 +1010,123 @@ app.post('/api/payments',async(request,reply)=>{
   }
   await audit(a.core.organisation_id,a.core.id,'payment.recorded','payment',row.id,{amount:b.amount,method:b.paymentMethod});
   return reply.code(201).send(row);
+});
+
+function timeMinutes(value:any){
+  const parts=String(value||'00:00').slice(0,5).split(':').map(Number);
+  return (parts[0]||0)*60+(parts[1]||0);
+}
+function minuteTime(value:number){
+  const h=Math.floor(value/60),m=value%60;
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+}
+function overlapsTime(aStart:number,aEnd:number,bStart:number,bEnd:number){
+  return aStart<bEnd&&aEnd>bStart;
+}
+async function buildAutoTimetablePlan(organisationId:string,academicYearId:string,termId:string|null){
+  const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
+    ORDER BY term_id NULLS LAST LIMIT 1`,[organisationId,academicYearId,termId]);
+  const dayStart=timeMinutes(settings?.school_day_start||'07:30');
+  const dayEnd=timeMinutes(settings?.school_day_end||'15:30');
+  const period=Math.max(15,Number(settings?.default_period_minutes||40));
+  const maxTeacherPeriods=Math.max(1,Number(settings?.max_teacher_periods_per_day||8));
+  const breaks=(await db.query(`SELECT * FROM timetable_breaks
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)`,
+    [organisationId,academicYearId,termId])).rows;
+
+  const requirements=(await db.query(`SELECT cs.id class_subject_id,cs.classroom_id,cs.subject_id,cs.weekly_periods,
+      c.name classroom_name,c.class_teacher_os_user_id,s.name subject_name,
+      COALESCE((
+        SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+        WHERE ta.organisation_id=cs.organisation_id AND ta.academic_year_id=cs.academic_year_id
+          AND ta.classroom_id=cs.classroom_id AND ta.subject_id=cs.subject_id AND ta.is_active=true
+          AND (ta.term_id IS NOT DISTINCT FROM $3::uuid OR ta.term_id IS NULL)
+        ORDER BY CASE WHEN ta.term_id IS NOT NULL THEN 0 ELSE 1 END,ta.created_at DESC LIMIT 1
+      ),c.class_teacher_os_user_id) teacher_os_user_id,
+      (SELECT count(*)::int FROM timetable_entries tt
+        WHERE tt.organisation_id=cs.organisation_id AND tt.academic_year_id=cs.academic_year_id
+          AND tt.classroom_id=cs.classroom_id AND tt.subject_id=cs.subject_id
+          AND ($3::uuid IS NULL OR tt.term_id=$3 OR tt.term_id IS NULL)) existing_periods
+    FROM class_subjects cs JOIN classrooms c ON c.id=cs.classroom_id JOIN subjects s ON s.id=cs.subject_id
+    WHERE cs.organisation_id=$1 AND cs.academic_year_id=$2 AND cs.is_active=true AND c.is_active=true
+    ORDER BY c.name,s.name`,[organisationId,academicYearId,termId])).rows;
+
+  const existing=(await db.query(`SELECT id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time
+    FROM timetable_entries WHERE organisation_id=$1 AND academic_year_id=$2
+      AND ($3::uuid IS NULL OR term_id=$3 OR term_id IS NULL)`,[organisationId,academicYearId,termId])).rows.map((r:any)=>({
+        ...r,startMin:timeMinutes(r.start_time),endMin:timeMinutes(r.end_time)
+      }));
+  const proposed:any[]=[];
+  const unscheduled:any[]=[];
+  const dailyTeacherCount=new Map<string,number>();
+  for(const r of existing){
+    if(r.teacher_os_user_id){
+      const key=r.teacher_os_user_id+'|'+r.day_of_week;
+      dailyTeacherCount.set(key,(dailyTeacherCount.get(key)||0)+1);
+    }
+  }
+  function slotBlocked(day:number,start:number,end:number,classroomId:string,teacherId:string|null){
+    if(breaks.some((b:any)=>(b.day_of_week==null||Number(b.day_of_week)===day)&&overlapsTime(start,end,timeMinutes(b.start_time),timeMinutes(b.end_time))))return true;
+    const all=[...existing,...proposed];
+    return all.some((r:any)=>Number(r.day_of_week)===day&&overlapsTime(start,end,Number(r.startMin??timeMinutes(r.start_time)),Number(r.endMin??timeMinutes(r.end_time)))&&(r.classroom_id===classroomId||(teacherId&&r.teacher_os_user_id===teacherId)));
+  }
+  for(const req of requirements){
+    const target=Math.max(1,Number(req.weekly_periods||3));
+    let remaining=Math.max(0,target-Number(req.existing_periods||0));
+    if(!remaining)continue;
+    if(!req.teacher_os_user_id){
+      unscheduled.push({classroomId:req.classroom_id,subjectId:req.subject_id,classroomName:req.classroom_name,subjectName:req.subject_name,remaining,reason:'No subject teacher or class teacher is assigned'});
+      continue;
+    }
+    let cursor=(requirements.indexOf(req)%5)+1;
+    while(remaining>0){
+      let placed=false;
+      for(let offset=0;offset<5&&!placed;offset++){
+        const day=((cursor-1+offset)%5)+1;
+        const loadKey=req.teacher_os_user_id+'|'+day;
+        if((dailyTeacherCount.get(loadKey)||0)>=maxTeacherPeriods)continue;
+        for(let start=dayStart;start+period<=dayEnd;start+=period){
+          const end=start+period;
+          if(slotBlocked(day,start,end,req.classroom_id,req.teacher_os_user_id))continue;
+          proposed.push({
+            classroom_id:req.classroom_id,subject_id:req.subject_id,teacher_os_user_id:req.teacher_os_user_id,
+            day_of_week:day,start_time:minuteTime(start),end_time:minuteTime(end),startMin:start,endMin:end,
+            classroom_name:req.classroom_name,subject_name:req.subject_name
+          });
+          dailyTeacherCount.set(loadKey,(dailyTeacherCount.get(loadKey)||0)+1);
+          remaining--;cursor=day%5+1;placed=true;break;
+        }
+      }
+      if(!placed){
+        unscheduled.push({classroomId:req.classroom_id,subjectId:req.subject_id,classroomName:req.classroom_name,subjectName:req.subject_name,remaining,reason:'No conflict-free slot is available within the scheduling rules'});
+        break;
+      }
+    }
+  }
+  return{settings:{schoolDayStart:minuteTime(dayStart),schoolDayEnd:minuteTime(dayEnd),periodMinutes:period,maxTeacherPeriodsPerDay:maxTeacherPeriods},suggestions:proposed,unscheduled};
+}
+app.post('/api/timetable/auto-schedule/preview',async request=>{
+  const a=await authorize(request,db,config,'timetable.manage');
+  const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional()}).parse(request.body);
+  return buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
+});
+app.post('/api/timetable/auto-schedule/apply',async request=>{
+  const a=await authorize(request,db,config,'timetable.manage');
+  const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional()}).parse(request.body);
+  const plan=await buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
+  if(!plan.suggestions.length)return{created:0,unscheduled:plan.unscheduled};
+  await tx(db,async client=>{
+    for(const s of plan.suggestions){
+      await client.query(`INSERT INTO timetable_entries(
+        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)`,[
+        a.core.organisation_id,b.academicYearId,b.termId??null,s.classroom_id,s.subject_id,s.teacher_os_user_id,s.day_of_week,s.start_time,s.end_time
+      ]);
+    }
+  });
+  await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{created:plan.suggestions.length,unscheduled:plan.unscheduled.length});
+  return{created:plan.suggestions.length,unscheduled:plan.unscheduled};
 });
 
 app.get('/api/timetable',async request=>{
@@ -1535,7 +1670,7 @@ app.delete('/api/grading-bands/:id',async(request,reply)=>{
 });
 
 app.get('/api/homework',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');
+  const a=await authorize(request,db,config,'homework.view');
   const q=z.object({
     classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),
     status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:z.string().uuid().optional()
@@ -1553,7 +1688,7 @@ app.get('/api/homework',async request=>{
   return rows;
 });
 app.post('/api/homework',async(request,reply)=>{
-  const a=await authorize(request,db,config,'assessment.create');
+  const a=await authorize(request,db,config,'homework.create');
   const b=z.object({
     academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
     title:z.string().min(2).max(200),instructions:z.string().min(1).max(10000),dueAt:z.string().datetime().optional(),
@@ -1574,11 +1709,10 @@ app.post('/api/homework',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.patch('/api/homework/:id',async request=>{
-  const a=await authorize(request,db,config,'assessment.edit');
+  const a=await authorize(request,db,config,'homework.edit');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
-  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This homework is assigned to another teacher');
   const b=z.object({
     title:z.string().min(2).max(200).optional(),instructions:z.string().min(1).max(10000).optional(),
     dueAt:z.string().datetime().nullable().optional(),maxScore:z.number().positive().nullable().optional(),
@@ -1600,14 +1734,13 @@ app.patch('/api/homework/:id',async request=>{
     ]);
 });
 app.post('/api/homework/:id/publish',async request=>{
-  const a=await authorize(request,db,config,'assessment.edit');
+  const a=await authorize(request,db,config,'homework.edit');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,`SELECT h.*,c.name classroom_name,s.name subject_name,sp.school_name
     FROM homework_assignments h JOIN classrooms c ON c.id=h.classroom_id JOIN subjects s ON s.id=h.subject_id
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
     WHERE h.id=$1 AND h.organisation_id=$2`,[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework is assigned to another teacher');
   if(h.status==='closed')throw fail(409,'Closed homework cannot be published again');
   const wasPublished=h.status==='published';
   const row=await tx(db,async client=>{
@@ -1637,24 +1770,22 @@ app.post('/api/homework/:id/publish',async request=>{
   return row;
 });
 app.get('/api/homework/:id/submissions',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');
+  const a=await authorize(request,db,config,'homework.view');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework is assigned to another teacher');
   return (await db.query(`SELECT hs.*,s.admission_no,s.first_name,s.last_name
     FROM homework_submissions hs JOIN students s ON s.id=hs.student_id
     WHERE hs.homework_id=$1 ORDER BY s.last_name,s.first_name`,[id])).rows;
 });
 app.post('/api/homework/:id/submissions',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');
+  const a=await authorize(request,db,config,'homework.score');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,`SELECT h.*,sub.name subject_name,c.name classroom_name,sp.school_name
     FROM homework_assignments h JOIN subjects sub ON sub.id=h.subject_id JOIN classrooms c ON c.id=h.classroom_id
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
     WHERE h.id=$1 AND h.organisation_id=$2`,[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework is assigned to another teacher');
   const b=z.object({records:z.array(z.object({
     studentId:z.string().uuid(),status:z.enum(['not_submitted','submitted','late','graded']),
     score:z.number().min(0).nullable().optional(),teacherComment:z.string().max(1000).nullable().optional()
@@ -1701,11 +1832,10 @@ app.post('/api/homework/:id/submissions',async request=>{
   return{saved:b.records.length,notifications};
 });
 app.delete('/api/homework/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'assessment.delete');
+  const a=await authorize(request,db,config,'homework.delete');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework is assigned to another teacher');
   await db.query('DELETE FROM homework_assignments WHERE id=$1',[id]);
   await audit(a.core.organisation_id,a.core.id,'homework.deleted','homework',id);
   return reply.code(204).send();
