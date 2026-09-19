@@ -3,10 +3,12 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import { z } from 'zod';
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize } from './auth.js';
 import { schoolFrontend } from './ui.js';
+import { parentFrontend } from './parent-ui.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -28,7 +30,49 @@ async function activeTerm(org:string){
   return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
 }
 
+function hashPortalPin(pin:string){
+  const salt=randomBytes(16);
+  const derived=scryptSync(pin,salt,32);
+  return salt.toString('hex')+':'+derived.toString('hex');
+}
+function verifyPortalPin(pin:string,stored:string){
+  const parts=stored.split(':');if(parts.length!==2)return false;
+  const salt=Buffer.from(parts[0]||'','hex'),expected=Buffer.from(parts[1]||'','hex');
+  const actual=scryptSync(pin,salt,32);
+  return expected.length===actual.length&&timingSafeEqual(expected,actual);
+}
+const hashPortalToken=(token:string)=>createHash('sha256').update(token).digest('hex');
+
+async function guardianAuth(request:any){
+  const auth=String(request.headers.authorization||'');
+  if(!auth.startsWith('Bearer '))throw fail(401,'Parent portal sign-in required');
+  const token=auth.slice(7);
+  const row=await maybeOne<any>(db,`SELECT gps.id session_id,g.id guardian_id,g.organisation_id,g.first_name,g.last_name,g.phone,g.email
+    FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
+    WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
+  if(!row)throw fail(401,'Parent portal session has expired');
+  return row;
+}
+async function ensureGuardianStudent(guardianId:string,studentId:string){
+  const row=await maybeOne<any>(db,'SELECT s.* FROM students s JOIN student_guardians sg ON sg.student_id=s.id WHERE s.id=$1 AND sg.guardian_id=$2',[studentId,guardianId]);
+  if(!row)throw fail(403,'This student is not linked to the signed-in guardian');
+  return row;
+}
+async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|null){
+  if(a.role!=='teacher')return;
+  const row=await maybeOne<any>(db,`SELECT 1 FROM classrooms c
+    WHERE c.id=$1 AND c.organisation_id=$2 AND (
+      c.class_teacher_os_user_id=$3 OR EXISTS(
+        SELECT 1 FROM teacher_assignments ta
+        WHERE ta.classroom_id=c.id AND ta.organisation_id=$2 AND ta.teacher_os_user_id=$3
+          AND ta.is_active=true AND ($4::uuid IS NULL OR ta.subject_id IS NULL OR ta.subject_id=$4)
+      )
+    ) LIMIT 1`,[classroomId,a.core.organisation_id,a.core.id,subjectId??null]);
+  if(!row)throw fail(403,'You are not assigned to this class or subject');
+}
+
 app.get('/',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
+app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
