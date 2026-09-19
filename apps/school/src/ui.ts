@@ -32,7 +32,7 @@ input,select,textarea{width:100%;padding:10px;background:#07141d;border:1px soli
 <div id="loading" class="loading"><div><b>REVOLT-X SCHOOL</b><p class="muted">Connecting to Core Revolt-X OS...</p></div></div>
 <div id="app" class="shell hide">
 <aside class="side"><div class="brand"><span>RX</span> SCHOOL</div><div id="schoolName" class="schoolname"></div><nav id="nav" class="nav"></nav></aside>
-<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button></div></header><div id="content"></div></main>
+<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main>
 </div>
 <div id="modal" class="modal hide"><div class="modalbox"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div>
 <div id="toast" class="toast hide"></div>
@@ -107,42 +107,49 @@ async function previewToken(){
   throw last||Error('Core OS access failed')
 }
 async function boot(){try{
-  token=sessionStorage.getItem('rx_school_token')||token||'';
+  token=sessionStorage.getItem('rx_school_token')||'';
   if(token&&!token.startsWith('rxs_')){sessionStorage.removeItem('rx_school_token');token=''}
-  if(token){
-    try{ctx=await raw('/api/context')}
-    catch(e){
-      if(e.status===401||e.status===403){sessionStorage.removeItem('rx_school_token');token=''}
-      else if(e.status===429||e.status===502||e.status===503||e.status===504){await wait(1200);ctx=await raw('/api/context')}
-      else throw e
-    }
-  }
-  if(!ctx&&!token){
-    try{ctx=await raw('/api/context')}
-    catch(e){
-      if(e.status!==401&&e.status!==403)throw e;
-      token=await previewToken();sessionStorage.setItem('rx_school_token',token);ctx=await raw('/api/context')
-    }
-  }
-  if(!ctx.profile){await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});ctx=await raw('/api/context')}E('schoolName').textContent=ctx.profile.school_name;E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;E('role').textContent=ctx.schoolRole.replace('_',' ');var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};E('refresh').onclick=function(){page(current)};setupGlobalSearch();E('loading').classList.add('hide');E('app').classList.remove('hide');await page('dashboard')
-}catch(e){
-  E('loading').innerHTML='<div class="connection-card"><h2>School Admin workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">Use Reconnect & Repair to wake Core OS, refresh authentication and reconnect the School workspace automatically.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="repairSchool" class="primary">Reconnect & Repair</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Reload page</button></div></div>';
-  var retry=E('retrySchool');if(retry)retry.onclick=function(){location.reload()};
-  var check=E('checkSchoolCore');if(check)check.onclick=async function(){
-    check.disabled=true;E('schoolConnectionStatus').textContent='Checking School, database and Core OS...';
-    try{var r=await fetch('/api/system/core-status'),j=await r.json();E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(j.core&&j.core.reachable?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')}catch(err){E('schoolConnectionStatus').textContent=err.message}finally{check.disabled=false}
-  };
-  var repair=E('repairSchool');if(repair)repair.onclick=async function(){
-    repair.disabled=true;E('schoolConnectionStatus').textContent='Waking Core OS and repairing the School authentication session...';
-    try{
-      var wakeRes=await fetch('/api/system/core-wake',{method:'POST'}),wakeJson=await wakeRes.json();
-      if(!wakeRes.ok)throw Error(wakeJson&&wakeJson.message?wakeJson.message:'Core OS is still unavailable');
+
+  try{
+    ctx=await raw('/api/context')
+  }catch(e){
+    if(e.status===401||e.status===403){
       sessionStorage.removeItem('rx_school_token');token='';
-      token=await previewToken();sessionStorage.setItem('rx_school_token',token);
-      ctx=await raw('/api/context');
-      E('schoolConnectionStatus').textContent='Connection repaired successfully. Opening Revolt-X School...';
-      setTimeout(function(){location.reload()},500)
-    }catch(err){E('schoolConnectionStatus').textContent=err.message;repair.disabled=false}
+      location.replace('/login?next='+encodeURIComponent('/'));return
+    }
+    if(e.status===429||e.status===502||e.status===503||e.status===504){
+      await wait(1200);ctx=await raw('/api/context')
+    }else throw e
+  }
+
+  if(ctx.schoolRole==='teacher'){location.replace('/teacher');return}
+
+  if(!ctx.profile){
+    await raw('/api/school/bootstrap',{method:'POST',body:JSON.stringify({schoolName:ctx.core.organisation_name})});
+    ctx=await raw('/api/context')
+  }
+
+  E('schoolName').textContent=ctx.profile.school_name;
+  E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;
+  E('role').textContent=ctx.schoolRole.replace('_',' ');
+
+  var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});
+  E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
+  E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
+  E('refresh').onclick=function(){page(current)};
+  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace('/login')};
+  setupGlobalSearch();
+  E('loading').classList.add('hide');E('app').classList.remove('hide');
+  await page('dashboard')
+}catch(e){
+  E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">Your School session could not be opened. Check Core OS status or return to sign in.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="checkSchoolCore" class="primary">Check system status</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button><button id="retrySchool" class="ghost">Retry</button></div></div>';
+  E('retrySchool').onclick=function(){location.reload()};
+  E('returnSchoolLogin').onclick=function(){location.replace('/login')};
+  E('checkSchoolCore').onclick=async function(){
+    var btn=E('checkSchoolCore');btn.disabled=true;E('schoolConnectionStatus').textContent='Checking School, database and Core OS...';
+    try{var r=await fetch('/api/system/core-status'),j=await r.json();E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(j.core&&j.core.reachable?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')}
+    catch(err){E('schoolConnectionStatus').textContent=err.message}
+    finally{btn.disabled=false}
   }
 }}
 async function page(p){
