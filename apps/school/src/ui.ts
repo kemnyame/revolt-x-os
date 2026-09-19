@@ -846,7 +846,22 @@ else if(p==='attendance'){
    }
 
    function directoryTable(rows){
-     return table(rows,[{key:'first_name',label:'User',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(emailLabel(u))+'</span>'}},{key:'job_title',label:'Job Title'},{key:'employee_number',label:'Staff No.'},{key:'id',label:'School Role',render:function(u){return badge(roleName(schoolRole(u.id)))}},{key:'membership_status',label:'Core Status',render:function(u){return badge(u.membership_status)}}],function(u){var m=membershipFor(u.id);return (m&&m.status==='active'&&u.email&&can('staff.edit')?'<button class="mini primary-lite" data-send-user-invite="'+u.id+'">Send setup link</button>':'')})
+     return table(rows,[
+       {key:'first_name',label:'User',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(emailLabel(u))+'</span>'}},
+       {key:'job_title',label:'Job Title'},
+       {key:'employee_number',label:'Staff No.'},
+       {key:'id',label:'School Role',render:function(u){return badge(u.school_role_name||roleName(schoolRole(u.id)))}},
+       {key:'membership_status',label:'Core Access',render:function(u){return badge(u.membership_status||'unknown')}},
+       {key:'school_status',label:'School Access',render:function(u){return badge(u.school_status||'not assigned')}}
+     ],function(u){
+       if(!u.membership_id)return '';
+       var actions='';
+       if(can('staff.edit'))actions+='<button class="mini" data-edit-user="'+u.id+'">Edit</button>';
+       if(can('staff.password_reset')&&u.email)actions+='<button class="mini primary-lite" data-reset-user="'+u.id+'">Reset password</button>';
+       if(can('staff.status'))actions+='<button class="mini '+(u.membership_status==='active'?'danger':'')+'" data-user-status="'+u.id+'" data-next-status="'+(u.membership_status==='active'?'suspended':'active')+'">'+(u.membership_status==='active'?'Disable':'Enable')+'</button>';
+       if(can('staff.status')&&u.membership_status!=='active')actions+='<button class="mini" data-unlock-user="'+u.id+'">Unlock</button>';
+       return actions
+     })
    }
 
    E('content').innerHTML='<div class="section"><div><h1>Access Management</h1><p class="muted">Create School users, assign the roles your administrator has configured, and manage access separately from Academic Manager teaching assignments.</p></div><div class="actions">'+(can('staff.create')?'<button id="addUser" class="primary">Add User</button>':'')+(can('roles.manage')?'<button id="quickCreateRole" class="ghost">Create Role</button>':'')+'<button id="openAcademicManager" class="ghost">Academic Manager</button></div></div>'+
