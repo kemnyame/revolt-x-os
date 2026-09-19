@@ -1017,7 +1017,12 @@ else if(p==='attendance'){
  }
  }catch(e){E('content').innerHTML='<div class="panel"><h3>Could not load this area</h3><p class="muted">'+esc(e.message)+'</p><button class="ghost" id="retry">Retry</button></div>';E('retry').onclick=function(){page(p)}}
 }
-boot();
+// Start boot immediately. Also surface a recoverable error instead of leaving the splash
+// screen forever if an unexpected browser-side exception occurs before boot completes.
+Promise.resolve().then(function(){return boot()}).catch(function(e){
+  var l=E('loading');
+  if(l){l.innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e&&e.message?e.message:'Unable to initialise Revolt-X School')+'</p><div class="actions" style="justify-content:center;margin-top:14px"><button id="fatalRetrySchool" class="primary">Retry</button><button id="fatalLoginSchool" class="ghost">Return to sign in</button></div></div>';var r=E('fatalRetrySchool'),s=E('fatalLoginSchool');if(r)r.onclick=function(){location.reload()};if(s)s.onclick=function(){location.replace('/login')}}
+});
 })();
 </script>
 </body></html>`;
