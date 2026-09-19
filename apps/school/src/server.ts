@@ -39,15 +39,36 @@ function coreServiceHeaders(){
   return {'x-revolt-service-key':config.CORE_SERVICE_KEY};
 }
 
+const coreUsersCache=new Map<string,{value:any[];expiresAt:number}>();
+const CORE_USERS_CACHE_MS=60_000;
+const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
+
 async function fetchCoreUsers(organisationId:string){
-  try{
-    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId),{
-      headers:coreServiceHeaders(),
-      signal:AbortSignal.timeout(10000)
-    });
-    if(!res.ok)return[] as any[];
-    return await res.json() as any[];
-  }catch{return[] as any[]}
+  const cached=coreUsersCache.get(organisationId);
+  if(cached&&cached.expiresAt>Date.now())return cached.value;
+
+  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
+  let lastError='Core OS staff directory is temporarily unavailable';
+
+  for(let attempt=0;attempt<5;attempt++){
+    try{
+      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(15000)});
+      const payload=await res.json().catch(()=>null) as any;
+      if(res.ok){
+        const value=Array.isArray(payload)?payload:[];
+        coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+        return value;
+      }
+      lastError=payload?.error?.message||lastError;
+      if(!CORE_SERVICE_TRANSIENT_STATUSES.has(res.status))break;
+    }catch(error:any){
+      lastError=String(error?.message||lastError);
+    }
+    if(attempt<4)await sleep([800,1500,2500,4000][attempt]||4000);
+  }
+
+  if(cached)return cached.value;
+  return[] as any[];
 }
 
 function normalizePhone(phone:string){
@@ -1021,14 +1042,7 @@ app.post('/api/timetable',async(request,reply)=>{
 app.get('/api/staff/core-users',async request=>{
   const a=await authorize(request,db,config,'staff.view');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
-  const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(a.core.organisation_id),{
-    headers:coreServiceHeaders(),
-    signal:AbortSignal.timeout(10000)
-  }).catch(()=>null);
-  if(!res)throw fail(503,'Core OS could not be reached');
-  const payload=await res.json().catch(()=>null) as any;
-  if(!res.ok)throw fail(res.status,payload?.error?.message||'Could not load Core OS users');
-  return payload;
+  return fetchCoreUsers(a.core.organisation_id);
 });
 
 app.post('/api/staff/teachers',async(request,reply)=>{
