@@ -17,7 +17,8 @@ export function providerStatus(config:SchoolConfig){
     whatsapp:{
       provider:'twilio',
       configured:Boolean(twilioAuth&&config.TWILIO_WHATSAPP_FROM),
-      authentication:config.TWILIO_API_KEY_SID?'api_key':config.TWILIO_AUTH_TOKEN?'auth_token':'missing'
+      authentication:config.TWILIO_API_KEY_SID?'api_key':config.TWILIO_AUTH_TOKEN?'auth_token':'missing',
+      productionTemplateReady:Boolean(config.TWILIO_WHATSAPP_CONTENT_SID)
     },
     payments:{
       provider:'paystack',
@@ -35,7 +36,7 @@ function toWhatsappAddress(v:string){
   return v.startsWith('whatsapp:')?v:'whatsapp:'+v;
 }
 
-async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string,body:string){
+async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string,body:string,subject?:string|null,recipientName?:string|null){
   if(!config.TWILIO_ACCOUNT_SID)throw new Error('Twilio Account SID is not configured');
   const username=config.TWILIO_API_KEY_SID||config.TWILIO_ACCOUNT_SID;
   const password=config.TWILIO_API_KEY_SECRET||config.TWILIO_AUTH_TOKEN;
@@ -47,7 +48,16 @@ async function sendTwilio(config:SchoolConfig,channel:'sms'|'whatsapp',to:string
   form.set('To',channel==='whatsapp'?toWhatsappAddress(to):to);
   if(channel==='sms'&&config.TWILIO_MESSAGING_SERVICE_SID)form.set('MessagingServiceSid',config.TWILIO_MESSAGING_SERVICE_SID);
   else form.set('From',channel==='whatsapp'?toWhatsappAddress(from!):from!);
-  form.set('Body',body);
+  if(channel==='whatsapp'&&config.TWILIO_WHATSAPP_CONTENT_SID){
+    form.set('ContentSid',config.TWILIO_WHATSAPP_CONTENT_SID);
+    form.set('ContentVariables',JSON.stringify({
+      '1':recipientName||'Parent or Guardian',
+      '2':subject||'School update',
+      '3':body
+    }));
+  }else{
+    form.set('Body',body);
+  }
   const auth=Buffer.from(username+':'+password).toString('base64');
   const res=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.TWILIO_ACCOUNT_SID)}/Messages.json`,{
     method:'POST',
@@ -64,6 +74,7 @@ export async function sendMessage(config:SchoolConfig,input:{
   channel:MessageChannel;
   to:string;
   subject?:string|null|undefined;
+  recipientName?:string|null|undefined;
   body:string;
 }){
   if(input.channel==='email'){
@@ -83,7 +94,7 @@ export async function sendMessage(config:SchoolConfig,input:{
     if(!res.ok)throw new Error(data?.message||data?.error?.message||'Email request failed');
     return{provider:'resend',messageId:String(data.id||''),providerStatus:'sent'};
   }
-  return sendTwilio(config,input.channel,input.to,input.body);
+  return sendTwilio(config,input.channel,input.to,input.body,input.subject,input.recipientName);
 }
 
 export async function initializePaystack(config:SchoolConfig,input:{
