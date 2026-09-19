@@ -34,12 +34,16 @@ async function activeTerm(org:string){
   return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
 }
 
-async function fetchCoreUsers(authHeader:string|undefined){
-  if(!authHeader)return[] as any[];
+function coreServiceHeaders(){
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  return {'x-revolt-service-key':config.CORE_SERVICE_KEY};
+}
+
+async function fetchCoreUsers(organisationId:string){
   try{
-    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{
-      headers:{authorization:authHeader},
-      signal:AbortSignal.timeout(8000)
+    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId),{
+      headers:coreServiceHeaders(),
+      signal:AbortSignal.timeout(10000)
     });
     if(!res.ok)return[] as any[];
     return await res.json() as any[];
@@ -964,11 +968,7 @@ app.get('/api/timetable/export.csv',async(request,reply)=>{
       AND ($3::uuid IS NULL OR tt.term_id=$3) AND ($4::uuid IS NULL OR tt.academic_year_id=$4)
       AND ($5::uuid IS NULL OR tt.teacher_os_user_id=$5)
     ORDER BY c.name,tt.day_of_week,tt.start_time`,[a.core.organisation_id,q.classroomId??null,q.termId??null,q.academicYearId??null,q.teacherOsUserId??null])).rows;
-  let users:any[]=[];
-  try{
-    const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:request.headers.authorization!},signal:AbortSignal.timeout(8000)});
-    if(res.ok)users=await res.json() as any[];
-  }catch{}
+  const users=await fetchCoreUsers(a.core.organisation_id);
   const userName=(id:string|null)=>{const u=users.find(x=>x.id===id);return u?u.first_name+' '+u.last_name:''};
   const csv=(v:any)=>'"'+String(v??'').replace(/"/g,'""')+'"';
   const days=['','Monday','Tuesday','Wednesday','Thursday','Friday'];
@@ -1019,12 +1019,21 @@ app.post('/api/timetable',async(request,reply)=>{
 });
 
 app.get('/api/staff/core-users',async request=>{
-  const a=await authorize(request,db,config,'staff.view');const auth=request.headers.authorization!;const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/users',{headers:{authorization:auth},signal:AbortSignal.timeout(10000)});if(!res.ok)throw fail(res.status,'Could not load Core OS users');return res.json();
+  const a=await authorize(request,db,config,'staff.view');
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(a.core.organisation_id),{
+    headers:coreServiceHeaders(),
+    signal:AbortSignal.timeout(10000)
+  }).catch(()=>null);
+  if(!res)throw fail(503,'Core OS could not be reached');
+  const payload=await res.json().catch(()=>null) as any;
+  if(!res.ok)throw fail(res.status,payload?.error?.message||'Could not load Core OS users');
+  return payload;
 });
 
 app.post('/api/staff/teachers',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.create');
-  const auth=request.headers.authorization!;
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   const b=z.object({
     email:z.string().email(),
     firstName:z.string().min(1).max(100),
@@ -1033,20 +1042,29 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     employeeNumber:z.string().max(80).optional()
   }).parse(request.body);
   const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const created=await fetch(base+'/v1/users',{
+  const created=await fetch(base+'/v1/internal/school/users',{
     method:'POST',
-    headers:{authorization:auth,'content-type':'application/json'},
-    body:JSON.stringify({...b,roleKey:'member'}),
-    signal:AbortSignal.timeout(10000)
-  });
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({
+      organisationId:a.core.organisation_id,
+      actorUserId:a.core.id,
+      ...b,
+      roleKey:'member'
+    }),
+    signal:AbortSignal.timeout(12000)
+  }).catch(()=>null);
+  if(!created)throw fail(503,'Core OS could not be reached');
   const payload=await created.json().catch(()=>null) as any;
   if(!created.ok)throw fail(created.status,payload?.error?.message||'Could not create teacher in Core OS');
-  await fetch(base+'/v1/users/'+payload.id+'/status',{
+
+  const activated=await fetch(base+'/v1/internal/school/users/'+payload.id+'/status',{
     method:'PATCH',
-    headers:{authorization:auth,'content-type':'application/json'},
-    body:JSON.stringify({status:'active'}),
-    signal:AbortSignal.timeout(10000)
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,status:'active'}),
+    signal:AbortSignal.timeout(12000)
   }).catch(()=>null);
+  if(!activated?.ok)throw fail(activated?.status||503,'Teacher was created but Core membership could not be activated');
+
   await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
     VALUES($1,$2,'teacher','active')
     ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()`,[a.core.organisation_id,payload.user_id]);
@@ -1727,7 +1745,7 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
     reviewerIds.push(...(await db.query(`SELECT os_user_id FROM school_memberships
       WHERE organisation_id=$1 AND status='active' AND role IN('headteacher','school_admin')`,[a.core.organisation_id])).rows.map((x:any)=>x.os_user_id));
   }
-  const coreUsers=await fetchCoreUsers(request.headers.authorization);
+  const coreUsers=await fetchCoreUsers(a.core.organisation_id);
   const reportStudent=await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId]);
   for(const reviewerId of [...new Set(reviewerIds)]){
     const reviewer=coreUsers.find((u:any)=>u.id===reviewerId);
@@ -1804,7 +1822,7 @@ app.post('/api/report-comments/:studentId/review',async request=>{
     });
   }
   if(status==='returned'&&current.class_teacher_os_user_id){
-    const coreUsers=await fetchCoreUsers(request.headers.authorization);
+    const coreUsers=await fetchCoreUsers(a.core.organisation_id);
     const teacher=coreUsers.find((u:any)=>u.id===current.class_teacher_os_user_id);
     if(teacher?.email){
       await notifyContact({
@@ -2616,9 +2634,9 @@ app.get('/api/search',async request=>{
       SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',9
       FROM communication_outbox co WHERE co.organisation_id=$1 AND (COALESCE(co.subject,'') ILIKE $2 OR co.recipient_address ILIKE $2 OR COALESCE(co.recipient_name,'') ILIKE $2)
     ) x ORDER BY rank,title LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
-  const auth=request.headers.authorization;let staff:any[]=[];
-  if(auth){
-    const users=await fetchCoreUsers(auth);
+  let staff:any[]=[];
+  {
+    const users=await fetchCoreUsers(a.core.organisation_id);
     const needle=q.q.toLowerCase();
     staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
       type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
