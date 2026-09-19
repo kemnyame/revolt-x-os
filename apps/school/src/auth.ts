@@ -36,6 +36,9 @@ const coreContextCache=new Map<string,{value:CoreContext;expiresAt:number}>();
 const CORE_CONTEXT_CACHE_MS=15_000;
 function authCacheKey(auth:string){return createHash('sha256').update(auth).digest('hex')}
 
+const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+
 async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Promise<CoreContext>{
   const auth=request.headers.authorization;
   if(!auth) throw Object.assign(new Error('Authentication required'),{statusCode:401});
@@ -45,27 +48,42 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
   if(cached&&cached.expiresAt>Date.now())return cached.value;
   if(cached)coreContextCache.delete(key);
 
-  const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/context',{
-    headers:{authorization:auth},
-    signal:AbortSignal.timeout(10000)
-  }).catch(()=>null);
-  if(!res) throw Object.assign(new Error('Core Revolt-X OS could not be reached'),{statusCode:503});
+  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/context';
+  let lastStatus=503;
+  let lastMessage='Core Revolt-X OS is starting. Please retry in a moment.';
 
-  if(!res.ok){
-    const body=await res.json().catch(()=>null) as any;
-    const message=res.status===429
-      ? 'Core OS is temporarily rate limited. Please retry in a moment.'
-      : body?.error?.message||'Core OS authentication failed';
-    throw Object.assign(new Error(message),{statusCode:res.status});
+  for(let attempt=0;attempt<6;attempt++){
+    const res=await fetch(url,{
+      headers:{authorization:auth},
+      signal:AbortSignal.timeout(15000)
+    }).catch(()=>null);
+
+    if(res?.ok){
+      const value=await res.json() as CoreContext;
+      if(coreContextCache.size>=2000){
+        const oldest=coreContextCache.keys().next().value;
+        if(oldest)coreContextCache.delete(oldest);
+      }
+      coreContextCache.set(key,{value,expiresAt:Date.now()+CORE_CONTEXT_CACHE_MS});
+      return value;
+    }
+
+    if(res){
+      lastStatus=res.status;
+      const body=await res.json().catch(()=>null) as any;
+      lastMessage=body?.error?.message
+        ||(CORE_TRANSIENT_STATUSES.has(res.status)
+          ?'Core Revolt-X OS is starting. Please retry in a moment.'
+          :'Core OS authentication failed');
+      if(!CORE_TRANSIENT_STATUSES.has(res.status)){
+        throw Object.assign(new Error(lastMessage),{statusCode:res.status});
+      }
+    }
+
+    if(attempt<5)await sleep([1000,1800,3000,4500,6500][attempt]||6500);
   }
 
-  const value=await res.json() as CoreContext;
-  if(coreContextCache.size>=2000){
-    const oldest=coreContextCache.keys().next().value;
-    if(oldest)coreContextCache.delete(oldest);
-  }
-  coreContextCache.set(key,{value,expiresAt:Date.now()+CORE_CONTEXT_CACHE_MS});
-  return value;
+  throw Object.assign(new Error(lastMessage),{statusCode:lastStatus});
 }
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
