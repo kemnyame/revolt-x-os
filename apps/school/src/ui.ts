@@ -45,7 +45,7 @@ var nav=[
 ['setup','School Setup','⚙','school.manage|academic.view'],
 ['admissions','Admissions','✚','admissions.view'],
 ['students','Students','S','students.view'],
-['assignments','Teaching Assignment Manager','C','teaching_assignments.view|academic.view'],
+['assignments','Academic Manager','C','teaching_assignments.view|academic.view'],
 ['attendance','Attendance','✓','attendance.view'],
 ['assessments','Assessments & Scores','A','assessment.view'],
 ['homework','Homework','H','homework.view'],
@@ -190,7 +190,7 @@ async function page(p){
    if(selectedSession===null)selectedSession=activeTerm?activeTerm.id:'';
    if(selectedSession&&!yearTerms.some(function(t){return t.id===selectedSession}))selectedSession=activeTerm?activeTerm.id:'';
    var selectedClass=sessionStorage.getItem('rx_academic_class')||null;
-   var managerTab=sessionStorage.getItem('rx_academic_tab')||'assign';
+   var managerTab=sessionStorage.getItem('rx_academic_tab')||'class';if(managerTab==='assign')managerTab='class';
    function userName(id){var u=users.find(function(x){return x.id===id});return u?u.first_name+' '+u.last_name:'Unknown staff member'}
    function roleName(id){var u=users.find(function(x){return x.id===id});return u?(u.job_title||'Teacher'):'Teacher'}
    function yearClasses(){return cls.filter(function(x){return x.academic_year_id===selectedYear})}
@@ -232,13 +232,13 @@ async function page(p){
      var stage=gs.find(function(g){return g.id===x.grade_level_id});
      var classTeacher=x.class_teacher_os_user_id||'';
      box.innerHTML='<div class="class-head"><div><span class="badge">'+esc(x.grade_name)+'</span><h2>'+esc(x.name)+'</h2><p class="muted">'+esc(x.student_count||0)+' students • '+esc(links.length)+' subjects • Capacity '+esc(x.capacity||'—')+'</p></div><button class="mini" data-edit-class="'+x.id+'">Edit class</button></div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>1. Class Teacher</h3><p class="muted">The class teacher is responsible for the class for the full academic year.</p></div></div><div class="teacher-assign"><select id="classTeacherSelect"><option value="">Not assigned</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(classTeacher===t.id?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')+'</select><button class="primary" data-save-class-teacher="'+x.id+'">Assign class teacher</button></div></div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>2. Subjects & Subject Teachers</h3><p class="muted">Subjects belong to the class for the academic year. Teacher assignment below applies to <b>'+esc(selectedSessionName())+'</b>.</p></div><button class="primary" data-add-class-subject="'+x.id+'">Add subjects</button></div>'+
+       '<div class="academic-block"><div class="academic-block-head"><div><h3>1. Assign Class Teacher</h3><p class="muted">Choose the teacher responsible for this class for the academic year.</p></div></div><div class="teacher-assign"><select id="classTeacherSelect"><option value="">Not assigned</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(classTeacher===t.id?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+' • '+esc(t.job_title||'Teacher')+'</option>'}).join('')+'</select><button class="primary" data-save-class-teacher="'+x.id+'">Assign class teacher</button></div></div>'+
+       '<div class="academic-block"><div class="academic-block-head"><div><h3>2. Class Subjects & Teachers</h3><p class="muted">Add the subjects studied by this class, then assign the responsible teacher for <b>'+esc(selectedSessionName())+'</b> beside each subject.</p></div><button class="primary" data-add-class-subject="'+x.id+'">Add subjects to class</button></div>'+
        (links.length?'<div class="subject-assignment-list">'+links.map(function(link){
          var allAssignments=classAssignments(x.id,link.subject_id),current=scopedAssignment(x.id,link.subject_id);
          return '<div class="subject-assignment-row"><div class="subject-main"><span class="badge info">'+esc(link.subject_code)+'</span><div><b>'+esc(link.subject_name)+'</b><small>'+esc(link.stage)+' • '+esc(link.weekly_periods||3)+' periods/week</small></div></div><div><label>Existing assignments</label><div class="teacher-chip-area">'+assignmentBadges(allAssignments)+'</div></div><div><label>Assign / replace for '+esc(selectedSessionName())+'</label><div class="inline-assign"><select data-subject-teacher-select="'+link.id+'"><option value="">Choose teacher</option>'+teachers.map(function(t){return'<option value="'+t.id+'"'+(current&&current.teacher_os_user_id===t.id?' selected':'')+'>'+esc(t.first_name+' '+t.last_name)+'</option>'}).join('')+'</select><button class="mini primary-lite" data-save-subject-teacher="'+link.id+'" data-subject-id="'+link.subject_id+'" data-class-id="'+x.id+'">Save teacher</button></div></div><div class="subject-row-actions"><button class="mini" data-weekly-periods="'+link.id+'">Scheduling load</button><button class="mini danger" data-remove-class-subject="'+link.id+'">Remove subject</button></div></div>'
        }).join('')+'</div>':'<div class="empty">No subjects have been added to this class. Use “Add subjects” to build the class curriculum.</div>')+'</div>'+
-       '<div class="academic-block"><div class="academic-block-head"><div><h3>3. Class Readiness</h3><p class="muted">A quick check before assessments and timetable scheduling.</p></div></div><div class="academic-readiness"><span>'+badge(classTeacher?'Class teacher assigned':'Class teacher missing')+'</span><span>'+badge(links.length?links.length+' subjects added':'No subjects')+'</span><span>'+badge(links.filter(function(l){return classAssignments(x.id,l.subject_id).length>0}).length+'/'+links.length+' subjects have teachers')+'</span></div></div>'
+       '<div class="academic-block"><div class="academic-block-head"><div><h3>3. Ready for Teaching</h3><p class="muted">This check confirms whether the class can flow correctly into Teacher Portal, assessments, homework and timetable scheduling.</p></div></div><div class="academic-readiness"><span>'+badge(classTeacher?'Class teacher assigned':'Class teacher missing')+'</span><span>'+badge(links.length?links.length+' subjects added':'No subjects')+'</span><span>'+badge(links.filter(function(l){return classAssignments(x.id,l.subject_id).length>0}).length+'/'+links.length+' subjects have teachers')+'</span></div></div>'
    }
    function renderSubjectCatalogue(){
      var box=E('managerPane');if(!box)return;
@@ -319,15 +319,16 @@ async function page(p){
    }
    function renderManager(){
      yearTerms=terms.filter(function(t){return t.academic_year_id===selectedYear});
-     E('content').innerHTML='<div class="section"><div><h1>Teaching Assignment Manager</h1><p class="muted">Manage teacher, class and subject relationships in one controlled workspace before timetable generation.</p></div></div>'+
-       (academicManagerDirectoryError?'<div class="notice warn">Teacher names are temporarily unavailable because the Core staff directory could not be reached. The academic structure remains available.</div>':'')+
+     E('content').innerHTML='<div class="section"><div><h1>Academic Manager</h1><p class="muted">Manage every class from one place. Choose the academic year and term, select a class, assign its Class Teacher, add subjects and assign Subject Teachers.</p></div></div>'+
+       (academicManagerDirectoryError?'<div class="notice warn">Teacher names are temporarily unavailable because the Core staff directory could not be reached. The class and subject structure is still available.</div>':'')+
        renderOverview()+
-       '<div class="panel academic-controlbar"><div><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div><div><label>Teaching session</label><select id="academicSessionFilter"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedSession?' selected':'')+'>'+esc(t.name)+(t.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div></div>'+
-       '<div class="academic-tabs"><button class="'+(managerTab==='assign'?'active':'')+'" data-manager-tab="assign">Teacher, Class & Subject Assignment</button><button class="'+(managerTab==='class'?'active':'')+'" data-manager-tab="class">Class Curriculum</button><button class="'+(managerTab==='subjects'?'active':'')+'" data-manager-tab="subjects">Subject Catalogue</button><button class="'+(managerTab==='teachers'?'active':'')+'" data-manager-tab="teachers">Assignment Matrix</button></div><div id="managerPane"></div>';
+       '<div class="panel academic-controlbar"><div><label>Academic year</label><select id="academicYearFilter">'+ys.map(function(y){return'<option value="'+y.id+'"'+(y.id===selectedYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div><div><label>Term / Teaching session</label><select id="academicSessionFilter"><option value="">Whole academic year</option>'+yearTerms.map(function(t){return'<option value="'+t.id+'"'+(t.id===selectedSession?' selected':'')+'>'+esc(t.name)+(t.status==='active'?' • Active':'')+'</option>'}).join('')+'</select></div></div>'+
+       '<div class="notice"><b>Class-first setup:</b> select the class below. Its teacher, subjects and subject-teacher assignments are managed together and feed directly into the Teacher Portal, Assessments, Homework and Timetable.</div>'+
+       '<div class="academic-tabs"><button class="'+(managerTab==='class'?'active':'')+'" data-manager-tab="class">Classes & Teaching Setup</button><button class="'+(managerTab==='subjects'?'active':'')+'" data-manager-tab="subjects">Subject Catalogue</button><button class="'+(managerTab==='teachers'?'active':'')+'" data-manager-tab="teachers">Teacher Assignment Matrix</button></div><div id="managerPane"></div>';
      E('academicYearFilter').onchange=function(){selectedYear=this.value;sessionStorage.setItem('rx_academic_year',selectedYear);var ts=terms.filter(function(t){return t.academic_year_id===selectedYear}),at=ts.find(function(t){return t.status==='active'});selectedSession=at?at.id:'';sessionStorage.setItem('rx_academic_session',selectedSession);selectedClass=null;sessionStorage.removeItem('rx_academic_class');renderManager()};
      E('academicSessionFilter').onchange=function(){selectedSession=this.value;sessionStorage.setItem('rx_academic_session',selectedSession);renderManager()};
      E('content').querySelectorAll('[data-manager-tab]').forEach(function(b){b.onclick=function(){managerTab=b.dataset.managerTab;sessionStorage.setItem('rx_academic_tab',managerTab);renderManager()}});
-     if(managerTab==='assign')renderQuickAssignment();else if(managerTab==='subjects')renderSubjectCatalogue();else if(managerTab==='teachers')renderTeacherOverview();else renderClassWorkspace()
+     if(managerTab==='subjects')renderSubjectCatalogue();else if(managerTab==='teachers')renderTeacherOverview();else renderClassWorkspace()
    }
    renderManager();
    E('content').onclick=async function(e){
