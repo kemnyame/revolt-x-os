@@ -15,10 +15,11 @@ type Deps={
   postStudentPaymentLedger:(client:any,paymentId:string,actorOsUserId?:string|null)=>Promise<any>;
   postStudentFeeReceivable:(client:any,studentFeeId:string,actorOsUserId?:string|null)=>Promise<any>;
   reverseFinanceJournal:(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string)=>Promise<any>;
+  notifyContact:(input:any)=>Promise<any[]>;
 };
 
 export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
-  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal}=d;
+  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal,notifyContact}=d;
 
   async function assertAccount(client:any,organisationId:string,id:string,type?:string){
     const params:any[]=[id,organisationId];
@@ -836,6 +837,24 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       receiptNo:result.receipt.receipt_no,reference:result.reference,amount:b.amountReceived,studentId:b.studentId,
       allocationCount:b.allocations.length,appliedToFees:result.appliedToFees,directIncome:result.directIncome,overpaymentCredit:result.overpaymentCredit
     });
+
+    const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g
+      JOIN student_guardians sg ON sg.guardian_id=g.id
+      WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.created_at LIMIT 1`,[b.studentId]);
+    if(guardian){
+      const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+      const balance=await one<any>(db,`SELECT COALESCE(sum((sf.amount_due-sf.discount)-COALESCE((
+        SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL
+      ),0)),0) outstanding FROM student_fees sf WHERE sf.organisation_id=$1 AND sf.student_id=$2`,
+        [a.core.organisation_id,b.studentId]);
+      await notifyContact({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_received',
+        name:(guardian.first_name+' '+guardian.last_name).trim(),email:guardian.email,phone:guardian.phone,
+        subject:'Fee payment received - '+result.student.first_name+' '+result.student.last_name,
+        body:`${school.school_name} has received ${school.currency||'GHS'} ${Number(b.amountReceived).toFixed(2)} for ${result.student.first_name} ${result.student.last_name} (${result.student.admission_no}). Receipt: ${result.receipt.receipt_no}. Reference: ${result.reference}. Outstanding fee balance: ${school.currency||'GHS'} ${Number(balance.outstanding||0).toFixed(2)}.`,
+        relatedType:'finance_student_receipt',relatedId:result.receipt.id
+      });
+    }
     return reply.code(201).send(result);
   });
 
