@@ -12,8 +12,8 @@ export const parentFrontend=`<!doctype html>
 <div class="wrap">
 <div class="brand"><span>RX</span> REVOLT-X SCHOOL <span class="muted">Parent Portal</span></div>
 <section id="login" class="panel" style="max-width:480px;margin:70px auto">
-<h2>Parent / Guardian Sign In</h2><p class="muted">Use your phone number, a linked student admission number and your school-issued PIN.</p>
-<label>Phone number</label><input id="phone"><label>Student admission number</label><input id="admission"><label>PIN</label><input id="pin" type="password" maxlength="6">
+<h2>Parent / Guardian Sign In</h2><p class="muted">Use your phone number and the admission number of a student linked to you.</p>
+<label>Phone number</label><input id="phone" autocomplete="tel"><label>Student admission number</label><input id="admission" autocomplete="off">
 <button id="signin" class="primary" style="width:100%">Sign in</button><p id="loginError" class="error"></p>
 </section>
 <section id="portal" class="hide"><div class="top"><div><h2 id="guardianName"></h2><div class="muted" id="schoolName"></div></div><button id="logout" class="ghost">Sign out</button></div><div id="children" class="grid"></div><div id="studentArea"></div></section>
@@ -88,7 +88,7 @@ async function loadStudent(id){
  E('tabNews').onclick=function(){E('detail').innerHTML='<div class="panel"><h3>Announcements</h3>'+table(d.announcements,[{key:'title'},{key:'body'},{key:'published_at',label:'Published',render:function(r){return esc(r.published_at?new Date(r.published_at).toLocaleDateString():'')}}])+'</div>'};
  E('tabHomework').click();
 }
-E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({phone:E('phone').value,admissionNo:E('admission').value,pin:E('pin').value})});token=x.token;sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
+E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({phone:E('phone').value,admissionNo:E('admission').value})});token=x.token;sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
 E('logout').onclick=async function(){try{await raw('/api/parent/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_parent_token');location.reload()};
 boot();
 })();
