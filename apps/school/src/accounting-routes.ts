@@ -47,7 +47,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
   async function buildEodReports(client:any,organisationId:string,businessDate:string){
     const yearStart=businessDate.slice(0,4)+'-01-01';
     const [trial,income,cash,balance,aging,fees,expenses,taxes,budgets,ledger,students,integrity]=await Promise.all([
-      client.query(\`
+      client.query(`
         SELECT fa.code,fa.name,fa.account_type,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit ELSE 0 END),0) debit,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit ELSE 0 END),0) credit
@@ -55,8 +55,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id
         LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2
         WHERE fa.organisation_id=$1 GROUP BY fa.id ORDER BY fa.code
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT fa.code,fa.name,fa.account_type,
           CASE WHEN fa.account_type='income'
             THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0)
@@ -66,8 +66,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date BETWEEN $2 AND $3
         WHERE fa.organisation_id=$1 AND fa.account_type IN('income','expense')
         GROUP BY fa.id ORDER BY fa.account_type DESC,fa.code
-      \`,[organisationId,yearStart,businessDate]),
-      client.query(\`
+      `,[organisationId,yearStart,businessDate]),
+      client.query(`
         SELECT fa.code,fa.name,fa.opening_balance,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) movement,
           fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) closing_balance
@@ -76,8 +76,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2
         WHERE fa.organisation_id=$1 AND fa.is_cash_account=true
         GROUP BY fa.id ORDER BY fa.code
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT fa.code,fa.name,fa.account_type,fa.opening_balance,
           CASE WHEN fa.account_type='asset'
             THEN fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0)
@@ -87,8 +87,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2
         WHERE fa.organisation_id=$1 AND fa.account_type IN('asset','liability','equity')
         GROUP BY fa.id ORDER BY fa.account_type,fa.code
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,
           COALESCE(sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)),0) outstanding
         FROM students s
@@ -97,27 +97,27 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE s.organisation_id=$1
         GROUP BY s.id HAVING COALESCE(sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)),0)>0
         ORDER BY outstanding DESC
-      \`,[organisationId]),
-      client.query(\`
+      `,[organisationId]),
+      client.query(`
         SELECT p.payment_method,count(*)::int transactions,COALESCE(sum(p.amount),0) amount
         FROM payments p
         WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND p.paid_at::date=$2
         GROUP BY p.payment_method ORDER BY amount DESC
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT fa.code,fa.name,COALESCE(sum(e.amount+e.tax_amount),0) amount,count(e.id)::int transactions
         FROM finance_accounts fa
         LEFT JOIN finance_expenses e ON e.expense_account_id=fa.id AND e.status='posted' AND e.expense_date=$2
         WHERE fa.organisation_id=$1 AND fa.account_type='expense'
         GROUP BY fa.id HAVING count(e.id)>0 ORDER BY amount DESC
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT t.code,t.name,t.authority,COALESCE(sum(o.amount_due),0) amount_due,COALESCE(sum(o.amount_paid),0) amount_paid,
           COALESCE(sum(o.amount_due-o.amount_paid),0) outstanding
         FROM finance_tax_types t LEFT JOIN finance_tax_obligations o ON o.tax_type_id=t.id AND o.status<>'cancelled'
         WHERE t.organisation_id=$1 GROUP BY t.id ORDER BY t.code
-      \`,[organisationId]),
-      client.query(\`
+      `,[organisationId]),
+      client.query(`
         SELECT b.id,fa.code,fa.name,fa.account_type,b.period_start,b.period_end,b.amount budget_amount,
           CASE WHEN fa.account_type='income'
             THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0)
@@ -128,8 +128,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
           AND je.entry_date BETWEEN b.period_start AND LEAST(b.period_end,$2::date)
         WHERE b.organisation_id=$1 AND b.period_start<=$2::date AND b.period_end>=$2::date
         GROUP BY b.id,fa.id ORDER BY fa.code
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT je.entry_date,je.entry_no,je.description,je.reference,fa.code account_code,fa.name account_name,
           jl.description line_description,jl.debit,jl.credit
         FROM finance_journal_entries je
@@ -137,8 +137,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         JOIN finance_accounts fa ON fa.id=jl.account_id
         WHERE je.organisation_id=$1 AND je.status='posted' AND je.entry_date=$2
         ORDER BY je.entry_no,fa.code
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         WITH student_base AS (
           SELECT s.id,s.admission_no,s.first_name,s.last_name,
             COALESCE((SELECT sum(sf.amount_due-sf.discount) FROM student_fees sf
@@ -158,8 +158,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         SELECT *,closing_balance-opening_balance movement
         FROM student_base
         ORDER BY admission_no
-      \`,[organisationId,businessDate]),
-      client.query(\`
+      `,[organisationId,businessDate]),
+      client.query(`
         SELECT
           (SELECT count(*) FROM (
             SELECT je.id FROM finance_journal_entries je
@@ -180,7 +180,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
                 SELECT 1 FROM finance_journal_entries je
                 WHERE je.organisation_id=p.organisation_id AND je.source_type='student_payment' AND je.source_id=p.id AND je.status='posted'
               )) payments_without_journal
-      \`,[organisationId,businessDate])
+      `,[organisationId,businessDate])
     ]);
 
     const totalDebit=trial.rows.reduce((s:number,x:any)=>s+Number(x.debit||0),0);
@@ -215,15 +215,15 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       let run=await maybeOne<any>(client,'SELECT * FROM finance_eod_runs WHERE organisation_id=$1 AND business_date=$2 FOR UPDATE',[organisationId,businessDate]);
       if(run?.status==='completed'||run?.status==='completed_with_warnings')return run;
       if(!run){
-        run=await one<any>(client,\`
+        run=await one<any>(client,`
           INSERT INTO finance_eod_runs(organisation_id,business_date,status,run_by_os_user_id)
           VALUES($1,$2,'running',$3) RETURNING *
-        \`,[organisationId,businessDate,actorOsUserId]);
+        `,[organisationId,businessDate,actorOsUserId]);
       }else{
-        run=await one<any>(client,\`
+        run=await one<any>(client,`
           UPDATE finance_eod_runs SET status='running',started_at=now(),completed_at=NULL,error_message=NULL,run_by_os_user_id=$1
           WHERE id=$2 RETURNING *
-        \`,[actorOsUserId,run.id]);
+        `,[actorOsUserId,run.id]);
       }
       try{
         const missingFees=(await client.query(`
@@ -251,17 +251,17 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         const built=await buildEodReports(client,organisationId,businessDate);
         await client.query('DELETE FROM finance_eod_reports WHERE eod_run_id=$1',[run.id]);
         for(const [key,value] of Object.entries(built.reports) as any){
-          await client.query(\`
+          await client.query(`
             INSERT INTO finance_eod_reports(eod_run_id,organisation_id,business_date,report_key,report_name,payload)
             VALUES($1,$2,$3,$4,$5,$6)
-          \`,[run.id,organisationId,businessDate,key,value.name,JSON.stringify(value.payload)]);
+          `,[run.id,organisationId,businessDate,key,value.name,JSON.stringify(value.payload)]);
         }
-        return one<any>(client,\`
+        return one<any>(client,`
           UPDATE finance_eod_runs SET status=$1,completed_at=now(),total_debit=$2,total_credit=$3,issue_count=$4,summary=$5
           WHERE id=$6 RETURNING *
-        \`,[built.issues?'completed_with_warnings':'completed',built.totalDebit,built.totalCredit,built.issues,JSON.stringify(built.summary),run.id]);
+        `,[built.issues?'completed_with_warnings':'completed',built.totalDebit,built.totalCredit,built.issues,JSON.stringify(built.summary),run.id]);
       }catch(error:any){
-        await client.query(\`UPDATE finance_eod_runs SET status='failed',completed_at=now(),error_message=$1 WHERE id=$2\`,[String(error?.message||error),run.id]);
+        await client.query(`UPDATE finance_eod_runs SET status='failed',completed_at=now(),error_message=$1 WHERE id=$2`,[String(error?.message||error),run.id]);
         throw error;
       }
     });
@@ -269,9 +269,9 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/accounting/end-of-day',async request=>{
     const a=await authorize(request,db,config,'finance.report');
-    return (await db.query(\`
+    return (await db.query(`
       SELECT * FROM finance_eod_runs WHERE organisation_id=$1 ORDER BY business_date DESC LIMIT 90
-    \`,[a.core.organisation_id])).rows;
+    `,[a.core.organisation_id])).rows;
   });
 
   app.post('/api/accounting/end-of-day/run',async request=>{
@@ -287,9 +287,9 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
     const a=await authorize(request,db,config,'finance.report');
     const {id}=z.object({id:z.string().uuid()}).parse(request.params);
     const run=await one<any>(db,'SELECT * FROM finance_eod_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-    const reports=(await db.query(\`
+    const reports=(await db.query(`
       SELECT id,report_key,report_name,payload,created_at FROM finance_eod_reports WHERE eod_run_id=$1 ORDER BY report_name
-    \`,[id])).rows;
+    `,[id])).rows;
     return{run,reports};
   });
 
