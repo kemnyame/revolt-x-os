@@ -12,11 +12,13 @@ type Deps={
   audit:(organisationId:string,userId:string,action:string,resourceType:string,resourceId?:string|null,metadata?:any)=>Promise<void>;
   postFinanceJournal:(client:any,input:any)=>Promise<any>;
   updateStudentFeeStatus:(client:any,studentFeeId:string)=>Promise<any>;
+  postStudentPaymentLedger:(client:any,paymentId:string,actorOsUserId?:string|null)=>Promise<any>;
+  postStudentFeeReceivable:(client:any,studentFeeId:string,actorOsUserId?:string|null)=>Promise<any>;
   reverseFinanceJournal:(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string)=>Promise<any>;
 };
 
 export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
-  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,reverseFinanceJournal}=d;
+  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal}=d;
 
   async function assertAccount(client:any,organisationId:string,id:string,type?:string){
     const params:any[]=[id,organisationId];
@@ -224,6 +226,28 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         \`,[actorOsUserId,run.id]);
       }
       try{
+        const missingFees=(await client.query(`
+          SELECT sf.id FROM student_fees sf
+          WHERE sf.organisation_id=$1 AND sf.created_at::date<=$2
+            AND NOT EXISTS(
+              SELECT 1 FROM finance_journal_entries je
+              WHERE je.organisation_id=sf.organisation_id AND je.source_type='student_fee' AND je.source_id=sf.id AND je.status='posted'
+            )
+          ORDER BY sf.created_at
+        `,[organisationId,businessDate])).rows;
+        const missingPayments=(await client.query(`
+          SELECT p.id FROM payments p
+          WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND p.paid_at::date<=$2
+            AND p.finance_receipt_id IS NULL AND p.source<>'credit_applied'
+            AND NOT EXISTS(
+              SELECT 1 FROM finance_journal_entries je
+              WHERE je.organisation_id=p.organisation_id AND je.source_type='student_payment' AND je.source_id=p.id AND je.status='posted'
+            )
+          ORDER BY p.paid_at
+        `,[organisationId,businessDate])).rows;
+        for(const row of missingFees)await postStudentFeeReceivable(client,row.id,actorOsUserId);
+        for(const row of missingPayments)await postStudentPaymentLedger(client,row.id,actorOsUserId);
+
         const built=await buildEodReports(client,organisationId,businessDate);
         await client.query('DELETE FROM finance_eod_reports WHERE eod_run_id=$1',[run.id]);
         for(const [key,value] of Object.entries(built.reports) as any){
