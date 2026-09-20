@@ -590,7 +590,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
          WHERE en.student_id=s.id AND en.status='active' ORDER BY en.enrolled_at DESC LIMIT 1) classroom_name
       FROM students s WHERE s.id=$1 AND s.organisation_id=$2
     `,[studentId,a.core.organisation_id]);
-    const school=await one<any>(db,'SELECT school_name,short_name,motto,currency,address,phone,email,logo_url FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+    const school=await one<any>(db,'SELECT school_name,short_name,motto,currency,address,phone,email,logo_url,logo_image_data FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
     const guardians=(await db.query(`
       SELECT g.first_name,g.last_name,g.phone,g.email,sg.relationship,sg.is_primary
       FROM student_guardians sg JOIN guardians g ON g.id=sg.guardian_id
@@ -659,7 +659,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       SELECT r.*,s.admission_no,s.first_name,s.middle_name,s.last_name,
         pm.label payment_method_label,pm.method_key,fa.code settlement_account_code,fa.name settlement_account_name,
         je.entry_no,sp.school_name,sp.short_name,sp.motto,sp.phone school_phone,sp.email school_email,
-        sp.address school_address,sp.currency,sp.logo_url
+        sp.address school_address,sp.currency,sp.logo_url,sp.logo_image_data
       FROM finance_student_receipts r
       JOIN students s ON s.id=r.student_id
       JOIN finance_payment_methods pm ON pm.id=r.payment_method_id
