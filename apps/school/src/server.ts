@@ -6022,6 +6022,32 @@ app.get('/api/system/diagnostics',async request=>{
   ) x WHERE balance < -0.01`,[org]);
   add('payments','Fee ledger balances',Number(negativeBalances.negative_balances)===0,negativeBalances);
 
+  const journalIntegrity=await one<any>(db,`SELECT count(*)::int unbalanced_entries FROM (
+    SELECT je.id
+    FROM finance_journal_entries je
+    JOIN finance_journal_lines jl ON jl.journal_entry_id=je.id
+    WHERE je.organisation_id=$1 AND je.status='posted'
+    GROUP BY je.id
+    HAVING abs(COALESCE(sum(jl.debit),0)-COALESCE(sum(jl.credit),0))>0.01
+  ) x`,[org]);
+  add('finance_journal_balance','Posted journals balance',Number(journalIntegrity.unbalanced_entries)===0,journalIntegrity);
+
+  const receiptIntegrity=await one<any>(db,`SELECT count(*)::int mismatched_receipts FROM (
+    SELECT r.id,r.amount,
+      COALESCE((SELECT sum(ra.amount) FROM finance_student_receipt_allocations ra WHERE ra.receipt_id=r.id),0) allocations,
+      COALESCE((SELECT sum(c.original_amount) FROM student_account_credits c WHERE c.source_receipt_id=r.id AND c.status<>'voided'),0) credits
+    FROM finance_student_receipts r
+    WHERE r.organisation_id=$1 AND r.status<>'voided'
+  ) x WHERE abs(x.amount-x.allocations-x.credits)>0.01`,[org]);
+  add('finance_receipt_reconciliation','Student receipts reconcile to allocations and credits',Number(receiptIntegrity.mismatched_receipts)===0,receiptIntegrity);
+
+  const eodHealth=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE status='failed')::int failed,
+    count(*) FILTER(WHERE status='completed')::int completed,
+    max(completed_at) FILTER(WHERE status='completed') latest_completed
+    FROM finance_eod_runs WHERE organisation_id=$1`,[org]);
+  add('finance_eod','End-of-day processing',Number(eodHealth.failed)===0,eodHealth,Number(eodHealth.failed)>0?'warning':'info');
+
   const admissions=await one<any>(db,`SELECT count(*)::int total,
     count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM admission_status_history h WHERE h.application_id=admission_applications.id))::int without_history
     FROM admission_applications WHERE organisation_id=$1`,[org]);
