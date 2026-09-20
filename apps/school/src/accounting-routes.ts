@@ -77,7 +77,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       LEFT JOIN student_fees sf ON sf.id=p.student_fee_id
       LEFT JOIN fee_items f ON f.id=sf.fee_item_id
       WHERE p.organisation_id=$1 AND p.finance_receipt_id IS NULL
-      ORDER BY p.paid_at DESC,p.created_at DESC
+      ORDER BY p.paid_at DESC,p.id DESC
       LIMIT $2
     `,[a.core.organisation_id,q.limit])).rows;
     const history=(await db.query(`
