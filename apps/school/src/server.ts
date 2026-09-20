@@ -1885,11 +1885,9 @@ app.get('/api/students/:id/360',async request=>{
   if(student.classroom_id){
     student.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,student.classroom_id,term?.id??null);
   }
-  const guardians=(await db.query(`SELECT g.id,g.first_name,g.last_name,g.phone,g.email,g.address,sg.relationship,sg.is_primary,
-      (gpa.guardian_id IS NOT NULL AND gpa.is_active=true) portal_active,gpa.last_login_at
+  const guardians=(await db.query(`SELECT g.id,g.first_name,g.last_name,g.phone,g.email,g.address,sg.relationship,sg.is_primary
     FROM guardians g
     JOIN student_guardians sg ON sg.guardian_id=g.id
-    LEFT JOIN guardian_portal_access gpa ON gpa.guardian_id=g.id
     WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;
   const enrolments=(await db.query(`SELECT e.id,e.status,e.enrolled_at,c.name classroom_name,g.name grade_name,y.name academic_year,y.start_date,y.end_date
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
