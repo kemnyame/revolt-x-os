@@ -637,10 +637,12 @@ else if(p==='attendance'){
      raw('/api/finance/expenses?start='+yearStart+'&end='+today),raw('/api/finance/taxes'),raw('/api/finance/budgets'),
      raw('/api/finance/journals?start='+yearStart+'&end='+today),raw('/api/academic-years'),
      raw('/api/accounting/payment-methods'),raw('/api/accounting/fee-setup'),raw('/api/terms'),raw('/api/grade-levels'),
-     raw('/api/fees/payment-requests'),raw('/api/payment-intents'),raw('/api/classes')
+     raw('/api/fees/payment-requests'),raw('/api/payment-intents'),raw('/api/classes'),
+     can('finance.reverse')?raw('/api/accounting/reversals?limit=150'):Promise.resolve({receipts:[],expenses:[],payments:[],history:[]})
    ]);
    var fd=rr[0],accounts=rr[1],vendors=rr[2],expenses=rr[3],taxes=rr[4],budgets=rr[5],journals=rr[6],years=rr[7],
        paymentMethods=rr[8],feeSetup=rr[9],terms=rr[10],grades=rr[11],paymentRequests=rr[12],paymentIntents=rr[13],financeClasses=rr[14],
+       reversalData=rr[15]||{receipts:[],expenses:[],payments:[],history:[]},
        reportData=null,activeStudentAccount=null,activeStatement=null;
    function money(v){return 'GHS '+Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
    function accountName(id){var x=accounts.find(function(a){return a.id===id});return x?x.code+' • '+x.name:id}
@@ -662,7 +664,7 @@ else if(p==='attendance'){
    }
    E('content').innerHTML='<div class="section"><div><h1>Accounts & Student Finance</h1><p class="muted">Student receipting, fee-to-income GL mapping, expenses, journals, taxes, budgets and financial reporting in one accounting workspace.</p></div><div class="actions"><button id="receiveStudentPaymentTop" class="primary">Receive student payment</button><button id="newExpenseTop" class="ghost">Record expense</button></div></div>'+
    '<div class="grid"><div class="panel stat"><span class="muted">Income</span><b>'+money(fd.income)+'</b></div><div class="panel stat"><span class="muted">Expenses</span><b>'+money(fd.expenses)+'</b></div><div class="panel stat"><span class="muted">Surplus / Deficit</span><b>'+money(fd.surplus)+'</b></div><div class="panel stat"><span class="muted">Cash & Clearing</span><b>'+money(fd.cash)+'</b></div><div class="panel stat"><span class="muted">Outstanding Fees</span><b>'+money(fd.outstandingFees)+'</b></div><div class="panel stat"><span class="muted">Tax Outstanding</span><b>'+money(fd.taxOutstanding)+'</b><small>'+esc(fd.openTaxItems)+' open item(s)</small></div></div>'+
-   '<div class="staff-tabs"><button class="staff-tab active" data-fin-tab="overview">Overview</button><button class="staff-tab" data-fin-tab="student">Student Payments</button><button class="staff-tab" data-fin-tab="requests">Parent Payment Requests</button><button class="staff-tab" data-fin-tab="setup">Payment, Fees & GL Setup</button><button class="staff-tab" data-fin-tab="expenses">Expenses</button><button class="staff-tab" data-fin-tab="journals">Journals</button><button class="staff-tab" data-fin-tab="taxes">Taxes</button><button class="staff-tab" data-fin-tab="budgets">Budgets</button><button class="staff-tab" data-fin-tab="accounts">Chart of Accounts</button><button class="staff-tab" data-fin-tab="vendors">Vendors</button><button class="staff-tab" data-fin-tab="reports">Reports</button></div>'+
+   '<div class="staff-tabs"><button class="staff-tab active" data-fin-tab="overview">Overview</button><button class="staff-tab" data-fin-tab="student">Student Payments</button><button class="staff-tab" data-fin-tab="requests">Parent Payment Requests</button><button class="staff-tab" data-fin-tab="setup">Payment, Fees & GL Setup</button><button class="staff-tab" data-fin-tab="expenses">Expenses</button><button class="staff-tab" data-fin-tab="journals">Journals</button><button class="staff-tab" data-fin-tab="taxes">Taxes</button><button class="staff-tab" data-fin-tab="budgets">Budgets</button><button class="staff-tab" data-fin-tab="accounts">Chart of Accounts</button><button class="staff-tab" data-fin-tab="vendors">Vendors</button>'+(can('finance.reverse')?'<button class="staff-tab" data-fin-tab="reversals">Reversal Module</button>':'')+'<button class="staff-tab" data-fin-tab="reports">Reports</button></div>'+
    '<div id="fin-overview" class="fin-pane"><div class="two"><div class="panel"><h3>Accounting flow</h3><p class="muted">Fee assignment posts <b>Accounts Receivable → the fee item’s selected Income GL</b>. When money is received, the receipt posts <b>Cash/Bank/MoMo/Card → Accounts Receivable</b>. This keeps fees, income and the GL in agreement without double-counting revenue.</p></div><div class="panel"><h3>Collection accounts</h3>'+table(accounts.filter(function(a){return a.is_cash_account}),[{key:"code"},{key:"name"},{key:"raw_balance",label:"Ledger Balance",render:function(a){return money(a.raw_balance)}}])+'</div></div></div>'+
    '<div id="fin-student" class="fin-pane hide"><div class="section compact"><div><h3>Student Payments</h3><p class="muted">Search for a student, receive one payment, allocate part or all of it to fees, add direct income where applicable, and automatically carry any remaining amount forward as student credit.</p></div></div><div class="panel"><div class="row"><input id="acctStudentSearch" placeholder="Student ID, name, guardian, phone or email"><button id="acctStudentSearchBtn" class="primary">Search</button></div><div id="acctStudentSearchResults" style="margin-top:12px"><div class="empty">Search for a student to begin.</div></div></div><div id="acctStudentWorkspace" style="margin-top:12px"></div></div>'+
    '<div id="fin-requests" class="fin-pane hide"><div class="section compact"><div><h3>Parent Payment Requests</h3><p class="muted">All requests sent to guardians are managed from Finance & Accounts. Online Mobile Money and Card settlements update the linked student account after successful provider verification.</p></div></div><div class="panel"><h3>Requests</h3>'+table(paymentRequests,[{key:"created_at",label:"Created",render:function(r){return esc(new Date(r.created_at).toLocaleDateString())}},{key:"admission_no",label:"Student ID"},{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},{key:"guardian_first_name",label:"Guardian",render:function(r){return esc((r.guardian_first_name||"")+" "+(r.guardian_last_name||""))}},{key:"fee_name",label:"Fee"},{key:"amount",render:function(r){return money(r.amount)}},{key:"status",render:function(r){return badge(r.status)}}],function(r){return r.status==="open"&&can("payments.initiate")?'<button class="mini danger" data-cancel-parent-request="'+r.id+'">Cancel</button>':''})+'</div><div class="panel" style="margin-top:12px"><h3>Online Mobile Money / Card Activity</h3>'+table(paymentIntents,[{key:"created_at",label:"Created",render:function(r){return esc(new Date(r.created_at).toLocaleDateString())}},{key:"admission_no",label:"Student ID"},{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},{key:"method",render:function(r){return badge(r.method)}},{key:"amount",render:function(r){return money(r.amount)}},{key:"reference"},{key:"status",render:function(r){return badge(r.status)}}])+'</div></div>'+
@@ -673,6 +675,30 @@ else if(p==='attendance'){
    '<div id="fin-budgets" class="fin-pane hide"><div class="section compact"><div><h3>Budgets</h3><p class="muted">Set planned income or expenditure by account and compare it to actual results.</p></div><button id="newBudget" class="primary">Create budget</button></div><div class="panel">'+table(budgets,[{key:"account_code",label:"Code"},{key:"account_name",label:"Account"},{key:"academic_year",label:"Academic Year"},{key:"period_start",label:"From"},{key:"period_end",label:"To"},{key:"amount",render:function(r){return money(r.amount)}}])+'</div></div>'+
    '<div id="fin-accounts" class="fin-pane hide"><div class="section compact"><div><h3>Chart of Accounts</h3><p class="muted">All fee, income, receivable, settlement and expense GL accounts are maintained here and feed the same journal.</p></div><button id="newAccount" class="primary">Add account</button></div><div class="panel">'+table(accounts,[{key:"code"},{key:"name"},{key:"account_type",label:"Type"},{key:"subtype"},{key:"raw_balance",label:"Ledger Balance",render:function(r){return money(r.raw_balance)}},{key:"is_active",label:"Status",render:function(r){return badge(r.is_active?"active":"inactive")}}],function(r){return can("finance.manage")?'<button class="mini" data-edit-fin-account="'+r.id+'">Edit</button>':''})+'</div></div>'+
    '<div id="fin-vendors" class="fin-pane hide"><div class="section compact"><div><h3>Vendors & Suppliers</h3></div><button id="newVendor" class="primary">Add vendor</button></div><div class="panel">'+table(vendors,[{key:"name"},{key:"tax_id",label:"Tax ID"},{key:"contact_person",label:"Contact"},{key:"phone"},{key:"email"},{key:"is_active",label:"Status",render:function(r){return badge(r.is_active?"active":"inactive")}}])+'</div></div>'+
+   (can('finance.reverse')?'<div id="fin-reversals" class="fin-pane hide"><div class="section compact"><div><h3>Reversal Module</h3><p class="muted">Reverse posted receipts, expenses and standalone payments from one controlled area. Every reversal requires a reason, updates the underlying student or expense balance and creates the opposite journal entry where applicable.</p></div></div>'+
+     '<div class="panel"><h3>Student Receipts</h3>'+table(reversalData.receipts||[],[
+       {key:"paid_at",label:"Date",render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},
+       {key:"receipt_no",label:"Receipt No."},{key:"reference"},{key:"admission_no",label:"Student ID"},
+       {key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},
+       {key:"payment_method_label",label:"Method"},{key:"amount",render:function(r){return money(r.amount)}},
+       {key:"status",render:function(r){return badge(r.status)}},
+       {key:"reversal_reason",label:"Reversal Reason",render:function(r){return esc(r.reversal_reason||"—")}}
+     ],function(r){if(r.status==="voided")return'<span class="badge">Reversed</span>';if(r.credit_already_used)return'<span class="badge warn">Credit already used</span>';return'<button class="mini danger" data-reverse-fin-receipt="'+r.id+'">Reverse Receipt</button>'})+'</div>'+
+     '<div class="panel" style="margin-top:12px"><h3>Expenses</h3>'+table(reversalData.expenses||[],[
+       {key:"expense_date",label:"Date"},{key:"expense_no",label:"Expense No."},{key:"vendor_name",label:"Vendor"},
+       {key:"description"},{key:"amount",label:"Total",render:function(r){return money(Number(r.amount)+Number(r.tax_amount||0))}},
+       {key:"status",render:function(r){return badge(r.status)}},{key:"entry_no",label:"Journal"}
+     ],function(r){return r.status==="posted"?'<button class="mini danger" data-reverse-fin-expense="'+r.id+'">Reverse Expense</button>':'<span class="badge">Reversed</span>'})+'</div>'+
+     '<div class="panel" style="margin-top:12px"><h3>Standalone / Legacy Payments</h3>'+table(reversalData.payments||[],[
+       {key:"paid_at",label:"Date",render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},
+       {key:"admission_no",label:"Student ID"},{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},
+       {key:"fee_name",label:"Fee"},{key:"amount",render:function(r){return money(r.amount)}},{key:"payment_method",label:"Method"},
+       {key:"reference"},{key:"voided_at",label:"Status",render:function(r){return badge(r.voided_at?"reversed":"posted")}}
+     ],function(r){return r.voided_at?'<span class="badge">Reversed</span>':'<button class="mini danger" data-reverse-fin-payment="'+r.id+'">Reverse Payment</button>'})+'</div>'+
+     '<div class="panel" style="margin-top:12px"><h3>Reversal History</h3>'+table(reversalData.history||[],[
+       {key:"reversed_at",label:"Reversed At",render:function(r){return esc(r.reversed_at?new Date(r.reversed_at).toLocaleString():"—")}},
+       {key:"entry_no",label:"Original Journal"},{key:"reversal_entry_no",label:"Reversal Journal"},{key:"description"},{key:"reference"},{key:"source_type",label:"Source"}
+     ])+'</div></div>':'')+
    '<div id="fin-reports" class="fin-pane hide"><div class="panel"><div class="three"><div><label>Financial report</label><select id="financeReport"><option value="income-statement">Income Statement</option><option value="balance-sheet">Balance Sheet</option><option value="trial-balance">Trial Balance</option><option value="cashflow">Cash Flow</option><option value="receivables-aging">Receivables Ageing</option><option value="fee-collections">Fee Collections</option><option value="expense-analysis">Expense Analysis</option><option value="budget-variance">Budget Variance</option><option value="tax-summary">Tax Summary</option><option value="general-ledger">General Ledger</option></select></div><div><label>From</label><input id="financeStart" type="date" value="'+yearStart+'"></div><div><label>To</label><input id="financeEnd" type="date" value="'+today+'"></div></div><div class="actions"><button id="runFinanceReport" class="primary">Run report</button><button id="printFinanceReport" class="ghost">Print / Save PDF</button><button id="exportFinanceReport" class="ghost">Export CSV</button></div></div><div id="financeReportOut"><div class="empty">Choose a report and click Run report.</div></div></div>';
    E('content').querySelectorAll('[data-fin-tab]').forEach(function(b){b.onclick=function(){E('content').querySelectorAll('.staff-tab').forEach(function(x){x.classList.toggle('active',x===b)});E('content').querySelectorAll('.fin-pane').forEach(function(x){x.classList.add('hide')});E('fin-'+b.dataset.finTab).classList.remove('hide')}});
    function activateFinTab(name){var b=E('content').querySelector('[data-fin-tab="'+name+'"]');if(b)b.click()}
@@ -718,7 +744,7 @@ else if(p==='attendance'){
 
      function openFeeById(feeId){return (activeStudentAccount.fees||[]).find(function(f){return f.student_fee_id===feeId})}
      function containerTotal(){return paymentContainer.reduce(function(s,x){return s+Number(x.amount||0)},0)}
-     function renderPaymentContainer(){
+     function renderPaymentContainer(syncAmount){
        if(!paymentContainer.length){E('paymentContainer').innerHTML='<div class="empty">No fee has been added yet.</div>'}
        else{
          E('paymentContainer').innerHTML=table(paymentContainer,[
@@ -728,13 +754,13 @@ else if(p==='attendance'){
            {key:'amount',label:'Payment Amount',render:function(r){return money(r.amount)}}
          ],function(r){return'<button class="mini danger" data-remove-payment-fee="'+r.studentFeeId+'">Remove</button>'})
        }
-       var total=containerTotal(),received=Number(E('receiptAmountReceived').value||0),status=E('receiptBalanceStatus');
-       if(paymentContainer.length&&(!E('receiptAmountReceived').value||Number(E('receiptAmountReceived').value)===0))E('receiptAmountReceived').value=total.toFixed(2);
-       received=Number(E('receiptAmountReceived').value||0);
+       var total=containerTotal(),status=E('receiptBalanceStatus');
+       if(syncAmount)E('receiptAmountReceived').value=paymentContainer.length?total.toFixed(2):'';
+       var received=Number(E('receiptAmountReceived').value||0);
        if(!paymentContainer.length){status.textContent='Add at least one fee to the payment container.';status.className='notice'}
        else if(received+0.005<total){status.textContent='Amount received is '+money(total-received)+' less than the fees in the container.';status.className='notice warn'}
        else if(received>total+0.005){status.textContent='Fees in container: '+money(total)+' • Advance credit to student: '+money(received-total);status.className='notice'}
-       else{status.textContent='Fees in container: '+money(total)+' • Payment fully allocated.';status.className='notice'}
+       else{status.textContent='Fees in container: '+money(total)+' • Amount Received has been auto-populated from the payment container.';status.className='notice'}
      }
 
      E('addFeeToPayment').onclick=function(){
@@ -745,15 +771,15 @@ else if(p==='attendance'){
        if(amount>Number(fee.balance)+0.005)return toast('Amount cannot exceed the outstanding balance for '+fee.fee_name,true);
        var existing=paymentContainer.find(function(x){return x.studentFeeId===feeId});
        if(existing){existing.amount=amount}else paymentContainer.push({studentFeeId:feeId,feeName:fee.fee_name,term:fee.term_name||fee.academic_year||'—',balance:Number(fee.balance),amount:amount});
-       E('paymentFeeSelect').value='';E('paymentFeeAmount').value='';renderPaymentContainer()
+       E('paymentFeeSelect').value='';E('paymentFeeAmount').value='';renderPaymentContainer(true)
      };
      E('paymentFeeSelect').onchange=function(){var fee=openFeeById(this.value);if(fee)E('paymentFeeAmount').value=Number(fee.balance).toFixed(2)};
-     E('clearPaymentContainer').onclick=function(){paymentContainer=[];renderPaymentContainer()};
-     E('paymentContainer').onclick=function(e){var feeId=e.target.dataset.removePaymentFee;if(!feeId)return;paymentContainer=paymentContainer.filter(function(x){return x.studentFeeId!==feeId});renderPaymentContainer()};
-     E('receiptAmountReceived').oninput=renderPaymentContainer;
+     E('clearPaymentContainer').onclick=function(){paymentContainer=[];renderPaymentContainer(true)};
+     E('paymentContainer').onclick=function(e){var feeId=e.target.dataset.removePaymentFee;if(!feeId)return;paymentContainer=paymentContainer.filter(function(x){return x.studentFeeId!==feeId});renderPaymentContainer(true)};
+     E('receiptAmountReceived').oninput=function(){renderPaymentContainer(false)};
 
      function updateReferenceHint(){var opt=E('receiptPaymentMethod').selectedOptions[0],label=opt?opt.textContent:'PY',prefix=String(label||'PY').replace(/[^A-Za-z]/g,'').slice(0,2).toUpperCase();E('receiptReference').value=prefix+'-'+String(activeStudentAccount.student.admission_no).replace(/[^A-Za-z0-9]/g,'').toUpperCase()+'-####'}
-     E('receiptPaymentMethod').onchange=updateReferenceHint;updateReferenceHint();renderPaymentContainer();
+     E('receiptPaymentMethod').onchange=updateReferenceHint;updateReferenceHint();renderPaymentContainer(true);
 
      E('requestParentPaymentFinance').onclick=function(){
        var gs=(activeStudentAccount.guardians||[]).map(function(g){return{value:g.id,label:g.first_name+' '+g.last_name+' • '+(g.phone||'')}}),
@@ -850,6 +876,9 @@ else if(p==='attendance'){
        return form('Map Fee to Income GL',[{key:'incomeAccountId',label:'Income GL',type:'select',options:accountOpts('income',false)}],
          {incomeAccountId:fi&&fi.income_account_id?fi.income_account_id:''},function(v){return raw('/api/accounting/fee-setup/'+feeId,{method:'PATCH',body:JSON.stringify({incomeAccountId:v.incomeAccountId})})})
      }
+     var reverseReceiptId=e.target.dataset.reverseFinReceipt;if(reverseReceiptId){var receiptReason=prompt('Reason for reversing this student receipt:');if(receiptReason&&receiptReason.trim())return raw('/api/accounting/receipts/'+reverseReceiptId+'/reverse',{method:'POST',body:JSON.stringify({reason:receiptReason.trim()})}).then(function(){toast('Student receipt reversed and balances updated');page('finance')}).catch(function(err){toast(err.message,true)})}
+     var reverseExpenseId=e.target.dataset.reverseFinExpense;if(reverseExpenseId){var expenseReason=prompt('Reason for reversing this expense:');if(expenseReason&&expenseReason.trim())return raw('/api/finance/expenses/'+reverseExpenseId+'/void',{method:'POST',body:JSON.stringify({reason:expenseReason.trim()})}).then(function(){toast('Expense reversed');page('finance')}).catch(function(err){toast(err.message,true)})}
+     var reversePaymentId=e.target.dataset.reverseFinPayment;if(reversePaymentId){var paymentReason=prompt('Reason for reversing this payment:');if(paymentReason&&paymentReason.trim())return raw('/api/payments/'+reversePaymentId+'/void',{method:'POST',body:JSON.stringify({reason:paymentReason.trim()})}).then(function(){toast('Payment reversed and student balance updated');page('finance')}).catch(function(err){toast(err.message,true)})}
      var id=e.target.dataset.voidExpense;if(id){var reason=prompt('Reason for reversing this expense:');if(reason&&reason.trim())return raw('/api/finance/expenses/'+id+'/void',{method:'POST',body:JSON.stringify({reason:reason.trim()})}).then(function(){toast('Expense reversed');page('finance')}).catch(function(err){toast(err.message,true)})}id=e.target.dataset.viewJournal;if(id){var x=await raw('/api/finance/journals/'+id);return modal('<h2>'+esc(x.entry.entry_no)+'</h2><p class="muted">'+esc(x.entry.description)+'</p>'+table(x.lines,[{key:"account_code",label:"Code"},{key:"account_name",label:"Account"},{key:"debit",render:function(r){return money(r.debit)}},{key:"credit",render:function(r){return money(r.credit)}}]))}id=e.target.dataset.payTax;if(id){var o=taxes.obligations.find(function(x){return x.id===id}),payOpts=accountOpts('asset',true);return form('Pay Tax / Statutory Obligation',[{key:'paymentDate',label:'Payment date',type:'date'},{key:'amount',label:'Amount',type:'number'},{key:'paymentAccountId',label:'Paid from',type:'select',options:payOpts},{key:'authorityReference',label:'Authority reference'},{key:'receiptReference',label:'Receipt reference'}],{paymentDate:today,amount:Number(o.amount_due)-Number(o.amount_paid)},function(v){return raw('/api/finance/tax-payments',{method:'POST',body:JSON.stringify({obligationId:id,paymentDate:v.paymentDate,amount:Number(v.amount),paymentAccountId:v.paymentAccountId,authorityReference:v.authorityReference||undefined,receiptReference:v.receiptReference||undefined})})})}}
  }
  else if(p==='leave'){
