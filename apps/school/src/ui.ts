@@ -200,7 +200,7 @@ async function boot(){try{
   E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace('/login')};
   setupGlobalSearch();
   E('loading').classList.add('hide');E('app').classList.remove('hide');
-  var initialPath=location.pathname.match(/^\/students\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1])await page('studentdetail');else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage}))await page(requestedPage);else await page('dashboard')
+  var initialPath=location.pathname.match(/^\\/students\\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1])await page('studentdetail');else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage}))await page(requestedPage);else await page('dashboard')
 }catch(e){
   E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">Your School session could not be opened. Check Core OS status or return to sign in.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="checkSchoolCore" class="primary">Check system status</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button><button id="retrySchool" class="ghost">Retry</button></div></div>';
   E('retrySchool').onclick=function(){location.reload()};
@@ -334,7 +334,7 @@ async function page(p){
    E('content').onclick=function(e){var id=e.target.dataset.openStudent;if(id)location.assign('/students/'+encodeURIComponent(id))};
  }
  else if(p==='studentdetail'){
-   var studentMatch=location.pathname.match(/^\/students\/([^/?#]+)/),studentId=studentMatch&&studentMatch[1]?decodeURIComponent(studentMatch[1]):'';
+   var studentMatch=location.pathname.match(/^\\/students\\/([^/?#]+)/),studentId=studentMatch&&studentMatch[1]?decodeURIComponent(studentMatch[1]):'';
    if(!studentId){location.assign('/?page=students');return}
    var dr=await Promise.all([raw('/api/students/'+studentId+'/360'),raw('/api/classes'),raw('/api/academic-years')]),x=dr[0],studentClasses=dr[1],studentYears=dr[2],st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[];
    E('pageTitle').textContent='Student Profile';
