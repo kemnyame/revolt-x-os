@@ -3781,6 +3781,138 @@ app.get('/api/teacher/report-worklist',async request=>{
     [a.core.organisation_id,a.core.id,q.termId??null])).rows;
 });
 
+async function classReportPool(organisationId:string,classroomId:string,termId:string){
+  const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[termId,organisationId]);
+  const classroom=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',[classroomId,organisationId,term.academic_year_id]);
+  const rows=(await db.query(`
+    SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,
+      g.first_name guardian_first_name,g.last_name guardian_last_name,g.email guardian_email,g.phone guardian_phone,
+      rc.id report_id,COALESCE(rc.workflow_status,'not_started') workflow_status,rc.submitted_at,rc.reviewed_at,
+      rc.promotion_decision,rc.promotion_basis,rc.released_at,
+      (SELECT count(*)::int FROM class_subjects cs
+        WHERE cs.organisation_id=$1 AND cs.classroom_id=$2 AND cs.academic_year_id=$4 AND cs.is_active=true) required_subjects,
+      (SELECT count(*)::int FROM class_subjects cs
+        WHERE cs.organisation_id=$1 AND cs.classroom_id=$2 AND cs.academic_year_id=$4 AND cs.is_active=true
+          AND (
+            NOT EXISTS(
+              SELECT 1 FROM assessments a LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+              WHERE a.organisation_id=$1 AND a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
+                AND COALESCE(ac.code,upper(a.assessment_type))<>'EXAM'
+            )
+            OR NOT EXISTS(
+              SELECT 1 FROM assessments a LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+              WHERE a.organisation_id=$1 AND a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
+                AND COALESCE(ac.code,upper(a.assessment_type))='EXAM'
+            )
+            OR EXISTS(
+              SELECT 1 FROM assessments a
+              WHERE a.organisation_id=$1 AND a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
+                AND NOT EXISTS(SELECT 1 FROM assessment_scores sc WHERE sc.assessment_id=a.id AND sc.student_id=s.id)
+            )
+          )
+      ) incomplete_subjects
+    FROM enrolments e
+    JOIN students s ON s.id=e.student_id
+    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=s.id AND rc.term_id=$3
+    LEFT JOIN LATERAL (
+      SELECT gx.first_name,gx.last_name,gx.email,gx.phone
+      FROM student_guardians sg JOIN guardians gx ON gx.id=sg.guardian_id
+      WHERE sg.student_id=s.id ORDER BY sg.is_primary DESC,gx.created_at LIMIT 1
+    ) g ON true
+    WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.academic_year_id=$4 AND e.status='active' AND s.status='active'
+    ORDER BY s.last_name,s.first_name
+  `,[organisationId,classroomId,termId,term.academic_year_id])).rows.map((row:any)=>({
+    ...row,
+    assessment_ready:Number(row.required_subjects)>0&&Number(row.incomplete_subjects)===0
+  }));
+  return{term,classroom,rows};
+}
+
+app.get('/api/teacher/report-pool',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,q.classroomId,q.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can open the final report pool for this class');
+  const pool=await classReportPool(a.core.organisation_id,q.classroomId,q.termId);
+  return{
+    ...pool,
+    summary:{
+      total:pool.rows.length,
+      ready:pool.rows.filter((x:any)=>x.assessment_ready).length,
+      missingGrades:pool.rows.filter((x:any)=>!x.assessment_ready).length,
+      approved:pool.rows.filter((x:any)=>x.workflow_status==='approved').length,
+      released:pool.rows.filter((x:any)=>Boolean(x.released_at)).length,
+      missingGuardianEmail:pool.rows.filter((x:any)=>!x.guardian_email).length
+    }
+  };
+});
+
+app.post('/api/teacher/report-pool/release',async request=>{
+  const a=await authorize(request,db,config,'reports.release');
+  const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can release the final report pool for this class');
+
+  const pool=await classReportPool(a.core.organisation_id,b.classroomId,b.termId);
+  if(!pool.rows.length)throw fail(409,'There are no active students in this class to release');
+  const notApproved=pool.rows.filter((x:any)=>x.workflow_status!=='approved');
+  if(notApproved.length)throw fail(409,'All reports must be approved before class release. Pending: '+notApproved.slice(0,8).map((x:any)=>x.admission_no+' '+x.first_name+' '+x.last_name).join(', '));
+  const incomplete=pool.rows.filter((x:any)=>!x.assessment_ready);
+  if(incomplete.length){
+    const details:any[]=[];
+    for(const row of incomplete.slice(0,5)){
+      const readiness=await reportAssessmentReadiness(a.core.organisation_id,row.student_id,b.termId,b.classroomId);
+      details.push(row.admission_no+' '+row.first_name+' '+row.last_name+': '+readiness.missing.map((m:any)=>m.subjectName+' ('+m.missing.join('; ')+')').join(', '));
+    }
+    throw fail(409,'Reports cannot be released while grades are incomplete. '+details.join(' | '));
+  }
+
+  const newlyReleased:any[]=[];
+  await tx(db,async client=>{
+    for(const row of pool.rows){
+      if(row.released_at)continue;
+      let decision=row.promotion_decision;
+      if(!decision){
+        const results=await calculateStudentTermResults(a.core.organisation_id,row.student_id,b.termId);
+        const promotion=await reportPromotionInfo(a.core.organisation_id,row.student_id,b.termId,b.classroomId,results);
+        decision=promotion.suggestedDecision;
+      }
+      const updated=await one<any>(client,`UPDATE report_comments
+        SET promotion_decision=COALESCE(promotion_decision,$1),
+            promotion_basis=COALESCE(promotion_basis,'threshold'),
+            released_at=now(),released_by_os_user_id=$2,updated_at=now()
+        WHERE organisation_id=$3 AND student_id=$4 AND term_id=$5 AND workflow_status='approved'
+        RETURNING *`,[decision,a.core.id,a.core.organisation_id,row.student_id,b.termId]);
+      newlyReleased.push({...row,promotion_decision:updated.promotion_decision,released_at:updated.released_at});
+    }
+  });
+
+  const school=await one<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+  let communicationCount=0,missingGuardianEmail=0;
+  for(const row of newlyReleased){
+    if(!row.guardian_email){missingGuardianEmail++;continue}
+    const results=await notifyContact({
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.released',
+      name:((row.guardian_first_name||'')+' '+(row.guardian_last_name||'')).trim(),
+      email:row.guardian_email,phone:row.guardian_phone,
+      subject:'Report card available - '+row.first_name+' '+row.last_name,
+      body:`${school.school_name} has released the report card for ${row.first_name} ${row.last_name} (${row.admission_no}) to the Parent Portal. Promotion outcome: ${String(row.promotion_decision||'pending').replace('_',' ')}.`,
+      relatedType:'report_comment',relatedId:row.report_id
+    });
+    communicationCount+=results.length;
+  }
+  await audit(a.core.organisation_id,a.core.id,'reports.class_released','classroom',b.classroomId,{
+    termId:b.termId,released:newlyReleased.length,communications:communicationCount,missingGuardianEmail
+  });
+  return{
+    released:newlyReleased.length,
+    alreadyReleased:pool.rows.length-newlyReleased.length,
+    communications:communicationCount,
+    missingGuardianEmail,
+    students:newlyReleased.map((x:any)=>({studentId:x.student_id,admissionNo:x.admission_no,promotionDecision:x.promotion_decision}))
+  };
+});
+
 app.get('/api/report-review-queue',async request=>{
   const a=await authorize(request,db,config,'reports.approve');
   const q=z.object({status:z.enum(['submitted','approved','returned']).optional(),termId:z.string().uuid().optional()}).parse(request.query);
@@ -3815,32 +3947,34 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const current=await one<any>(db,`SELECT c.id classroom_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,b.termId);
-  if(classTeacherId===a.core.id&&a.role!=='school_admin')throw fail(403,'The Class Teacher cannot approve and release their own report');
+  if(classTeacherId===a.core.id&&a.role!=='school_admin')throw fail(403,'The Class Teacher cannot approve their own report');
   if(a.role!=='school_admin'&&a.role!=='headteacher'){
     const assignment=await maybeOne<any>(db,'SELECT 1 FROM report_reviewer_assignments WHERE organisation_id=$1 AND classroom_id=$2 AND reviewer_os_user_id=$3 AND is_active=true',[a.core.organisation_id,current.classroom_id,a.core.id]);
     if(!assignment)throw fail(403,'You are not assigned to review reports for this class');
   }
   if(b.action==='return'&&!b.returnNote)throw fail(400,'Give the class teacher a reason for returning the report');
+
+  if(b.action==='approve'){
+    const readiness=await reportAssessmentReadiness(a.core.organisation_id,studentId,b.termId,current.classroom_id);
+    if(!readiness.complete){
+      const detail=readiness.missing.slice(0,8).map((x:any)=>x.subjectName+' – '+x.missing.join('; ')).join(' | ');
+      throw fail(409,'This report cannot be approved because grades are incomplete. '+detail);
+    }
+    if(!report.promotion_decision)throw fail(409,'The Class Teacher must set a promotion decision before approval');
+  }
+
   const status=b.action==='approve'?'approved':'returned';
   const updated=status==='approved'
     ?await one<any>(db,`UPDATE report_comments SET workflow_status='approved',headteacher_comment=$1::text,
-        next_term_begins=$2::date,return_note=NULL,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),updated_at=now()
+        next_term_begins=$2::date,return_note=NULL,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),
+        released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
       WHERE id=$4::uuid RETURNING *`,[b.headteacherComment??null,term.next_term_begins??null,a.core.id,report.id])
     :await one<any>(db,`UPDATE report_comments SET workflow_status='returned',next_term_begins=$1::date,
-        return_note=$2::text,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),updated_at=now()
+        return_note=$2::text,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),
+        released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
       WHERE id=$4::uuid RETURNING *`,[term.next_term_begins??null,b.returnNote??null,a.core.id,report.id]);
+
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1',[studentId]);
-  const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id
-    WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[studentId]);
-  if(guardian&&status==='approved'){
-    await notifyContact({
-      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.approved',
-      name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
-      subject:'Student report card approved',
-      body:`The report card for ${student.first_name} ${student.last_name} has been approved and is now available in the Parent Portal.`,
-      relatedType:'report_comment',relatedId:report.id
-    });
-  }
   if(status==='returned'&&classTeacherId){
     const coreUsers=await fetchCoreUsers(a.core.organisation_id);
     const teacher=coreUsers.find((u:any)=>u.id===classTeacherId);
@@ -3854,7 +3988,9 @@ app.post('/api/report-comments/:studentId/review',async request=>{
       });
     }
   }
-  await audit(a.core.organisation_id,a.core.id,'report.'+status,'report_comment',report.id,{studentId,termId:b.termId});
+  await audit(a.core.organisation_id,a.core.id,'report.'+status,'report_comment',report.id,{
+    studentId,termId:b.termId,released:false
+  });
   return updated;
 });
 app.get('/api/report-reviewers',async request=>{
