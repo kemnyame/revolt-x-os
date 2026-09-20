@@ -5,7 +5,7 @@ export type MessageChannel='email'|'sms'|'whatsapp';
 function selectedEmailProvider(config:SchoolConfig){
   if(config.EMAIL_PROVIDER==='brevo')return'brevo' as const;
   if(config.EMAIL_PROVIDER==='resend')return'resend' as const;
-  if(config.BREVO_API_KEY&&config.BREVO_FROM_EMAIL)return'brevo' as const;
+  if(config.BREVO_API_KEY)return'brevo' as const;
   if(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL)return'resend' as const;
   return'brevo' as const;
 }
@@ -14,7 +14,7 @@ export function providerStatus(config:SchoolConfig){
   const twilioAuth=Boolean(config.TWILIO_ACCOUNT_SID&&((config.TWILIO_API_KEY_SID&&config.TWILIO_API_KEY_SECRET)||config.TWILIO_AUTH_TOKEN));
   const emailProvider=selectedEmailProvider(config);
   const emailConfigured=emailProvider==='brevo'
-    ?Boolean(config.BREVO_API_KEY&&config.BREVO_FROM_EMAIL)
+    ?Boolean(config.BREVO_API_KEY)
     :Boolean(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL);
   return{
     email:{
@@ -40,6 +40,40 @@ export function providerStatus(config:SchoolConfig){
       currency:config.PAYSTACK_CURRENCY
     }
   };
+}
+
+let brevoSenderCache:{email:string;name?:string|null;source:'env'|'account'}|null=null;
+let brevoSenderCacheAt=0;
+
+async function brevoRequest(config:SchoolConfig,path:string){
+  if(!config.BREVO_API_KEY)throw new Error('Brevo API key is not configured');
+  const res=await fetch('https://api.brevo.com/v3'+path,{
+    headers:{accept:'application/json','api-key':config.BREVO_API_KEY},
+    signal:AbortSignal.timeout(15000)
+  });
+  const data=await res.json().catch(()=>({})) as any;
+  if(!res.ok)throw new Error(data?.message||data?.error?.message||('Brevo request failed ('+res.status+')'));
+  return data;
+}
+
+async function resolveBrevoSender(config:SchoolConfig){
+  if(config.BREVO_FROM_EMAIL)return{email:config.BREVO_FROM_EMAIL,name:config.BREVO_FROM_NAME||'Revolt-X School',source:'env' as const};
+  if(brevoSenderCache&&Date.now()-brevoSenderCacheAt<10*60*1000)return brevoSenderCache;
+  const data=await brevoRequest(config,'/senders');
+  const senders=Array.isArray(data?.senders)?data.senders:[];
+  const active=senders.filter((s:any)=>s?.email&&s?.active!==false);
+  if(!active.length)throw new Error('Brevo is authenticated, but no active sender email is available. Verify a sender/domain in Brevo.');
+  const preferred=active.find((s:any)=>s?.email&&/@/.test(String(s.email)))||active[0];
+  brevoSenderCache={email:String(preferred.email),name:String(preferred.name||config.BREVO_FROM_NAME||'Revolt-X School'),source:'account'};
+  brevoSenderCacheAt=Date.now();
+  return brevoSenderCache;
+}
+
+export async function validateBrevoConnection(config:SchoolConfig){
+  if(!config.BREVO_API_KEY)return{authenticated:false,senderReady:false,senderSource:null};
+  await brevoRequest(config,'/account');
+  const sender=await resolveBrevoSender(config);
+  return{authenticated:true,senderReady:Boolean(sender?.email),senderSource:sender.source};
 }
 
 function htmlEscape(v:string){
@@ -101,7 +135,8 @@ export async function sendMessage(config:SchoolConfig,input:{
       '<p style="margin-top:24px;color:#667780;font-size:12px">This is an automated notification from Revolt-X School.</p></div>';
 
     if(provider==='brevo'){
-      if(!config.BREVO_API_KEY||!config.BREVO_FROM_EMAIL)throw new Error('Brevo email provider is not configured');
+      if(!config.BREVO_API_KEY)throw new Error('Brevo email provider is not configured');
+      const sender=await resolveBrevoSender(config);
       const res=await fetch('https://api.brevo.com/v3/smtp/email',{
         method:'POST',
         headers:{
@@ -110,7 +145,7 @@ export async function sendMessage(config:SchoolConfig,input:{
           'content-type':'application/json'
         },
         body:JSON.stringify({
-          sender:{name:config.BREVO_FROM_NAME||'Revolt-X School',email:config.BREVO_FROM_EMAIL},
+          sender:{name:sender.name||config.BREVO_FROM_NAME||'Revolt-X School',email:sender.email},
           to:[{email:input.to,name:input.recipientName||undefined}],
           subject,
           htmlContent,
