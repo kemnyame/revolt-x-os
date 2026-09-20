@@ -916,6 +916,24 @@ app.get('/',async(request,p)=>{
   }
   return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
 });
+app.get('/students/:id',async(request,p)=>{
+  const token=requestSessionToken(request);
+  let active=false;
+  if(token&&token.startsWith('rxs_')){
+    const hash=createHash('sha256').update(token).digest('hex');
+    const session=await maybeOne<any>(db,
+      'SELECT 1 FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',
+      [hash]
+    );
+    active=Boolean(session);
+  }
+  if(!active){
+    const secure=config.NODE_ENV==='production'?'; Secure':'';
+    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+    return p.redirect('/login?next='+encodeURIComponent(request.url));
+  }
+  return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
+});
 app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
