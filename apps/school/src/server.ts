@@ -760,7 +760,7 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
   return maybeOne<any>(db,`
     WITH enrolled AS (
       SELECT e.student_id FROM enrolments e
-      WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status='active'
+      WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status IN('active','promoted','repeated','completed')
     ),
     class_subjects_active AS (
       SELECT cs.subject_id FROM class_subjects cs
