@@ -299,13 +299,15 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
   app.post('/api/finance/expenses/:id/void',async request=>{
     const a=await authorize(request,db,config,'finance.reverse');
     const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-    const b=z.object({reason:z.string().trim().min(2).max(1000)}).parse(request.body);
+    const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().trim().min(2).max(1000)}).parse(request.body);
     const row=await tx(db,async(client:any)=>{
       const expense=await one(client,"SELECT * FROM finance_expenses WHERE id=$1 AND organisation_id=$2 AND status='posted' FOR UPDATE",[id,a.core.organisation_id]) as any;
+      const expected=String(expense.reference||expense.expense_no||'').trim().toLowerCase();
+      if(String(b.originalReference).trim().toLowerCase()!==expected)throw fail(409,'Original transaction reference does not match this expense');
       if(expense.journal_entry_id)await reverseFinanceJournal(client,a.core.organisation_id,expense.journal_entry_id,a.core.id,b.reason,'expense_void',expense.id);
       return one(client,"UPDATE finance_expenses SET status='voided',updated_at=now() WHERE id=$1 RETURNING *",[id]);
     });
-    await audit(a.core.organisation_id,a.core.id,'finance.expense_voided','finance_expense',id,{reason:b.reason});
+    await audit(a.core.organisation_id,a.core.id,'finance.expense_voided','finance_expense',id,{reason:b.reason,originalReference:b.originalReference});
     return row;
   });
 
