@@ -17,6 +17,13 @@ import { loginFrontend } from './login-ui.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
+import {
+  assertPortalLoginAllowed,
+  clearPortalLoginThrottle,
+  recordPortalLoginFailure,
+  retryCommunicationOutbox,
+  throttleFingerprint
+} from './reliability.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -192,15 +199,17 @@ async function deliverCommunication(input:{
 }){
   const status=providerStatus(config);
   const configured=input.channel==='email'?status.email.configured:input.channel==='sms'?status.sms.configured:status.whatsapp.configured;
-  const row=await one<any>(db,`INSERT INTO communication_outbox(
-      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
+  let row=await one<any>(db,`INSERT INTO communication_outbox(
+      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id,next_attempt_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12 THEN now() ELSE now()+interval '15 minutes' END) RETURNING *`,[
       input.organisationId,input.channel,input.recipientName??null,input.recipientAddress,input.subject??null,input.body,
-      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null
+      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null,configured
     ]);
   if(!configured)return row;
   try{
-    await db.query("UPDATE communication_outbox SET status='sending',attempt_count=attempt_count+1 WHERE id=$1",[row.id]);
+    row=await one<any>(db,`UPDATE communication_outbox
+      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
+      WHERE id=$1 RETURNING *`,[row.id]);
     const sent=await sendMessage(config,{
       channel:input.channel,
       to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
@@ -209,11 +218,12 @@ async function deliverCommunication(input:{
       body:input.body
     });
     return await one<any>(db,`UPDATE communication_outbox
-      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL
+      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL,next_attempt_at=NULL
       WHERE id=$3 RETURNING *`,[sent.provider,sent.messageId,row.id]);
   }catch(error:any){
-    return await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1 WHERE id=$2 RETURNING *`,
-      [String(error?.message||error),row.id]);
+    return await one<any>(db,`UPDATE communication_outbox
+      SET status='failed',last_error=$1,next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '1 minute' END
+      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),row.id]);
   }
 }
 
@@ -4079,6 +4089,73 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
   return{term,classroom,rows};
 }
 
+async function classReportReadinessDetails(organisationId:string,classroomId:string,termId:string){
+  const pool=await classReportPool(organisationId,classroomId,termId);
+  const assignments=(await db.query(`
+    SELECT ta.subject_id,ta.teacher_os_user_id,s.name subject_name
+    FROM teacher_assignments ta
+    JOIN subjects s ON s.id=ta.subject_id
+    WHERE ta.organisation_id=$1
+      AND ta.classroom_id=$2
+      AND ta.academic_year_id=$3
+      AND ta.is_active=true
+      AND ta.subject_id IS NOT NULL
+      AND (ta.term_id=$4 OR ta.term_id IS NULL)
+    ORDER BY s.name,ta.created_at
+  `,[organisationId,classroomId,pool.term.academic_year_id,termId])).rows;
+  const users=await fetchCoreUsers(organisationId);
+  const userMap=new Map(users.map((u:any)=>[u.id,u]));
+  const teachersBySubject=new Map<string,any[]>();
+  for(const a of assignments){
+    const u:any=userMap.get(a.teacher_os_user_id);
+    const list=teachersBySubject.get(a.subject_id)||[];
+    if(!list.some((x:any)=>x.id===a.teacher_os_user_id)){
+      list.push({
+        id:a.teacher_os_user_id,
+        name:u?(u.first_name+' '+u.last_name):a.teacher_os_user_id,
+        email:u?.email??null
+      });
+    }
+    teachersBySubject.set(a.subject_id,list);
+  }
+
+  const grouped=new Map<string,any>();
+  for(const row of pool.rows.filter((x:any)=>!x.assessment_ready)){
+    const readiness=await reportAssessmentReadiness(organisationId,row.student_id,termId,classroomId);
+    for(const missing of readiness.missing){
+      let subject=grouped.get(missing.subjectId);
+      if(!subject){
+        subject={
+          subjectId:missing.subjectId,
+          subjectName:missing.subjectName,
+          teachers:teachersBySubject.get(missing.subjectId)||[],
+          students:[]
+        };
+        grouped.set(missing.subjectId,subject);
+      }
+      subject.students.push({
+        studentId:row.student_id,
+        admissionNo:row.admission_no,
+        studentName:row.first_name+' '+row.last_name,
+        issues:missing.missing
+      });
+    }
+  }
+
+  const subjects=[...grouped.values()].sort((a:any,b:any)=>String(a.subjectName).localeCompare(String(b.subjectName)));
+  return{
+    term:pool.term,
+    classroom:pool.classroom,
+    summary:{
+      students:pool.rows.length,
+      readyStudents:pool.rows.filter((x:any)=>x.assessment_ready).length,
+      incompleteStudents:pool.rows.filter((x:any)=>!x.assessment_ready).length,
+      affectedSubjects:subjects.length
+    },
+    subjects
+  };
+}
+
 app.get('/api/teacher/report-pool',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
@@ -4096,6 +4173,73 @@ app.get('/api/teacher/report-pool',async request=>{
       missingGuardianEmail:pool.rows.filter((x:any)=>!x.guardian_email).length
     }
   };
+});
+
+app.get('/api/teacher/report-pool/readiness',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,q.classroomId,q.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can review missing report grades for this class');
+  return classReportReadinessDetails(a.core.organisation_id,q.classroomId,q.termId);
+});
+
+app.post('/api/teacher/report-pool/remind-missing',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can remind teachers about missing grades for this class');
+
+  const readiness=await classReportReadinessDetails(a.core.organisation_id,b.classroomId,b.termId);
+  const results:any[]=[];
+  for(const subject of readiness.subjects){
+    const students=subject.students.slice(0,40).map((x:any)=>x.admissionNo+' '+x.studentName+': '+x.issues.join('; '));
+    const bodyText=[
+      'Assessment grades are incomplete for '+readiness.classroom.name+' - '+subject.subjectName+'.',
+      '',
+      ...students,
+      '',
+      'Please enter the missing assessment scores in Revolt-X School. Report cards remain locked until all required grades are complete.'
+    ].join('\n');
+
+    if(!subject.teachers.length){
+      results.push({subjectId:subject.subjectId,subjectName:subject.subjectName,status:'no_teacher_assigned'});
+      continue;
+    }
+
+    for(const teacher of subject.teachers){
+      if(!teacher.email){
+        results.push({subjectId:subject.subjectId,subjectName:subject.subjectName,teacherId:teacher.id,teacherName:teacher.name,status:'missing_email'});
+        continue;
+      }
+      const delivery=await deliverCommunication({
+        organisationId:a.core.organisation_id,
+        actorOsUserId:a.core.id,
+        channel:'email',
+        recipientName:teacher.name,
+        recipientAddress:teacher.email,
+        subject:'Missing assessment grades - '+readiness.classroom.name+' / '+subject.subjectName,
+        body:bodyText,
+        templateKey:'assessment.missing_scores',
+        relatedType:'classroom',
+        relatedId:b.classroomId
+      });
+      results.push({
+        subjectId:subject.subjectId,
+        subjectName:subject.subjectName,
+        teacherId:teacher.id,
+        teacherName:teacher.name,
+        status:delivery.status
+      });
+    }
+  }
+
+  await audit(a.core.organisation_id,a.core.id,'reports.missing_grades_reminded','classroom',b.classroomId,{
+    termId:b.termId,
+    affectedSubjects:readiness.subjects.length,
+    incompleteStudents:readiness.summary.incompleteStudents,
+    deliveries:results
+  });
+  return{...readiness.summary,results};
 });
 
 app.post('/api/teacher/report-pool/release',async request=>{
@@ -4368,6 +4512,12 @@ app.get('/api/promotions',async request=>{const a=await authorize(request,db,con
 
 app.post('/api/parent/login',async request=>{
   const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
+  const normalizedPhone=b.phone.replace(/\\D/g,'');
+  const identityKey=throttleFingerprint(normalizedPhone+'|'+b.admissionNo.toLowerCase());
+  const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
+  await assertPortalLoginAllowed(db,'parent_identity',identityKey);
+  await assertPortalLoginAllowed(db,'parent_ip',ipKey);
+
   const row=await maybeOne<any>(db,`
     SELECT g.*
     FROM guardians g
@@ -4377,7 +4527,20 @@ app.post('/api/parent/login',async request=>{
       AND regexp_replace(g.phone,'\\D','','g')=regexp_replace($1,'\\D','','g')
       AND lower(s.admission_no)=lower($2)
     LIMIT 1`,[b.phone,b.admissionNo]);
-  if(!row)throw fail(401,'Phone number and student admission number do not match a linked guardian');
+
+  if(!row){
+    await Promise.all([
+      recordPortalLoginFailure(db,'parent_identity',identityKey,config.PARENT_LOGIN_FAILURE_LIMIT,config.PARENT_LOGIN_BLOCK_MINUTES),
+      recordPortalLoginFailure(db,'parent_ip',ipKey,config.PARENT_LOGIN_FAILURE_LIMIT*3,config.PARENT_LOGIN_BLOCK_MINUTES)
+    ]);
+    throw fail(401,'Invalid parent portal credentials');
+  }
+
+  await Promise.all([
+    clearPortalLoginThrottle(db,'parent_identity',identityKey),
+    clearPortalLoginThrottle(db,'parent_ip',ipKey)
+  ]);
+
   const token=randomBytes(48).toString('base64url');
   await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
@@ -5511,8 +5674,11 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(current.status==='sent')return current;
-  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL WHERE id=$1",[id]);
+  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL,next_attempt_at=now() WHERE id=$1",[id]);
   try{
+    await db.query(`UPDATE communication_outbox
+      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
+      WHERE id=$1`,[id]);
     const sent=await sendMessage(config,{
       channel:current.channel,
       to:current.channel==='email'?current.recipient_address:normalizePhone(current.recipient_address),
@@ -5521,13 +5687,14 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
       body:current.body
     });
     const row=await one<any>(db,`UPDATE communication_outbox SET status='sent',provider=$1,provider_message_id=$2,
-      attempt_count=attempt_count+1,sent_at=now(),last_error=NULL WHERE id=$3 RETURNING *`,
+      sent_at=now(),last_error=NULL,next_attempt_at=NULL WHERE id=$3 RETURNING *`,
       [sent.provider,sent.messageId,id]);
     await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'sent'});
     return row;
   }catch(error:any){
-    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',attempt_count=attempt_count+1,last_error=$1
-      WHERE id=$2 RETURNING *`,[String(error?.message||error),id]);
+    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1,
+      next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '5 minutes' END
+      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),id]);
     await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'failed'});
     return row;
   }
@@ -5855,6 +6022,32 @@ app.get('/api/system/diagnostics',async request=>{
   ) x WHERE balance < -0.01`,[org]);
   add('payments','Fee ledger balances',Number(negativeBalances.negative_balances)===0,negativeBalances);
 
+  const journalIntegrity=await one<any>(db,`SELECT count(*)::int unbalanced_entries FROM (
+    SELECT je.id
+    FROM finance_journal_entries je
+    JOIN finance_journal_lines jl ON jl.journal_entry_id=je.id
+    WHERE je.organisation_id=$1 AND je.status='posted'
+    GROUP BY je.id
+    HAVING abs(COALESCE(sum(jl.debit),0)-COALESCE(sum(jl.credit),0))>0.01
+  ) x`,[org]);
+  add('finance_journal_balance','Posted journals balance',Number(journalIntegrity.unbalanced_entries)===0,journalIntegrity);
+
+  const receiptIntegrity=await one<any>(db,`SELECT count(*)::int mismatched_receipts FROM (
+    SELECT r.id,r.amount,
+      COALESCE((SELECT sum(ra.amount) FROM finance_student_receipt_allocations ra WHERE ra.receipt_id=r.id),0) allocations,
+      COALESCE((SELECT sum(c.original_amount) FROM student_account_credits c WHERE c.source_receipt_id=r.id AND c.status<>'voided'),0) credits
+    FROM finance_student_receipts r
+    WHERE r.organisation_id=$1 AND r.status<>'voided'
+  ) x WHERE abs(x.amount-x.allocations-x.credits)>0.01`,[org]);
+  add('finance_receipt_reconciliation','Student receipts reconcile to allocations and credits',Number(receiptIntegrity.mismatched_receipts)===0,receiptIntegrity);
+
+  const eodHealth=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE status='failed')::int failed,
+    count(*) FILTER(WHERE status='completed')::int completed,
+    max(completed_at) FILTER(WHERE status='completed') latest_completed
+    FROM finance_eod_runs WHERE organisation_id=$1`,[org]);
+  add('finance_eod','End-of-day processing',Number(eodHealth.failed)===0,eodHealth,Number(eodHealth.failed)>0?'warning':'info');
+
   const admissions=await one<any>(db,`SELECT count(*)::int total,
     count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM admission_status_history h WHERE h.application_id=admission_applications.id))::int without_history
     FROM admission_applications WHERE organisation_id=$1`,[org]);
@@ -5874,8 +6067,28 @@ app.get('/api/system/diagnostics',async request=>{
     (SELECT count(*) FROM student_portal_access spa JOIN students s ON s.id=spa.student_id WHERE s.organisation_id=$1 AND spa.is_active=true)::int student_access`,[org]);
   add('portals','Portal access provisioned',Number(portal.guardian_links)>0&&Number(portal.student_access)>0,portal,'warning');
 
+  const communicationQueue=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE status='queued')::int queued,
+    count(*) FILTER(WHERE status='pending_configuration')::int pending_configuration,
+    count(*) FILTER(WHERE status='failed')::int failed,
+    count(*) FILTER(WHERE status='sending' AND COALESCE(last_attempt_at,created_at)<now()-interval '10 minutes')::int stuck_sending,
+    count(*) FILTER(WHERE status='sent')::int sent
+    FROM communication_outbox WHERE organisation_id=$1`,[org]);
+  add('communication_queue','Notification delivery queue',
+    Number(communicationQueue.failed)===0&&Number(communicationQueue.stuck_sending)===0,
+    communicationQueue,
+    'warning');
+
   const providers=providerStatus(config);
-  add('email_provider','Email provider',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
+  add('email_provider','Email provider configuration',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
+  if(providers.email.provider==='brevo'&&providers.email.configured){
+    try{
+      const verification=await validateBrevoConnection(config);
+      add('email_provider_auth','Brevo authentication and sender',Boolean(verification.authenticated&&verification.senderReady),verification,'warning');
+    }catch(error:any){
+      add('email_provider_auth','Brevo authentication and sender',false,{error:String(error?.message||error)},'warning');
+    }
+  }
   add('sms_provider','SMS provider',providers.sms.configured,providers.sms,providers.sms.configured?'info':'warning');
   add('whatsapp_provider','WhatsApp provider',providers.whatsapp.configured,providers.whatsapp,providers.whatsapp.configured?'info':'warning');
   add('payments_provider','Online payment provider',providers.payments.configured,providers.payments,providers.payments.configured?'info':'warning');
@@ -5999,7 +6212,24 @@ app.setErrorHandler(async(error:any,request,reply)=>{
 });
 
 let shutting=false;
-async function shutdown(){if(shutting)return;shutting=true;await app.close();await db.end()}
+let communicationRetryTimer:ReturnType<typeof setInterval>|undefined;
+async function runCommunicationRetries(){
+  try{
+    const result=await retryCommunicationOutbox(db,config,config.COMMUNICATION_RETRY_BATCH_SIZE);
+    if(result.attempted||result.sent||result.failed){
+      app.log.info({communicationRetry:result},'Communication retry worker completed');
+    }
+  }catch(error){
+    app.log.error({error},'Communication retry worker failed');
+  }
+}
+async function shutdown(){
+  if(shutting)return;
+  shutting=true;
+  if(communicationRetryTimer)clearInterval(communicationRetryTimer);
+  await app.close();
+  await db.end();
+}
 process.once('SIGTERM',()=>void shutdown().finally(()=>process.exit(0)));
 process.once('SIGINT',()=>void shutdown().finally(()=>process.exit(0)));
 
@@ -6007,3 +6237,6 @@ await provisionDemoTeachers();
 
 await app.listen({host:config.HOST,port:config.PORT});
 console.log(`Revolt-X School listening on ${config.HOST}:${config.PORT}`);
+void runCommunicationRetries();
+communicationRetryTimer=setInterval(()=>void runCommunicationRetries(),config.COMMUNICATION_RETRY_INTERVAL_MS);
+communicationRetryTimer.unref();

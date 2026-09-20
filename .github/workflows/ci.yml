@@ -31,3 +31,24 @@ jobs:
           NODE_ENV: test
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           JWT_SECRET: test-only-ci-secret-that-is-at-least-32-characters
+
+
+  school-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install School dependencies
+        working-directory: apps/school
+        run: npm install
+
+      - name: Build and test Revolt-X School
+        working-directory: apps/school
+        run: npm test
