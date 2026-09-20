@@ -34,7 +34,7 @@ input,select,textarea{width:100%;padding:10px;background:#07141d;border:1px soli
 <div id="loading" class="loading"><div><b>REVOLT-X SCHOOL</b><p class="muted">Connecting to Core Revolt-X OS...</p></div></div>
 <div id="app" class="shell hide">
 <aside class="side"><div class="brand"><span>RX</span> SCHOOL</div><div id="schoolName" class="schoolname"></div><nav id="nav" class="nav"></nav></aside>
-<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main>
+<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><button id="myProfile" class="ghost">My Profile</button><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main>
 </div>
 <div id="modal" class="modal hide"><div class="modalbox"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div>
 <div id="toast" class="toast hide"></div>
@@ -104,12 +104,36 @@ function studentStatementDocument(st){
     '<div class="summary"><div><span>Total Charges</span><b>'+docMoney(st.summary.charges,currency)+'</b></div><div><span>Payments & Advances</span><b>'+docMoney(st.summary.payments,currency)+'</b></div><div><span>Available Credit</span><b>'+docMoney(st.summary.creditAvailable||0,currency)+'</b></div><div><span>Amount Due</span><b>'+docMoney(st.summary.amountDue||0,currency)+'</b></div></div>'+
     '<table><thead><tr><th>Date</th><th>Type</th><th>Description / Reference</th><th>GL</th><th>Charge</th><th>Payment</th><th>Balance</th></tr></thead><tbody>'+rows+'</tbody></table>'
 }
-function schoolLogoHtml(school){return school&&school.logo_url?'<img class="doc-logo" src="'+esc(school.logo_url)+'" alt="School logo">':'<div class="rx-logo">RX</div>'}
+function schoolLogoHtml(school){var src=school&&(school.logo_image_data||school.logo_url);return src?'<img class="doc-logo" src="'+esc(src)+'" alt="School logo">':'<div class="rx-logo">RX</div>'}
 
 
 function field(f,v){v=v==null?'':v;if(f.type==='select')return'<label>'+esc(f.label)+'</label><select data-f="'+f.key+'">'+(f.options||[]).map(function(o){var value=typeof o==='string'?o:o.value,label=typeof o==='string'?o:o.label;return'<option value="'+esc(value)+'"'+(String(value)===String(v)?' selected':'')+'>'+esc(label)+'</option>'}).join('')+'</select>';if(f.type==='textarea')return'<label>'+esc(f.label)+'</label><textarea rows="'+(f.rows||4)+'" data-f="'+f.key+'">'+esc(v)+'</textarea>';return'<label>'+esc(f.label)+'</label><input type="'+(f.type||'text')+'" data-f="'+f.key+'" value="'+esc(v)+'">'}
 function form(title,fields,vals,save){vals=vals||{};modal('<h2 style="margin-bottom:15px">'+esc(title)+'</h2>'+fields.map(function(f){return field(f,vals[f.key])}).join('')+'<button id="saveModal" class="primary" style="width:100%;margin:8px 0 12px">Save</button>');E('saveModal').onclick=async function(){var v={},btn=E('saveModal');E('modalBody').querySelectorAll('[data-f]').forEach(function(x){v[x.dataset.f]=x.value});try{btn.disabled=true;btn.textContent='Saving...';await save(v);btn.textContent='Saved';close();await page(current);successDialog('Record saved',title+' was saved successfully.')}catch(e){btn.disabled=false;btn.textContent='Save'}}}
 function confirmDo(message,action){if(!confirm(message))return;Promise.resolve().then(action).then(function(){toast('Action completed');return page(current)}).catch(function(e){toast(e.message,true)})}
+async function openMyProfile(){
+  var p=await raw('/api/me/profile'),photo=p.profilePhotoData||'';
+  modal('<div class="section compact"><div><h2>My Profile</h2><p class="muted">Update your details and profile picture.</p></div></div>'+
+    '<div style="display:flex;gap:18px;align-items:center;margin-bottom:16px"><div id="myProfilePreview" style="width:88px;height:88px;border-radius:50%;overflow:hidden;background:#183a3f;display:grid;place-items:center;font-size:24px;font-weight:800">'+(photo?'<img src="'+esc(photo)+'" style="width:100%;height:100%;object-fit:cover">':esc((p.firstName||'U').slice(0,1)+(p.lastName||'').slice(0,1)))+'</div><div><b>'+esc(p.firstName+' '+p.lastName)+'</b><br><span class="muted">'+esc(p.role||'')+' • '+esc(p.organisationName||'')+'</span></div></div>'+
+    '<label>First name</label><input id="myFirstName" value="'+esc(p.firstName||'')+'"><label>Last name</label><input id="myLastName" value="'+esc(p.lastName||'')+'"><label>Email</label><input id="myEmail" type="email" value="'+esc(p.email||'')+'">'+
+    '<label>Profile picture</label><input id="myProfilePhoto" type="file" accept="image/png,image/jpeg,image/webp"><p class="muted">PNG, JPG or WebP. Keep the image under 1 MB.</p>'+
+    '<div class="actions"><button id="removeMyPhoto" class="ghost">Remove picture</button><button id="saveMyProfile" class="primary">Save Profile</button></div>');
+  var selectedPhoto=photo,removePhoto=false;
+  E('myProfilePhoto').onchange=function(){
+    var file=this.files&&this.files[0];if(!file)return;if(file.size>1000000){toast('Profile picture must be under 1 MB',true);this.value='';return}
+    var reader=new FileReader();reader.onload=function(){selectedPhoto=String(reader.result||'');removePhoto=false;E('myProfilePreview').innerHTML='<img src="'+esc(selectedPhoto)+'" style="width:100%;height:100%;object-fit:cover">'};reader.readAsDataURL(file)
+  };
+  E('removeMyPhoto').onclick=function(){selectedPhoto='';removePhoto=true;E('myProfilePreview').textContent=(E('myFirstName').value||'U').slice(0,1)+(E('myLastName').value||'').slice(0,1)};
+  E('saveMyProfile').onclick=async function(){
+    var btn=this;btn.disabled=true;btn.textContent='Saving...';
+    try{
+      await raw('/api/me/profile',{method:'PATCH',body:JSON.stringify({
+        firstName:E('myFirstName').value.trim(),lastName:E('myLastName').value.trim(),email:E('myEmail').value.trim(),
+        profilePhotoData:removePhoto?null:(selectedPhoto||undefined)
+      })});
+      close();toast('Profile updated');location.reload()
+    }catch(e){btn.disabled=false;btn.textContent='Save Profile'}
+  }
+}
 var searchTimer=null;
 function setupGlobalSearch(){
   var input=E('globalSearch'),box=E('searchResults');if(!input||!box)return;
@@ -172,6 +196,7 @@ async function boot(){try{
   E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
+  E('myProfile').onclick=openMyProfile;
   E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace('/login')};
   setupGlobalSearch();
   E('loading').classList.add('hide');E('app').classList.remove('hide');
@@ -196,11 +221,17 @@ async function page(p){
  }
  else if(p==='setup'){
    var rs=await Promise.all([raw('/api/school/profile'),raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels')]);var prof=rs[0],years=rs[1],terms=rs[2],grades=rs[3];
-   E('content').innerHTML='<div class="section"><h1>School Setup</h1><button id="editProfile" class="primary">Edit profile</button></div><div class="panel"><div class="two"><div><b>'+esc(prof.school_name)+'</b><p class="muted">'+esc(prof.motto||'No motto set')+'</p></div><div><p>'+esc(prof.phone||'')+'<br>'+esc(prof.email||'')+'<br>'+esc(prof.address||'')+'</p></div></div></div>'+
+   E('content').innerHTML='<div class="section"><h1>School Setup</h1><button id="editProfile" class="primary">Edit profile</button></div><div class="panel"><div style="display:flex;gap:18px;align-items:center">'+((prof.logo_image_data||prof.logo_url)?'<img src="'+esc(prof.logo_image_data||prof.logo_url)+'" style="width:90px;height:90px;object-fit:contain;border-radius:14px;background:white;padding:6px">':'<div class="rx-logo">RX</div>')+'<div style="flex:1"><b>'+esc(prof.school_name)+'</b><p class="muted">'+esc(prof.motto||'No motto set')+'</p><p>'+esc(prof.phone||'')+'<br>'+esc(prof.email||'')+'<br>'+esc(prof.address||'')+'</p></div></div></div>'+
    '<div class="section"><h2>Academic Years</h2><button id="addYear" class="ghost">Add year</button></div><div class="panel">'+table(years,[{key:'name'},{key:'start_date',label:'Starts'},{key:'end_date',label:'Ends'},{key:'status',render:function(r){return badge(r.status)}}],function(r){return (r.status!=='active'?'<button class="mini" data-activate-year="'+r.id+'">Activate</button>':'')+'<button class="mini" data-edit-year="'+r.id+'">Edit</button><button class="mini danger" data-delete-year="'+r.id+'">Delete</button>'})+'</div>'+
    '<div class="section"><h2>Terms</h2><button id="addTerm" class="ghost">Add term</button></div><div class="panel">'+table(terms,[{key:'name'},{key:'term_no',label:'Term'},{key:'start_date',label:'Starts'},{key:'end_date',label:'Ends'},{key:'next_term_begins',label:'Next term begins',render:function(r){return esc(r.next_term_begins?String(r.next_term_begins).slice(0,10):'—')}},{key:'status',render:function(r){return badge(r.status)}}],function(r){return (r.status!=='active'?'<button class="mini" data-activate-term="'+r.id+'">Activate</button>':'')+'<button class="mini" data-edit-term="'+r.id+'">Edit</button><button class="mini danger" data-delete-term="'+r.id+'">Delete</button>'})+'</div>'+
    '<div class="section"><h2>Grade Levels</h2></div><div class="panel">'+table(grades,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class="mini" data-edit-grade="'+r.id+'">Edit</button>'})+'</div>';
-   E('editProfile').onclick=function(){form('Edit school profile',[{key:'schoolName',label:'School name'},{key:'shortName',label:'Short name'},{key:'motto',label:'Motto'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'address',label:'Address',type:'textarea'},{key:'logoUrl',label:'School logo URL'}],{schoolName:prof.school_name,shortName:prof.short_name||'',motto:prof.motto||'',phone:prof.phone||'',email:prof.email||'',address:prof.address||'',logoUrl:prof.logo_url||''},function(v){return raw('/api/school/profile',{method:'PATCH',body:JSON.stringify({schoolName:v.schoolName,shortName:v.shortName||null,motto:v.motto||null,phone:v.phone||null,email:v.email||null,address:v.address||null,logoUrl:v.logoUrl||null})})})};
+   E('editProfile').onclick=function(){
+     var logo=prof.logo_image_data||prof.logo_url||'',removeLogo=false;
+     modal('<h2>Edit School Profile</h2><label>School name</label><input id="schoolEditName" value="'+esc(prof.school_name)+'"><label>Short name</label><input id="schoolEditShort" value="'+esc(prof.short_name||'')+'"><label>Motto</label><input id="schoolEditMotto" value="'+esc(prof.motto||'')+'"><label>Phone</label><input id="schoolEditPhone" value="'+esc(prof.phone||'')+'"><label>Email</label><input id="schoolEditEmail" type="email" value="'+esc(prof.email||'')+'"><label>Address</label><textarea id="schoolEditAddress" rows="4">'+esc(prof.address||'')+'</textarea><label>School logo image</label><div id="schoolLogoPreview" style="margin:8px 0">'+(logo?'<img src="'+esc(logo)+'" style="width:110px;height:110px;object-fit:contain;background:white;border-radius:12px;padding:5px">':'<div class="muted">No logo uploaded</div>')+'</div><input id="schoolLogoFile" type="file" accept="image/png,image/jpeg,image/webp"><p class="muted">Upload PNG, JPG or WebP under 1 MB. The logo is used on receipts, statements and reports.</p><div class="actions"><button id="removeSchoolLogo" class="ghost">Remove logo</button><button id="saveSchoolProfile" class="primary">Save School Profile</button></div>');
+     E('schoolLogoFile').onchange=function(){var file=this.files&&this.files[0];if(!file)return;if(file.size>1000000){toast('School logo must be under 1 MB',true);this.value='';return}var reader=new FileReader();reader.onload=function(){logo=String(reader.result||'');removeLogo=false;E('schoolLogoPreview').innerHTML='<img src="'+esc(logo)+'" style="width:110px;height:110px;object-fit:contain;background:white;border-radius:12px;padding:5px">'};reader.readAsDataURL(file)};
+     E('removeSchoolLogo').onclick=function(){logo='';removeLogo=true;E('schoolLogoPreview').innerHTML='<div class="muted">Logo will be removed</div>'};
+     E('saveSchoolProfile').onclick=async function(){var btn=this;btn.disabled=true;btn.textContent='Saving...';try{await raw('/api/school/profile',{method:'PATCH',body:JSON.stringify({schoolName:E('schoolEditName').value,shortName:E('schoolEditShort').value||null,motto:E('schoolEditMotto').value||null,phone:E('schoolEditPhone').value||null,email:E('schoolEditEmail').value||null,address:E('schoolEditAddress').value||null,logoImageData:removeLogo?null:(logo||undefined)})});close();toast('School profile updated');page('setup')}catch(e){btn.disabled=false;btn.textContent='Save School Profile'}}
+   };
    E('addYear').onclick=function(){form('New academic year',[{key:'name',label:'Name e.g. 2027/2028'},{key:'startDate',label:'Start date',type:'date'},{key:'endDate',label:'End date',type:'date'}],{},function(v){return raw('/api/academic-years',{method:'POST',body:JSON.stringify(v)})})};
    E('addTerm').onclick=function(){form('New term',[{key:'academicYearId',label:'Academic year',type:'select',options:years.map(function(y){return{value:y.id,label:y.name}})},{key:'termNo',label:'Term number',type:'select',options:['1','2','3']},{key:'name',label:'Term name'},{key:'startDate',label:'Start date',type:'date'},{key:'endDate',label:'End date',type:'date'},{key:'nextTermBegins',label:'Next term begins (used on report cards)',type:'date'}],{},function(v){return raw('/api/terms',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,termNo:Number(v.termNo),name:v.name,startDate:v.startDate,endDate:v.endDate,nextTermBegins:v.nextTermBegins||null})})})};
    E('content').onclick=async function(e){
