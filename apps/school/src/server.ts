@@ -4262,15 +4262,22 @@ app.get('/api/promotions/preview',async request=>{
     FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND g.code=$3 AND c.is_active=true ORDER BY c.name`,
     [a.core.organisation_id,q.toAcademicYearId,classroom.grade_code])).rows;
-  const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,
-      e.id enrolment_id,c.name classroom_name,g.name grade_name
+  const finalTerm=await maybeOne<any>(db,`SELECT * FROM terms WHERE organisation_id=$1 AND academic_year_id=$2
+    ORDER BY term_no DESC,end_date DESC LIMIT 1`,[a.core.organisation_id,q.fromAcademicYearId]);
+  const rawStudents=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,
+      e.id enrolment_id,c.name classroom_name,g.name grade_name,
+      rc.workflow_status report_status,rc.promotion_decision,rc.released_at
     FROM enrolments e JOIN students s ON s.id=e.student_id JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=s.id AND rc.term_id=$4
     WHERE e.organisation_id=$1 AND e.academic_year_id=$2 AND e.classroom_id=$3 AND e.status='active'
-    ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.fromAcademicYearId,q.classroomId])).rows;
+    ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.fromAcademicYearId,q.classroomId,finalTerm?.id??null])).rows;
+  const defaultOutcome=nextGrade?'promoted':'completed';
+  const students=rawStudents.map((row:any)=>({...row,recommended_outcome:row.promotion_decision??defaultOutcome}));
   return{
     classroom,
     nextGrade,
-    defaultOutcome:nextGrade?'promoted':'completed',
+    finalTerm,
+    defaultOutcome,
     destinations,
     repeatDestinations,
     students
