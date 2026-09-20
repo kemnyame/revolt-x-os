@@ -667,44 +667,90 @@ else if(p==='attendance'){
    function studentAccountHtml(x){
      var s=x.student,guardians=x.guardians||[],fees=x.fees||[],openFees=fees.filter(function(f){return Number(f.balance)>0.004});
      var primary=guardians.find(function(g){return g.is_primary})||guardians[0];
-     var allocationRows=openFees.length?openFees.map(function(f){return'<tr><td><b>'+esc(f.fee_name)+'</b><br><small class="muted">'+esc(f.academic_year||'')+(f.term_name?' • '+esc(f.term_name):'')+'</small></td><td>'+esc((f.income_account_code||'—')+' • '+(f.income_account_name||'Not mapped'))+'</td><td>'+money(f.balance)+'</td><td><input class="receipt-allocation" data-fee-id="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'" type="number" min="0" max="'+Number(f.balance)+'" step="0.01" placeholder="0.00"></td><td><button class="mini" data-fill-fee="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'">Full</button></td></tr>'}).join(''):'<tr><td colspan="5"><div class="empty">No outstanding assigned fees.</div></td></tr>';
-     var pmOpts=paymentMethods.filter(function(p){return p.enabled&&p.allow_manual_receipt}).map(function(p){return'<option value="'+p.id+'">'+esc(p.label+' → '+p.settlement_account_code+' • '+p.settlement_account_name)+'</option>'}).join('');
+     var allocationRows=openFees.length?openFees.map(function(f){return'<tr><td><b>'+esc(f.fee_name)+'</b><br><small class="muted">'+esc(f.academic_year||'')+(f.term_name?' • '+esc(f.term_name):'')+'</small></td><td>'+esc((f.income_account_code||'—')+' • '+(f.income_account_name||'Not mapped'))+'</td><td>'+money(f.balance)+'</td><td><input class="receipt-allocation" data-fee-id="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'" type="number" min="0" max="'+Number(f.balance)+'" step="0.01" placeholder="0.00"></td><td><button class="mini" data-fill-fee="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'">Full</button></td></tr>'}).join(''):'<tr><td colspan="5"><div class="empty">No outstanding assigned fees. A fee-mode overpayment can still be accepted as advance student credit.</div></td></tr>';
+     var pmOpts=paymentMethods.filter(function(p){return p.enabled&&p.allow_manual_receipt}).map(function(p){return'<option value="'+p.id+'" data-label="'+esc(p.label)+'">'+esc(p.label+' → '+p.settlement_account_code+' • '+p.settlement_account_name)+'</option>'}).join('');
      var incomeOpts=accounts.filter(function(a){return a.is_active&&a.account_type==='income'}).map(function(a){return'<option value="'+a.id+'">'+esc(a.code+' • '+a.name)+'</option>'}).join('');
-     return '<div class="panel"><div class="section compact"><div><h2>'+esc(s.first_name+' '+(s.middle_name||'')+' '+s.last_name)+'</h2><p class="muted">'+esc(s.admission_no)+(s.classroom_name?' • '+esc(s.classroom_name):'')+(primary?' • Guardian: '+esc(primary.first_name+' '+primary.last_name)+' • '+esc(primary.phone||''):'')+'</p></div><div class="actions"><button id="printStudentStatement" class="ghost">Student Statement</button></div></div>'+
-       '<div class="grid"><div class="panel stat"><span class="muted">Total Charges</span><b>'+money(x.summary.charged)+'</b></div><div class="panel stat"><span class="muted">Total Paid</span><b>'+money(x.summary.paid)+'</b></div><div class="panel stat"><span class="muted">Outstanding</span><b>'+money(x.summary.outstanding)+'</b></div></div></div>'+
-       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>Receive & Allocate Payment</h3><p class="muted">Enter amounts against one or more fee lines. The receipt will update the student account and post one balanced journal.</p></div></div>'+
-       '<div class="table"><table><thead><tr><th>Fee</th><th>Income GL</th><th>Balance</th><th>Allocate</th><th></th></tr></thead><tbody>'+allocationRows+'</tbody></table></div>'+
-       '<div class="three" style="margin-top:12px"><div><label>Payment method</label><select id="receiptPaymentMethod">'+pmOpts+'</select></div><div><label>Reference</label><input id="receiptReference" placeholder="Bank slip, MoMo ref, cheque etc."></div><div><label>Direct / miscellaneous income (optional)</label><select id="receiptDirectIncome"><option value="">None</option>'+incomeOpts+'</select></div></div>'+
-       '<div class="three"><div><label>Direct income amount</label><input id="receiptDirectAmount" type="number" min="0" step="0.01" value="0"></div><div style="grid-column:span 2"><label>Note</label><input id="receiptNote" placeholder="Optional receipt note"></div></div>'+
+     return '<div class="panel"><div class="section compact"><div><h2>'+esc(s.first_name+' '+(s.middle_name||'')+' '+s.last_name)+'</h2><p class="muted">'+esc(s.admission_no)+(s.classroom_name?' • '+esc(s.classroom_name):'')+(primary?' • Guardian: '+esc(primary.first_name+' '+primary.last_name)+' • '+esc(primary.phone||''):'')+'</p></div><div class="actions"><button id="requestParentPaymentFinance" class="ghost">Request Parent Payment</button><button id="startOnlineStudentPayment" class="ghost">Mobile Money / Card</button><button id="printStudentStatement" class="primary">Student Statement</button></div></div>'+
+       '<div class="grid"><div class="panel stat"><span class="muted">Total Charges</span><b>'+money(x.summary.charged)+'</b></div><div class="panel stat"><span class="muted">Applied Payments</span><b>'+money(x.summary.paid)+'</b></div><div class="panel stat"><span class="muted">Available Credit</span><b>'+money(x.summary.creditAvailable||0)+'</b></div><div class="panel stat"><span class="muted">Net Amount Due</span><b>'+money(x.summary.netOutstanding==null?x.summary.outstanding:x.summary.netOutstanding)+'</b></div></div></div>'+
+       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>Receive Student Payment</h3><p class="muted">Fee Payment allocates to Accounts Receivable. Direct Income posts to the selected Income GL. Any fee-mode amount received above the allocations is stored as student advance credit and automatically reduces future fees.</p></div></div>'+
+       '<div class="three"><div><label>Transaction type</label><select id="receiptMode"><option value="fees">Fee Payment / Advance</option><option value="direct_income">Direct Income</option></select></div><div><label>Payment method</label><select id="receiptPaymentMethod">'+pmOpts+'</select></div><div><label>System reference</label><input id="receiptReference" value="Generated on posting" readonly></div></div>'+
+       '<div class="three"><div><label>Amount received</label><input id="receiptAmountReceived" type="number" min="0" step="0.01" placeholder="0.00"></div><div><label>Direct Income GL</label><select id="receiptDirectIncome" disabled><option value="">Select Income GL</option>'+incomeOpts+'</select></div><div><label>Direct income amount</label><input id="receiptDirectAmount" type="number" min="0" step="0.01" value="0" disabled></div></div>'+
+       '<div id="feeAllocationArea"><div class="section compact"><div><h4>Fee Allocation</h4><p class="muted">Allocate the amount to one or more outstanding fees. Use Auto Allocate for the oldest balances first.</p></div><button id="autoAllocateReceipt" class="ghost">Auto Allocate</button></div><div class="table"><table><thead><tr><th>Fee</th><th>Income GL</th><th>Balance</th><th>Allocate</th><th></th></tr></thead><tbody>'+allocationRows+'</tbody></table></div><div id="receiptAllocationSummary" class="notice" style="margin-top:10px">Allocated: '+money(0)+' • Advance credit: '+money(0)+'</div></div>'+
+       '<label>Note</label><input id="receiptNote" placeholder="Optional receipt note">'+
        '<div class="actions"><button id="postStudentReceipt" class="primary">Post Student Receipt</button></div></div>'+
-       '<div class="panel" style="margin-top:12px"><h3>Recent Receipts</h3>'+table(x.receipts||[],[{key:"paid_at",label:"Date"},{key:"receipt_no",label:"Receipt No."},{key:"payment_method_label",label:"Method"},{key:"amount",render:function(r){return money(r.amount)}},{key:"settlement_account_code",label:"Settlement GL"},{key:"entry_no",label:"Journal"}])+'</div>'
+       '<div class="panel" style="margin-top:12px"><h3>Recent Receipts</h3>'+table(x.receipts||[],[{key:"paid_at",label:"Date",render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:"receipt_no",label:"Receipt No."},{key:"reference",label:"Reference"},{key:"payment_method_label",label:"Method"},{key:"amount",render:function(r){return money(r.amount)}},{key:"entry_no",label:"Journal"}],function(r){return'<button class="mini primary-lite" data-preview-fin-receipt="'+r.id+'">Preview</button>'})+'</div>'
+   }
+   function statementPrintBody(st){
+     var primary=(st.guardians||[]).find(function(g){return g.is_primary})||(st.guardians||[])[0]||{};
+     var rows=(st.rows||[]).map(function(r){return'<tr><td>'+esc(String(r.occurred_at).slice(0,10))+'</td><td>'+esc(String(r.kind||'').replace(/_/g,' '))+'</td><td>'+esc(r.description||'')+(r.reference?'<br><small>'+esc(r.reference)+'</small>':'')+'</td><td>'+esc(r.gl_code||'')+'</td><td class="amount">'+(Number(r.debit)?money(r.debit):'')+'</td><td class="amount">'+(Number(r.credit)?money(r.credit):'')+'</td><td class="amount">'+money(r.running_balance)+'</td></tr>'}).join('');
+     return '<div class="doc-head">'+schoolLogoHtml(st.school)+'<div><h1 style="margin:0">'+esc(st.school.school_name)+'</h1><div class="muted">'+esc(st.school.motto||'')+'</div><div class="muted">'+esc(st.school.address||'')+' • '+esc(st.school.phone||'')+' • '+esc(st.school.email||'')+'</div></div></div>'+
+       '<h2>Student Account Statement</h2><div class="meta"><div class="box"><b>Student</b><br>'+esc(st.student.first_name+' '+(st.student.middle_name||'')+' '+st.student.last_name)+'<br><span class="muted">Student ID: '+esc(st.student.admission_no)+'</span><br><span class="muted">Class: '+esc(st.student.classroom_name||'—')+'</span></div><div class="box"><b>Primary Guardian</b><br>'+esc((primary.first_name||'')+' '+(primary.last_name||''))+'<br><span class="muted">'+esc(primary.phone||'')+' '+esc(primary.email||'')+'</span></div></div>'+
+       '<div class="summary"><div><span>Total Charges</span><b>'+money(st.summary.charges)+'</b></div><div><span>Payments & Advances</span><b>'+money(st.summary.payments)+'</b></div><div><span>Available Credit</span><b>'+money(st.summary.creditAvailable||0)+'</b></div><div><span>Amount Due</span><b>'+money(st.summary.amountDue||0)+'</b></div></div>'+
+       '<table><thead><tr><th>Date</th><th>Type</th><th>Description / Reference</th><th>GL</th><th>Charge</th><th>Payment</th><th>Balance</th></tr></thead><tbody>'+rows+'</tbody></table>'
+   }
+   async function previewFinanceReceipt(id){
+     var x=await raw('/api/accounting/receipts/'+id),r=x.receipt,alloc=x.allocations||[],credit=x.credit;
+     var rows=alloc.map(function(a){return'<tr><td>'+esc(a.fee_name||'Direct income')+'</td><td>'+esc((a.income_account_code||'')+(a.income_account_name?' • '+a.income_account_name:''))+'</td><td class="amount">'+money(a.amount)+'</td></tr>'}).join('');
+     if(credit)rows+='<tr><td>Advance / overpayment credit</td><td>2200 • Student Deposits / Credits</td><td class="amount">'+money(credit.original_amount)+'</td></tr>';
+     var school={school_name:r.school_name,short_name:r.short_name,motto:r.motto,address:r.school_address,phone:r.school_phone,email:r.school_email,logo_url:r.logo_url};
+     var body='<div class="doc-head">'+schoolLogoHtml(school)+'<div><h1 style="margin:0">'+esc(r.school_name)+'</h1><div class="muted">'+esc(r.motto||'')+'</div><div class="muted">'+esc(r.school_address||'')+' • '+esc(r.school_phone||'')+' • '+esc(r.school_email||'')+'</div></div></div>'+
+       '<h2>Official Payment Receipt</h2><div class="meta"><div class="box"><b>Receipt No.</b><br>'+esc(r.receipt_no)+'<br><span class="muted">Reference: '+esc(r.reference||'')+'</span><br><span class="muted">Journal: '+esc(r.entry_no||'')+'</span></div><div class="box"><b>Student</b><br>'+esc(r.first_name+' '+(r.middle_name||'')+' '+r.last_name)+'<br><span class="muted">Student ID: '+esc(r.admission_no)+'</span></div><div class="box"><b>Payment Method</b><br>'+esc(r.payment_method_label)+'<br><span class="muted">Settlement GL: '+esc(r.settlement_account_code+' • '+r.settlement_account_name)+'</span></div><div class="box"><b>Date</b><br>'+esc(new Date(r.paid_at).toLocaleString())+'</div></div>'+
+       '<div class="summary"><div><span>Amount Received</span><b>'+money(r.amount)+'</b></div></div><table><thead><tr><th>Allocation</th><th>GL / Account</th><th>Amount</th></tr></thead><tbody>'+rows+'</tbody></table>'+(r.note?'<div class="box" style="margin-top:14px"><b>Note</b><br>'+esc(r.note)+'</div>':'');
+     printStandalone('Receipt '+r.receipt_no,body)
    }
    async function openStudentAccount(id){
      activeStudentAccount=await raw('/api/accounting/students/'+id);
      E('acctStudentWorkspace').innerHTML=studentAccountHtml(activeStudentAccount);
      E('acctStudentWorkspace').scrollIntoView({behavior:'smooth',block:'start'});
-     E('acctStudentWorkspace').querySelectorAll('[data-fill-fee]').forEach(function(b){b.onclick=function(){var input=E('acctStudentWorkspace').querySelector('[data-fee-id="'+b.dataset.fillFee+'"]');if(input)input.value=Number(b.dataset.max).toFixed(2)}});
-     E('printStudentStatement').onclick=async function(){
-       activeStatement=await raw('/api/accounting/students/'+activeStudentAccount.student.id+'/statement');
-       var st=activeStatement,rows=st.rows||[];
-       var html='<div id="studentStatementPrint"><h2>'+esc(st.school.school_name)+'</h2><p class="muted">'+esc(st.school.address||'')+' '+esc(st.school.phone||'')+'</p><h3>Student Account Statement</h3><p><b>'+esc(st.student.first_name+' '+(st.student.middle_name||'')+' '+st.student.last_name)+'</b><br>Student ID: '+esc(st.student.admission_no)+'</p>'+
-         '<div class="grid"><div class="panel stat"><span class="muted">Charges</span><b>'+money(st.summary.charges)+'</b></div><div class="panel stat"><span class="muted">Payments</span><b>'+money(st.summary.payments)+'</b></div><div class="panel stat"><span class="muted">Balance</span><b>'+money(st.summary.balance)+'</b></div></div>'+
-         table(rows,[{key:"occurred_at",label:"Date",render:function(r){return esc(String(r.occurred_at).slice(0,10))}},{key:"kind",label:"Type"},{key:"description"},{key:"gl_code",label:"GL"},{key:"debit",label:"Charge",render:function(r){return Number(r.debit)?money(r.debit):''}},{key:"credit",label:"Payment",render:function(r){return Number(r.credit)?money(r.credit):''}},{key:"running_balance",label:"Balance",render:function(r){return money(r.running_balance)}}])+
-         '<p class="muted">Generated '+esc(new Date(st.generatedAt).toLocaleString())+'</p></div><div class="actions"><button id="printStatementNow" class="primary">Print / Save PDF</button></div>';
-       modal(html);E('printStatementNow').onclick=function(){window.print()}
+     function allocationSummary(){
+       var allocated=0;E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){allocated+=Number(i.value||0)});
+       var received=Number(E('receiptAmountReceived').value||0),credit=Math.max(0,received-allocated);
+       if(E('receiptAllocationSummary'))E('receiptAllocationSummary').textContent='Allocated: '+money(allocated)+' • Advance credit: '+money(credit)
+     }
+     E('acctStudentWorkspace').querySelectorAll('[data-fill-fee]').forEach(function(b){b.onclick=function(){var input=E('acctStudentWorkspace').querySelector('[data-fee-id="'+b.dataset.fillFee+'"]');if(input){input.value=Number(b.dataset.max).toFixed(2);allocationSummary()}}});
+     E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){i.oninput=allocationSummary});
+     E('receiptAmountReceived').oninput=allocationSummary;
+     E('autoAllocateReceipt').onclick=function(){
+       var remain=Number(E('receiptAmountReceived').value||0);
+       E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){var use=Math.min(remain,Number(i.dataset.max||0));i.value=use>0?use.toFixed(2):'';remain=Math.max(0,remain-use)});
+       allocationSummary()
+     };
+     function updateReceiptMode(){
+       var direct=E('receiptMode').value==='direct_income';
+       E('receiptAmountReceived').disabled=direct;E('receiptDirectIncome').disabled=!direct;E('receiptDirectAmount').disabled=!direct;
+       E('feeAllocationArea').style.opacity=direct?'.45':'1';E('feeAllocationArea').querySelectorAll('input,button').forEach(function(x){x.disabled=direct});
+       if(direct){E('receiptAmountReceived').value='';E('receiptDirectAmount').focus()}else{E('receiptDirectAmount').value='0';E('receiptDirectIncome').value=''}
+     }
+     E('receiptMode').onchange=updateReceiptMode;updateReceiptMode();
+     function updateReferenceHint(){var opt=E('receiptPaymentMethod').selectedOptions[0],label=opt?opt.textContent:'PY',prefix=String(label||'PY').replace(/[^A-Za-z]/g,'').slice(0,2).toUpperCase();E('receiptReference').value=prefix+'-'+String(activeStudentAccount.student.admission_no).replace(/[^A-Za-z0-9]/g,'').toUpperCase()+'-####'}
+     E('receiptPaymentMethod').onchange=updateReferenceHint;updateReferenceHint();
+     E('printStudentStatement').onclick=async function(){activeStatement=await raw('/api/accounting/students/'+activeStudentAccount.student.id+'/statement');printStandalone('Student Statement - '+activeStudentAccount.student.admission_no,statementPrintBody(activeStatement))};
+     E('requestParentPaymentFinance').onclick=function(){
+       var gs=(activeStudentAccount.guardians||[]).map(function(g){return{value:g.id,label:g.first_name+' '+g.last_name+' • '+(g.phone||'')}}),
+           fs=[{value:'',label:'General / advance request'}].concat((activeStudentAccount.fees||[]).filter(function(x){return Number(x.balance)>0}).map(function(x){return{value:x.student_fee_id,label:x.fee_name+' • '+money(x.balance)}}));
+       if(!gs.length)return toast('Link a guardian before sending a parent payment request',true);
+       form('Parent Payment Request',[{key:'guardianId',label:'Guardian',type:'select',options:gs},{key:'studentFeeId',label:'Fee',type:'select',options:fs},{key:'amount',label:'Amount',type:'number'},{key:'note',label:'Message / note',type:'textarea'}],{guardianId:(gs[0]||{}).value||''},function(v){return raw('/api/fees/payment-requests',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,guardianId:v.guardianId,studentFeeId:v.studentFeeId||undefined,amount:Number(v.amount),note:v.note||undefined})})})
+     };
+     E('startOnlineStudentPayment').onclick=function(){
+       var gs=(activeStudentAccount.guardians||[]).filter(function(g){return g.email}).map(function(g){return{value:g.id,label:g.first_name+' '+g.last_name+' • '+g.email}}),
+           fs=[{value:'',label:'General payment'}].concat((activeStudentAccount.fees||[]).filter(function(x){return Number(x.balance)>0}).map(function(x){return{value:x.student_fee_id,label:x.fee_name+' • '+money(x.balance)}}));
+       if(!gs.length)return toast('A guardian email is required for Mobile Money / Card checkout',true);
+       form('Start Online Payment',[{key:'guardianId',label:'Guardian',type:'select',options:gs},{key:'studentFeeId',label:'Fee',type:'select',options:fs},{key:'method',label:'Method',type:'select',options:[{value:'mobile_money',label:'Mobile Money'},{value:'card',label:'Card'}]},{key:'amount',label:'Amount',type:'number'}],{guardianId:(gs[0]||{}).value||'',method:'mobile_money'},async function(v){var r=await raw('/api/payment-intents',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,guardianId:v.guardianId,studentFeeId:v.studentFeeId||undefined,method:v.method,amount:Number(v.amount)})});if(r.authorization_url)window.open(r.authorization_url,'_blank');return r})
      };
      E('postStudentReceipt').onclick=async function(){
-       var allocations=[];
-       E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(input){var amount=Number(input.value||0);if(amount>0)allocations.push({studentFeeId:input.dataset.feeId,amount:amount})});
-       var direct=Number(E('receiptDirectAmount').value||0),directGl=E('receiptDirectIncome').value;
-       if(direct>0){if(!directGl)return toast('Select an Income GL for the direct income amount',true);allocations.push({incomeAccountId:directGl,amount:direct})}
-       if(!allocations.length)return toast('Enter at least one payment allocation',true);
+       var mode=E('receiptMode').value,allocations=[],amountReceived=0,directIncomeAccountId;
+       if(mode==='fees'){
+         E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(input){var amount=Number(input.value||0);if(amount>0)allocations.push({studentFeeId:input.dataset.feeId,amount:amount})});
+         amountReceived=Number(E('receiptAmountReceived').value||0);if(amountReceived<=0)return toast('Enter the amount received',true)
+       }else{
+         amountReceived=Number(E('receiptDirectAmount').value||0);directIncomeAccountId=E('receiptDirectIncome').value;if(amountReceived<=0)return toast('Enter the direct income amount',true);if(!directIncomeAccountId)return toast('Select the Direct Income GL',true)
+       }
        var methodId=E('receiptPaymentMethod').value;if(!methodId)return toast('Select a payment method',true);
        var btn=E('postStudentReceipt');btn.disabled=true;btn.textContent='Posting receipt...';
        try{
-         var r=await raw('/api/accounting/receipts',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,paymentMethodId:methodId,reference:E('receiptReference').value||undefined,note:E('receiptNote').value||undefined,allocations:allocations})});
-         toast('Receipt '+r.receipt.receipt_no+' posted to the GL');
-         await openStudentAccount(activeStudentAccount.student.id)
+         var r=await raw('/api/accounting/receipts',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,paymentMethodId:methodId,mode:mode,amountReceived:amountReceived,directIncomeAccountId:directIncomeAccountId,note:E('receiptNote').value||undefined,allocations:allocations})});
+         toast('Receipt '+r.receipt.receipt_no+' posted. Reference: '+r.reference);
+         await previewFinanceReceipt(r.receipt.id);await openStudentAccount(activeStudentAccount.student.id)
        }finally{btn.disabled=false;btn.textContent='Post Student Receipt'}
      }
    }
@@ -718,8 +764,19 @@ else if(p==='attendance'){
    function createExpenseGl(){form('Create Expense GL',[{key:'code',label:'GL code'},{key:'name',label:'Expense account name'},{key:'subtype',label:'Expense category / subtype'}],{},function(v){return raw('/api/accounting/expense-gl',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,subtype:v.subtype||undefined})})})}
    function createIncomeGl(){form('Create Income GL',[{key:'code',label:'GL code'},{key:'name',label:'Income account name'},{key:'subtype',label:'Income category / subtype'}],{},function(v){return raw('/api/accounting/income-gl',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,subtype:v.subtype||undefined})})})}
    E('newExpenseGl').onclick=createExpenseGl;E('addExpenseGl').onclick=createExpenseGl;E('addIncomeGl').onclick=createIncomeGl;
+   E('createFeeItem').onclick=function(){
+     form('Create Fee Item',[
+       {key:'academicYearId',label:'Academic Year',type:'select',options:years.map(function(y){return{value:y.id,label:y.name}})},
+       {key:'termId',label:'Term',type:'select',options:[{value:'',label:'All year / no term'}].concat(terms.map(function(t){return{value:t.id,label:t.name}}))},
+       {key:'gradeLevelId',label:'Grade',type:'select',options:[{value:'',label:'All grades'}].concat(grades.filter(function(g){return g.is_active}).map(function(g){return{value:g.id,label:g.name}}))},
+       {key:'name',label:'Fee name'},{key:'amount',label:'Amount',type:'number'},
+       {key:'mandatory',label:'Mandatory?',type:'select',options:[{value:'true',label:'Yes'},{value:'false',label:'No'}]},
+       {key:'incomeAccountId',label:'Income GL',type:'select',options:accountOpts('income',false)}
+     ],{mandatory:'true'},function(v){return raw('/api/fee-items',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,termId:v.termId||undefined,gradeLevelId:v.gradeLevelId||undefined,name:v.name,amount:Number(v.amount),mandatory:v.mandatory==='true',incomeAccountId:v.incomeAccountId||undefined})})})
+   };
    E('receiveStudentPaymentTop').onclick=function(){activateFinTab('student');setTimeout(function(){E('acctStudentSearch').focus()},30)};
    E('acctStudentSearchBtn').onclick=runStudentSearch;E('acctStudentSearch').onkeydown=function(e){if(e.key==='Enter')runStudentSearch()};
+   var financePreopen=sessionStorage.getItem('rx_finance_student');if(financePreopen){sessionStorage.removeItem('rx_finance_student');activateFinTab('student');openStudentAccount(financePreopen)}
 
    E('newVendor').onclick=function(){form('Add Vendor',[{key:'name',label:'Vendor name'},{key:'taxId',label:'Tax ID / TIN'},{key:'contactPerson',label:'Contact person'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'address',label:'Address',type:'textarea'}],{},function(v){return raw('/api/finance/vendors',{method:'POST',body:JSON.stringify({name:v.name,taxId:v.taxId||undefined,contactPerson:v.contactPerson||undefined,phone:v.phone||undefined,email:v.email||undefined,address:v.address||undefined})})})};
    E('newAccount').onclick=function(){form('Add Finance Account',[{key:'code',label:'Account code'},{key:'name',label:'Account name'},{key:'accountType',label:'Type',type:'select',options:['asset','liability','equity','income','expense']},{key:'subtype',label:'Subtype'},{key:'isCashAccount',label:'Cash / bank account?',type:'select',options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]}],{isCashAccount:'false'},function(v){return raw('/api/finance/accounts',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,accountType:v.accountType,subtype:v.subtype||undefined,isCashAccount:v.isCashAccount==='true',openingBalance:0})})})};
@@ -732,6 +789,9 @@ else if(p==='attendance'){
    E('exportFinanceReport').onclick=function(){if(!reportData||!reportData.rows)return toast('Run a report first',true);var rows=reportData.rows;if(!rows.length)return toast('Report has no rows',true);var keys=Object.keys(rows[0]),csv=[keys.join(',')].concat(rows.map(function(r){return keys.map(function(k){return '"'+String(r[k]==null?'':r[k]).replace(/"/g,'""')+'"'}).join(',')})).join('\\n'),blob=new Blob([csv],{type:'text/csv'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=E('financeReport').value+'.csv';a.click();URL.revokeObjectURL(url)};
    E('content').onclick=async function(e){
      var studentId=e.target.dataset.openStudentAccount;if(studentId)return openStudentAccount(studentId);
+     var receiptId=e.target.dataset.previewFinReceipt;if(receiptId)return previewFinanceReceipt(receiptId);
+     var cancelReq=e.target.dataset.cancelParentRequest;if(cancelReq)return confirmDo('Cancel this parent payment request?',function(){return raw('/api/fees/payment-requests/'+cancelReq+'/cancel',{method:'POST',body:'{}'})});
+     var editFeeId=e.target.dataset.editFeeSetup;if(editFeeId){var ef=feeSetup.find(function(x){return x.id===editFeeId});if(!ef)return;return form('Edit Fee Item',[{key:'name',label:'Fee name'},{key:'amount',label:'Amount',type:'number'},{key:'mandatory',label:'Mandatory?',type:'select',options:[{value:'true',label:'Yes'},{value:'false',label:'No'}]}],{name:ef.name,amount:ef.amount,mandatory:String(ef.mandatory)},function(v){return raw('/api/fee-items/'+editFeeId,{method:'PATCH',body:JSON.stringify({name:v.name,amount:Number(v.amount),mandatory:v.mandatory==='true'})})})}
      var pmId=e.target.dataset.editPaymentMethod;if(pmId){
        var pm=paymentMethods.find(function(x){return x.id===pmId});if(!pm)return;
        return form('Edit Payment Method',[
