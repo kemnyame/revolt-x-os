@@ -6,7 +6,7 @@ export const teacherFrontend=`<!doctype html>
 @media(max-width:850px){.shell{grid-template-columns:72px 1fr}.side{width:72px}.brand{font-size:0}.brand span{font-size:15px}.nav button{font-size:0;text-align:center}.nav button:before{content:attr(data-i);font-size:18px}.main{padding:16px 12px}.grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}}@media(max-width:520px){.grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.attendance{grid-template-columns:1fr 1fr 1fr}.attendance .student{grid-column:1/-1}.row{flex-direction:column}}
 </style></head><body>
 <div id="loading" class="loading"><div><b>REVOLT-X TEACHER</b><p class="muted">Opening teacher workspace...</p></div></div>
-<div id="app" class="shell hide"><aside class="side"><div class="brand"><span>RX</span> TEACHER</div><nav id="nav" class="nav"></nav></aside><main class="main"><header class="top"><div><b id="school">Revolt-X School</b><div id="who" class="muted"></div></div><div class="row" style="flex:0 0 auto"><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main></div>
+<div id="app" class="shell hide"><aside class="side"><div class="brand"><span>RX</span> TEACHER</div><nav id="nav" class="nav"></nav></aside><main class="main"><header class="top"><div><b id="school">Revolt-X School</b><div id="who" class="muted"></div></div><div class="row" style="flex:0 0 auto"><button id="myProfile" class="ghost">My Profile</button><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main></div>
 <div id="modal" class="modal hide"><div class="box"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div><div id="toast" class="toast hide"></div>
 <script>
 (function(){
@@ -31,6 +31,22 @@ async function raw(path,opt){opt=opt||{};var method=String(opt.method||'GET').to
 function modal(h){E('modalBody').innerHTML=h;E('modal').classList.remove('hide')}function close(){E('modal').classList.add('hide');E('modalBody').innerHTML=''}E('closeModal').onclick=close;function successDialog(title,message){modal('<div style="text-align:center;padding:8px"><div style="font-size:42px">✓</div><h2>'+esc(title||'Saved successfully')+'</h2><p class="muted">'+esc(message||'The record has been saved successfully.')+'</p><button id="teacherSuccessOk" class="primary">Continue</button></div>');E('teacherSuccessOk').onclick=close}
 function field(f,v){v=v==null?'':v;if(f.type==='select')return'<label>'+esc(f.label)+'</label><select data-f="'+f.key+'">'+(f.options||[]).map(function(o){var value=typeof o==='string'?o:o.value,label=typeof o==='string'?o:o.label;return'<option value="'+esc(value)+'"'+(String(value)===String(v)?' selected':'')+'>'+esc(label)+'</option>'}).join('')+'</select>';if(f.type==='textarea')return'<label>'+esc(f.label)+'</label><textarea rows="5" data-f="'+f.key+'">'+esc(v)+'</textarea>';return'<label>'+esc(f.label)+'</label><input type="'+(f.type||'text')+'" data-f="'+f.key+'" value="'+esc(v)+'">'}
 function form(title,fields,vals,save){vals=vals||{};modal('<h2>'+esc(title)+'</h2>'+fields.map(function(f){return field(f,vals[f.key])}).join('')+'<button id="saveModal" class="primary" style="width:100%">Save</button>');E('saveModal').onclick=async function(){var v={},btn=E('saveModal');E('modalBody').querySelectorAll('[data-f]').forEach(function(x){v[x.dataset.f]=x.value});try{btn.disabled=true;btn.textContent='Saving...';await save(v);btn.textContent='Saved';close();await page(current);successDialog('Record saved',title+' was saved successfully.')}catch(e){btn.disabled=false;btn.textContent='Save'}}}
+async function openTeacherProfile(){
+  var p=await raw('/api/me/profile'),editable=can('profile.edit');
+  modal('<h2>My Teacher Profile</h2><p class="muted">Your teacher profile is linked to your School account. No profile PIN is required; staff access uses your account password.</p>'+
+    '<label>First name</label><input id="teacherProfileFirst" value="'+esc(p.firstName||'')+'"'+(editable?'':' disabled')+'>'+
+    '<label>Last name</label><input id="teacherProfileLast" value="'+esc(p.lastName||'')+'"'+(editable?'':' disabled')+'>'+
+    '<label>Email</label><input id="teacherProfileEmail" type="email" value="'+esc(p.email||'')+'"'+(editable?'':' disabled')+'>'+
+    '<label>Role</label><input value="'+esc(p.role||'teacher')+'" disabled>'+
+    (editable?'<button id="saveTeacherProfile" class="primary" style="width:100%">Save Profile</button>':'<p class="muted">Your current role does not allow profile editing.</p>'));
+  if(editable)E('saveTeacherProfile').onclick=async function(){
+    var btn=this;btn.disabled=true;btn.textContent='Saving...';
+    try{
+      await raw('/api/me/profile',{method:'PATCH',body:JSON.stringify({firstName:E('teacherProfileFirst').value,lastName:E('teacherProfileLast').value,email:E('teacherProfileEmail').value})});
+      close();toast('Profile updated');location.reload()
+    }catch(err){btn.disabled=false;btn.textContent='Save Profile'}
+  }
+}
 function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
 async function publicJson(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
 async function showTeacherTestAccess(message){
@@ -82,6 +98,7 @@ async function openWorkspace(){
   E('nav').innerHTML=visibleNav.map(function(n){return'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
+  E('myProfile').onclick=openTeacherProfile;
   E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace('/login')};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
