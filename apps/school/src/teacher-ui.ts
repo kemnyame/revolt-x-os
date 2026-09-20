@@ -33,7 +33,7 @@ function field(f,v){v=v==null?'':v;if(f.type==='select')return'<label>'+esc(f.la
 function form(title,fields,vals,save){vals=vals||{};modal('<h2>'+esc(title)+'</h2>'+fields.map(function(f){return field(f,vals[f.key])}).join('')+'<button id="saveModal" class="primary" style="width:100%">Save</button>');E('saveModal').onclick=async function(){var v={},btn=E('saveModal');E('modalBody').querySelectorAll('[data-f]').forEach(function(x){v[x.dataset.f]=x.value});try{btn.disabled=true;btn.textContent='Saving...';await save(v);btn.textContent='Saved';close();await page(current);successDialog('Record saved',title+' was saved successfully.')}catch(e){btn.disabled=false;btn.textContent='Save'}}}
 async function openTeacherProfile(){
   var p=await raw('/api/me/profile'),editable=can('profile.edit');
-  modal('<h2>My Teacher Profile</h2><p class="muted">Your teacher profile is linked to your School account. No profile PIN is required; staff access uses your account password.</p>'+
+  modal('<h2>My Teacher Profile</h2><p class="muted">Your teacher profile is linked to your School account and uses the same staff sign-in.</p>'+
     '<label>First name</label><input id="teacherProfileFirst" value="'+esc(p.firstName||'')+'"'+(editable?'':' disabled')+'>'+
     '<label>Last name</label><input id="teacherProfileLast" value="'+esc(p.lastName||'')+'"'+(editable?'':' disabled')+'>'+
     '<label>Email</label><input id="teacherProfileEmail" type="email" value="'+esc(p.email||'')+'"'+(editable?'':' disabled')+'>'+
