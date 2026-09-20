@@ -3645,7 +3645,8 @@ app.put('/api/report-comments/:studentId',async request=>{
     termId:z.string().uuid(),
     classTeacherComment:z.string().max(4000).nullable().optional(),
     conduct:z.string().max(80).nullable().optional(),
-    interest:z.string().max(1000).nullable().optional()
+    interest:z.string().max(1000).nullable().optional(),
+    promotionDecision:z.enum(['promoted','repeated','completed']).nullable().optional()
   }).parse(request.body);
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const current=await one<any>(db,`SELECT c.id classroom_id
@@ -3660,19 +3661,35 @@ app.put('/api/report-comments/:studentId',async request=>{
     if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the assigned Class Teacher for this term can complete report remarks for this class');
   }
   if(existing?.workflow_status==='submitted'||existing?.workflow_status==='approved')throw fail(409,'This report is already submitted for review. Return it to the class teacher before editing.');
+
+  const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
+  const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
+  const chosen=Object.hasOwn(b,'promotionDecision')
+    ?(b.promotionDecision??promotion.suggestedDecision)
+    :(existing?.promotion_decision??promotion.suggestedDecision);
+  const basis=chosen
+    ?(Object.hasOwn(b,'promotionDecision')&&b.promotionDecision&&b.promotionDecision!==promotion.suggestedDecision?'teacher_override':existing?.promotion_basis??'threshold')
+    :null;
+
   const row=await one<any>(db,`INSERT INTO report_comments(
-      organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,updated_by_os_user_id,workflow_status,class_teacher_os_user_id
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9)
+      organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,
+      updated_by_os_user_id,workflow_status,class_teacher_os_user_id,promotion_decision,promotion_basis,promotion_threshold_percent
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10,$11,$12)
     ON CONFLICT(student_id,term_id) DO UPDATE SET
       class_teacher_comment=EXCLUDED.class_teacher_comment,conduct=EXCLUDED.conduct,interest=EXCLUDED.interest,
       next_term_begins=EXCLUDED.next_term_begins,updated_by_os_user_id=EXCLUDED.updated_by_os_user_id,
       class_teacher_os_user_id=EXCLUDED.class_teacher_os_user_id,
+      promotion_decision=EXCLUDED.promotion_decision,promotion_basis=EXCLUDED.promotion_basis,
+      promotion_threshold_percent=EXCLUDED.promotion_threshold_percent,
       workflow_status=report_comments.workflow_status,
       return_note=CASE WHEN report_comments.workflow_status='returned' THEN report_comments.return_note ELSE NULL END,updated_at=now()
     RETURNING *`,[
-      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,term.next_term_begins??null,a.core.id,classTeacherId
+      a.core.organisation_id,studentId,b.termId,b.classTeacherComment??null,b.conduct??null,b.interest??null,
+      term.next_term_begins??null,a.core.id,classTeacherId,chosen,basis,promotion.threshold
     ]);
-  await audit(a.core.organisation_id,a.core.id,'report.remarks_saved','report_comment',row.id,{studentId,termId:b.termId});
+  await audit(a.core.organisation_id,a.core.id,'report.remarks_saved','report_comment',row.id,{
+    studentId,termId:b.termId,promotionDecision:chosen,promotionBasis:basis
+  });
   return row;
 });
 app.post('/api/report-comments/:studentId/submit',async request=>{
@@ -3693,8 +3710,22 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   }
   if(!report.class_teacher_comment)throw fail(409,'Enter the class teacher remark before submitting the report');
   if(!['draft','returned'].includes(report.workflow_status))throw fail(409,'Only draft or returned reports can be submitted');
+
+  const readiness=await reportAssessmentReadiness(a.core.organisation_id,studentId,b.termId,current.classroom_id);
+  if(!readiness.complete){
+    const detail=readiness.missing.slice(0,8).map((x:any)=>x.subjectName+' – '+x.missing.join('; ')).join(' | ');
+    throw fail(409,'Report cannot be submitted because grades are incomplete. '+detail);
+  }
+  const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
+  const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
+  const decision=report.promotion_decision??promotion.suggestedDecision;
+  if(!decision)throw fail(409,'Choose the promotion decision before submitting this report');
+
   const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1::uuid,submitted_at=now(),
-    return_note=NULL,updated_at=now() WHERE id=$2::uuid RETURNING *`,[a.core.id,report.id]);
+    promotion_decision=$2,promotion_basis=COALESCE(promotion_basis,'threshold'),promotion_threshold_percent=COALESCE(promotion_threshold_percent,$3),
+    return_note=NULL,released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
+    WHERE id=$4::uuid RETURNING *`,[a.core.id,decision,promotion.threshold,report.id]);
+
   const reviewerIds=(await db.query(`SELECT reviewer_os_user_id FROM report_reviewer_assignments
     WHERE organisation_id=$1 AND classroom_id=$2 AND is_active=true`,[a.core.organisation_id,current.classroom_id])).rows.map((x:any)=>x.reviewer_os_user_id);
   if(!reviewerIds.length){
@@ -3710,12 +3741,14 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
         organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.submitted',
         name:(reviewer.first_name+' '+reviewer.last_name).trim(),email:reviewer.email,phone:null,
         subject:'Report card awaiting review',
-        body:`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. Open the Report Cards approval queue in Revolt-X School.`,
+        body:`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. All required Class Assessment and Exam grades are present. Open the approval queue in Revolt-X School.`,
         relatedType:'report_comment',relatedId:report.id
       });
     }
   }
-  await audit(a.core.organisation_id,a.core.id,'report.submitted','report_comment',report.id,{studentId,termId:b.termId,classroomId:current.classroom_id});
+  await audit(a.core.organisation_id,a.core.id,'report.submitted','report_comment',report.id,{
+    studentId,termId:b.termId,classroomId:current.classroom_id,promotionDecision:decision
+  });
   return updated;
 });
 app.get('/api/teacher/report-worklist',async request=>{
