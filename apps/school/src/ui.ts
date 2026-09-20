@@ -54,6 +54,7 @@ var nav=[
 ['homework','Homework','H','homework.view'],
 ['lessonnotes','Lesson Notes','L','lesson_notes.view'],
 ['reports','Report Cards','R','reports.view'],
+['studentstatements','Student Statements','S','finance.view'],
 ['promotions','Promotion & Rollover','⇧','promotion.manage'],
 ['grading','Grading Setup','G','assessment.view'],
 ['finance','Finance & Accounts','₵','finance.view'],
@@ -685,16 +686,18 @@ else if(p==='attendance'){
    function studentAccountHtml(x){
      var s=x.student,guardians=x.guardians||[],fees=x.fees||[],openFees=fees.filter(function(f){return Number(f.balance)>0.004});
      var primary=guardians.find(function(g){return g.is_primary})||guardians[0];
-     var allocationRows=openFees.length?openFees.map(function(f){return'<tr><td><b>'+esc(f.fee_name)+'</b><br><small class="muted">'+esc(f.academic_year||'')+(f.term_name?' • '+esc(f.term_name):'')+'</small></td><td>'+esc((f.income_account_code||'—')+' • '+(f.income_account_name||'Not mapped'))+'</td><td>'+money(f.balance)+'</td><td><input class="receipt-allocation" data-fee-id="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'" type="number" min="0" max="'+Number(f.balance)+'" step="0.01" placeholder="0.00"></td><td><button class="mini" data-fill-fee="'+f.student_fee_id+'" data-max="'+Number(f.balance)+'">Full</button></td></tr>'}).join(''):'<tr><td colspan="5"><div class="empty">No outstanding fees. You can still record direct income or accept an advance payment for this student.</div></td></tr>';
      var pmOpts=paymentMethods.filter(function(p){return p.enabled&&p.allow_manual_receipt}).map(function(p){return'<option value="'+p.id+'">'+esc(p.label+' → '+p.settlement_account_code+' • '+p.settlement_account_name)+'</option>'}).join('');
-     var incomeOpts=accounts.filter(function(a){return a.is_active&&a.account_type==='income'}).map(function(a){return'<option value="'+a.id+'">'+esc(a.code+' • '+a.name)+'</option>'}).join('');
+     var feeOpts=openFees.map(function(f){return'<option value="'+f.student_fee_id+'">'+esc(f.fee_name+' • '+(f.term_name||f.academic_year||'')+' • Balance '+money(f.balance))+'</option>'}).join('');
      return '<div class="panel"><div class="section compact"><div><h2>'+esc(s.first_name+' '+(s.middle_name||'')+' '+s.last_name)+'</h2><p class="muted">'+esc(s.admission_no)+(s.classroom_name?' • '+esc(s.classroom_name):'')+(primary?' • Guardian: '+esc(primary.first_name+' '+primary.last_name)+' • '+esc(primary.phone||''):'')+'</p></div><div class="actions"><button id="requestParentPaymentFinance" class="ghost">Request Parent Payment</button><button id="startOnlineStudentPayment" class="ghost">Mobile Money / Card</button></div></div>'+
        '<div class="grid"><div class="panel stat"><span class="muted">Total Charges</span><b>'+money(x.summary.charged)+'</b></div><div class="panel stat"><span class="muted">Applied Payments</span><b>'+money(x.summary.paid)+'</b></div><div class="panel stat"><span class="muted">Available Credit</span><b>'+money(x.summary.creditAvailable||0)+'</b></div><div class="panel stat"><span class="muted">Net Amount Due</span><b>'+money(x.summary.netOutstanding==null?x.summary.outstanding:x.summary.netOutstanding)+'</b></div></div></div>'+
-       '<div class="two" style="margin-top:12px"><div class="panel"><h3>1. Payment Details</h3><div class="two"><div><label>Payment method</label><select id="receiptPaymentMethod">'+pmOpts+'</select></div><div><label>Amount received</label><input id="receiptAmountReceived" type="number" min="0" step="0.01" placeholder="0.00"></div></div><label>System reference</label><input id="receiptReference" value="Generated on posting" readonly><label>Note</label><input id="receiptNote" placeholder="Optional receipt note"></div>'+
-       '<div class="panel"><h3>Payment Breakdown</h3><div class="grid"><div class="panel stat"><span class="muted">Allocated to Fees</span><b id="receiptFeeTotal">'+money(0)+'</b></div><div class="panel stat"><span class="muted">Direct Income</span><b id="receiptDirectTotal">'+money(0)+'</b></div><div class="panel stat"><span class="muted">Advance Credit</span><b id="receiptCreditTotal">'+money(0)+'</b></div></div><div id="receiptBalanceStatus" class="notice" style="margin-top:10px">Enter the amount received, then allocate it below.</div></div></div>'+
-       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>2. Allocate to Outstanding Fees</h3><p class="muted">Allocate only the part of this payment that settles existing fees. Leave the fields at zero when the payment is not for a fee.</p></div><button id="autoAllocateReceipt" class="ghost">Auto Allocate</button></div><div class="table"><table><thead><tr><th>Fee</th><th>Income GL</th><th>Balance</th><th>Allocate</th><th></th></tr></thead><tbody>'+allocationRows+'</tbody></table></div></div>'+
-       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>3. Direct Income, if applicable</h3><p class="muted">Use this together with fee allocation when one receipt contains both a fee payment and a separate direct-income amount. The Income GL becomes available once a direct-income amount is entered.</p></div></div><div class="two"><div><label>Direct income amount</label><input id="receiptDirectAmount" type="number" min="0" step="0.01" value="0"></div><div><label>Direct Income GL</label><select id="receiptDirectIncome" disabled><option value="">Select Income GL</option>'+incomeOpts+'</select></div></div></div>'+
-       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>4. Review & Post</h3><p class="muted">Fee allocation + direct income cannot exceed the amount received. Any remaining amount becomes student advance credit for future fees.</p></div><button id="postStudentReceipt" class="primary">Post & Print Receipt</button></div></div>'+
+       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h3>Receive Fee Payment</h3><p class="muted">Select a fee, enter the amount for that fee and add it to the payment container. Add another fee when the same receipt covers more than one fee type.</p></div></div>'+
+       '<div class="three"><div><label>Fee type</label><select id="paymentFeeSelect"><option value="">Select fee</option>'+feeOpts+'</select></div><div><label>Amount for selected fee</label><input id="paymentFeeAmount" type="number" min="0" step="0.01" placeholder="0.00"></div><div style="display:flex;align-items:end"><button id="addFeeToPayment" class="primary" style="width:100%">Add to Payment</button></div></div>'+
+       (openFees.length?'':'<div class="notice">This student has no outstanding fee lines. Assign the relevant fee before receiving a fee payment.</div>')+
+       '<div class="panel" style="margin-top:12px"><div class="section compact"><div><h4>Payment Container</h4><p class="muted">Review all fee lines included in this receipt before posting.</p></div><button id="clearPaymentContainer" class="ghost">Clear</button></div><div id="paymentContainer"><div class="empty">No fee has been added yet.</div></div></div>'+
+       '<div class="two" style="margin-top:12px"><div><label>Payment method</label><select id="receiptPaymentMethod">'+pmOpts+'</select></div><div><label>Amount received</label><input id="receiptAmountReceived" type="number" min="0" step="0.01" placeholder="0.00"></div></div>'+
+       '<div class="two"><div><label>System reference</label><input id="receiptReference" value="Generated on posting" readonly></div><div><label>Note</label><input id="receiptNote" placeholder="Optional receipt note"></div></div>'+
+       '<div id="receiptBalanceStatus" class="notice" style="margin-top:10px">Add at least one fee to the payment container.</div>'+
+       '<div class="actions"><button id="postStudentReceipt" class="primary">Post & Print Receipt</button></div></div>'+
        '<div class="panel" style="margin-top:12px"><h3>Recent Receipts</h3>'+table(x.receipts||[],[{key:"paid_at",label:"Date",render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:"receipt_no",label:"Receipt No."},{key:"reference",label:"Reference"},{key:"payment_method_label",label:"Method"},{key:"amount",render:function(r){return money(r.amount)}},{key:"entry_no",label:"Journal"}],function(r){return'<button class="mini primary-lite" data-preview-fin-receipt="'+r.id+'">Print</button>'})+'</div>'
    }
    async function previewFinanceReceipt(id){
@@ -711,32 +714,46 @@ else if(p==='attendance'){
      activeStudentAccount=await raw('/api/accounting/students/'+id);
      E('acctStudentWorkspace').innerHTML=studentAccountHtml(activeStudentAccount);
      E('acctStudentWorkspace').scrollIntoView({behavior:'smooth',block:'start'});
+     var paymentContainer=[];
 
-     function receiptTotals(){
-       var received=Number(E('receiptAmountReceived').value||0),feeTotal=0,direct=Number(E('receiptDirectAmount').value||0);
-       E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){feeTotal+=Number(i.value||0)});
-       var used=feeTotal+direct,credit=Math.max(0,received-used),over=used-received;
-       E('receiptFeeTotal').textContent=money(feeTotal);E('receiptDirectTotal').textContent=money(direct);E('receiptCreditTotal').textContent=money(credit);
-       var status=E('receiptBalanceStatus');
-       if(received<=0){status.textContent='Enter the amount received, then allocate it below.';status.className='notice'}
-       else if(over>0.004){status.textContent='Allocated amounts exceed the payment by '+money(over)+'. Reduce fee allocation or direct income.';status.className='notice warn'}
-       else if(credit>0.004){status.textContent='This receipt will create '+money(credit)+' student advance credit after the listed allocations.';status.className='notice'}
-       else{status.textContent='The payment is fully allocated.';status.className='notice'}
-       E('receiptDirectIncome').disabled=direct<=0;
-       if(direct<=0)E('receiptDirectIncome').value='';
-       return{received:received,feeTotal:feeTotal,direct:direct,credit:credit,over:over}
+     function openFeeById(feeId){return (activeStudentAccount.fees||[]).find(function(f){return f.student_fee_id===feeId})}
+     function containerTotal(){return paymentContainer.reduce(function(s,x){return s+Number(x.amount||0)},0)}
+     function renderPaymentContainer(){
+       if(!paymentContainer.length){E('paymentContainer').innerHTML='<div class="empty">No fee has been added yet.</div>'}
+       else{
+         E('paymentContainer').innerHTML=table(paymentContainer,[
+           {key:'feeName',label:'Fee Type'},
+           {key:'term',label:'Period'},
+           {key:'balance',label:'Outstanding',render:function(r){return money(r.balance)}},
+           {key:'amount',label:'Payment Amount',render:function(r){return money(r.amount)}}
+         ],function(r){return'<button class="mini danger" data-remove-payment-fee="'+r.studentFeeId+'">Remove</button>'})
+       }
+       var total=containerTotal(),received=Number(E('receiptAmountReceived').value||0),status=E('receiptBalanceStatus');
+       if(paymentContainer.length&&(!E('receiptAmountReceived').value||Number(E('receiptAmountReceived').value)===0))E('receiptAmountReceived').value=total.toFixed(2);
+       received=Number(E('receiptAmountReceived').value||0);
+       if(!paymentContainer.length){status.textContent='Add at least one fee to the payment container.';status.className='notice'}
+       else if(received+0.005<total){status.textContent='Amount received is '+money(total-received)+' less than the fees in the container.';status.className='notice warn'}
+       else if(received>total+0.005){status.textContent='Fees in container: '+money(total)+' • Advance credit to student: '+money(received-total);status.className='notice'}
+       else{status.textContent='Fees in container: '+money(total)+' • Payment fully allocated.';status.className='notice'}
      }
 
-     E('acctStudentWorkspace').querySelectorAll('[data-fill-fee]').forEach(function(b){b.onclick=function(){var input=E('acctStudentWorkspace').querySelector('[data-fee-id="'+b.dataset.fillFee+'"]');if(input){input.value=Number(b.dataset.max).toFixed(2);receiptTotals()}}});
-     E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){i.oninput=receiptTotals});
-     E('receiptAmountReceived').oninput=receiptTotals;E('receiptDirectAmount').oninput=receiptTotals;
-     E('autoAllocateReceipt').onclick=function(){
-       var remain=Math.max(0,Number(E('receiptAmountReceived').value||0)-Number(E('receiptDirectAmount').value||0));
-       E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(i){var use=Math.min(remain,Number(i.dataset.max||0));i.value=use>0?use.toFixed(2):'';remain=Math.max(0,remain-use)});
-       receiptTotals()
+     E('addFeeToPayment').onclick=function(){
+       var feeId=E('paymentFeeSelect').value,amount=Number(E('paymentFeeAmount').value||0);
+       if(!feeId)return toast('Select a fee type',true);
+       var fee=openFeeById(feeId);if(!fee)return toast('That fee is no longer available',true);
+       if(amount<=0)return toast('Enter the amount for this fee',true);
+       if(amount>Number(fee.balance)+0.005)return toast('Amount cannot exceed the outstanding balance for '+fee.fee_name,true);
+       var existing=paymentContainer.find(function(x){return x.studentFeeId===feeId});
+       if(existing){existing.amount=amount}else paymentContainer.push({studentFeeId:feeId,feeName:fee.fee_name,term:fee.term_name||fee.academic_year||'—',balance:Number(fee.balance),amount:amount});
+       E('paymentFeeSelect').value='';E('paymentFeeAmount').value='';renderPaymentContainer()
      };
+     E('paymentFeeSelect').onchange=function(){var fee=openFeeById(this.value);if(fee)E('paymentFeeAmount').value=Number(fee.balance).toFixed(2)};
+     E('clearPaymentContainer').onclick=function(){paymentContainer=[];renderPaymentContainer()};
+     E('paymentContainer').onclick=function(e){var feeId=e.target.dataset.removePaymentFee;if(!feeId)return;paymentContainer=paymentContainer.filter(function(x){return x.studentFeeId!==feeId});renderPaymentContainer()};
+     E('receiptAmountReceived').oninput=renderPaymentContainer;
+
      function updateReferenceHint(){var opt=E('receiptPaymentMethod').selectedOptions[0],label=opt?opt.textContent:'PY',prefix=String(label||'PY').replace(/[^A-Za-z]/g,'').slice(0,2).toUpperCase();E('receiptReference').value=prefix+'-'+String(activeStudentAccount.student.admission_no).replace(/[^A-Za-z0-9]/g,'').toUpperCase()+'-####'}
-     E('receiptPaymentMethod').onchange=updateReferenceHint;updateReferenceHint();receiptTotals();
+     E('receiptPaymentMethod').onchange=updateReferenceHint;updateReferenceHint();renderPaymentContainer();
 
      E('requestParentPaymentFinance').onclick=function(){
        var gs=(activeStudentAccount.guardians||[]).map(function(g){return{value:g.id,label:g.first_name+' '+g.last_name+' • '+(g.phone||'')}}),
@@ -751,15 +768,18 @@ else if(p==='attendance'){
        form('Start Online Payment',[{key:'guardianId',label:'Guardian',type:'select',options:gs},{key:'studentFeeId',label:'Fee',type:'select',options:fs},{key:'method',label:'Method',type:'select',options:[{value:'mobile_money',label:'Mobile Money'},{value:'card',label:'Card'}]},{key:'amount',label:'Amount',type:'number'}],{guardianId:(gs[0]||{}).value||'',method:'mobile_money'},async function(v){var r=await raw('/api/payment-intents',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,guardianId:v.guardianId,studentFeeId:v.studentFeeId||undefined,method:v.method,amount:Number(v.amount)})});if(r.authorization_url)window.open(r.authorization_url,'_blank');return r})
      };
      E('postStudentReceipt').onclick=async function(){
-       var allocations=[],totals=receiptTotals(),directIncomeAccountId=E('receiptDirectIncome').value;
-       E('acctStudentWorkspace').querySelectorAll('.receipt-allocation').forEach(function(input){var amount=Number(input.value||0);if(amount>0)allocations.push({studentFeeId:input.dataset.feeId,amount:amount})});
-       if(totals.received<=0)return toast('Enter the amount received',true);
-       if(totals.over>0.004)return toast('Fee allocation and direct income exceed the amount received',true);
-       if(totals.direct>0&&!directIncomeAccountId)return toast('Select an Income GL for the direct income amount',true);
+       if(!paymentContainer.length)return toast('Add at least one fee to the payment container',true);
+       var total=containerTotal(),received=Number(E('receiptAmountReceived').value||0);
+       if(received<=0)return toast('Enter the amount received',true);
+       if(received+0.005<total)return toast('Amount received cannot be less than the fee total in the payment container',true);
        var methodId=E('receiptPaymentMethod').value;if(!methodId)return toast('Select a payment method',true);
        var btn=E('postStudentReceipt');btn.disabled=true;btn.textContent='Posting...';
        try{
-         var r=await raw('/api/accounting/receipts',{method:'POST',body:JSON.stringify({studentId:activeStudentAccount.student.id,paymentMethodId:methodId,amountReceived:totals.received,directIncomeAmount:totals.direct,directIncomeAccountId:directIncomeAccountId||undefined,note:E('receiptNote').value||undefined,allocations:allocations})});
+         var r=await raw('/api/accounting/receipts',{method:'POST',body:JSON.stringify({
+           studentId:activeStudentAccount.student.id,paymentMethodId:methodId,amountReceived:received,
+           directIncomeAmount:0,note:E('receiptNote').value||undefined,
+           allocations:paymentContainer.map(function(x){return{studentFeeId:x.studentFeeId,amount:Number(x.amount)}})
+         })});
          toast('Receipt '+r.receipt.receipt_no+' posted. Opening Print Preview...');
          await previewFinanceReceipt(r.receipt.id);await openStudentAccount(activeStudentAccount.student.id)
        }finally{btn.disabled=false;btn.textContent='Post & Print Receipt'}
@@ -972,6 +992,22 @@ else if(p==='attendance'){
      if(e.target.dataset.reviewNote){E('approveLessonNote').onclick=async function(){await raw('/api/lesson-notes/'+id+'/review',{method:'POST',body:JSON.stringify({action:'approve',note:E('lessonReviewNote').value||null})});close();toast('Lesson note approved');page('lessonnotes')};E('returnLessonNote').onclick=async function(){if(!E('lessonReviewNote').value.trim())return toast('Enter a review note',true);await raw('/api/lesson-notes/'+id+'/review',{method:'POST',body:JSON.stringify({action:'return',note:E('lessonReviewNote').value})});close();toast('Lesson note returned');page('lessonnotes')}}
    }
  }
+ else if(p==='studentstatements'){
+   var ss=await raw('/api/students'),selectedStatementStudent=sessionStorage.getItem('rx_statement_student')||'';sessionStorage.removeItem('rx_statement_student');
+   E('content').innerHTML='<div class="section"><div><h1>Student Statements</h1><p class="muted">A dedicated financial statement workspace for student charges, payments, advance credits, references and running balances.</p></div></div>'+
+     '<div class="panel"><div class="row"><div><label>Student</label><select id="statementStudentStandalone"><option value="">Select student</option>'+ss.map(function(s){return'<option value="'+s.id+'"'+(s.id===selectedStatementStudent?' selected':'')+'>'+esc(s.first_name+' '+s.last_name+' ('+s.admission_no+')')+'</option>'}).join('')+'</select></div><button id="generateStandaloneStatement" class="primary">Generate Statement</button></div></div><div id="standaloneStatementOut" style="margin-top:12px"></div>';
+   async function generateStandaloneStatement(){
+     var sid=E('statementStudentStandalone').value;if(!sid)return toast('Select a student',true);
+     E('standaloneStatementOut').innerHTML='<div class="panel"><p class="muted">Generating statement...</p></div>';
+     var st=await raw('/api/accounting/students/'+sid+'/statement'),body=studentStatementDocument(st);
+     E('standaloneStatementOut').innerHTML='<div class="panel"><div class="section compact"><div><h2>'+esc(st.student.first_name+' '+(st.student.middle_name||'')+' '+st.student.last_name)+'</h2><p class="muted">'+esc(st.student.admission_no)+' • '+esc(st.student.classroom_name||'')+'</p></div><button id="printStandaloneStatement" class="primary">Print Statement</button></div>'+
+       '<div class="grid"><div class="panel stat"><span class="muted">Charges</span><b>'+docMoney(st.summary.charges,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Payments & Advances</span><b>'+docMoney(st.summary.payments,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Available Credit</span><b>'+docMoney(st.summary.creditAvailable||0,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Amount Due</span><b>'+docMoney(st.summary.amountDue||0,st.school.currency)+'</b></div></div>'+
+       table(st.rows,[{key:'occurred_at',label:'Date',render:function(r){return esc(String(r.occurred_at).slice(0,10))}},{key:'kind',label:'Type',render:function(r){return esc(String(r.kind||'').replace(/_/g,' '))}},{key:'description'},{key:'reference'},{key:'debit',label:'Charge',render:function(r){return Number(r.debit)?docMoney(r.debit,st.school.currency):''}},{key:'credit',label:'Payment',render:function(r){return Number(r.credit)?docMoney(r.credit,st.school.currency):''}},{key:'running_balance',label:'Balance',render:function(r){return docMoney(r.running_balance,st.school.currency)}}])+'</div>';
+     E('printStandaloneStatement').onclick=function(){printStandalone('Student Statement - '+st.student.admission_no,body)}
+   }
+   E('generateStandaloneStatement').onclick=generateStandaloneStatement;
+   if(selectedStatementStudent)generateStandaloneStatement()
+ }
  else if(p==='reports'){
    var rr=await Promise.all([raw('/api/students'),raw('/api/terms'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/report-review-queue').catch(function(){return[]})]);
    var students=rr[0],terms=rr[1],coreUsers=rr[2],queue=rr[3],remembered=sessionStorage.getItem('rx_report_student')||'';sessionStorage.removeItem('rx_report_student');
@@ -987,16 +1023,11 @@ else if(p==='attendance'){
        '<div class="report-signatures"><div><span>Class Teacher</span><b>'+esc(teacher)+'</b></div><div><span>Headteacher / Reviewer</span><b>'+esc(comments.reviewed_by_os_user_id?staffName(comments.reviewed_by_os_user_id):'________________________')+'</b></div><div><span>Parent / Guardian</span><b>________________________</b></div></div><div class="report-footer">Generated by Revolt-X School • '+esc(new Date(r.generatedAt).toLocaleString())+'</div></div>'
    }
    E('content').innerHTML='<div class="section"><div><h1>Report Cards</h1><p class="muted">Class teacher completion, headteacher review and approved family release are handled in one workflow.</p></div></div>'+
-   '<div class="staff-tabs"><button class="staff-tab active" data-report-tab="generate">Generate & Complete</button><button class="staff-tab" data-report-tab="queue">Approval Queue ('+queue.filter(function(x){return x.workflow_status==='submitted'}).length+')</button>'+(can('finance.view')?'<button class="staff-tab" data-report-tab="statement">Student Statement</button>':'')+'</div>'+
+   '<div class="staff-tabs"><button class="staff-tab active" data-report-tab="generate">Generate & Complete</button><button class="staff-tab" data-report-tab="queue">Approval Queue ('+queue.filter(function(x){return x.workflow_status==='submitted'}).length+')</button>'+'</div>'+
    '<div id="report-generate" class="report-pane"><div class="panel report-controls"><div class="row"><div><label>Student</label><select id="reportStudent">'+students.map(function(s){return'<option value="'+s.id+'"'+(s.id===remembered?' selected':'')+'>'+esc(s.first_name+' '+s.last_name+' ('+s.admission_no+')')+'</option>'}).join('')+'</select></div><div><label>Term</label><select id="reportTerm">'+terms.map(function(t){return'<option value="'+t.id+'"'+(t.status==='active'?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div></div><button id="loadReport" class="primary">Generate report card</button></div><div id="reportOut"></div></div>'+
    '<div id="report-queue" class="report-pane hide"><div class="panel">'+table(queue,[{key:'first_name',label:'Student',render:function(r){return'<b>'+esc(r.first_name+' '+r.last_name)+'</b><br><span class="muted">'+esc(r.admission_no)+'</span>'}},{key:'classroom_name',label:'Class'},{key:'term_name',label:'Term'},{key:'workflow_status',label:'Status',render:function(r){return badge(r.workflow_status)}},{key:'submitted_at',label:'Submitted',render:function(r){return esc(r.submitted_at?new Date(r.submitted_at).toLocaleString():'—')}}],function(r){return r.workflow_status==='submitted'?'<button class="primary mini" data-review-report="'+r.student_id+'" data-term="'+r.term_id+'">Review</button>':'<button class="mini" data-view-report="'+r.student_id+'" data-term="'+r.term_id+'">View</button>'})+'</div></div>'+
-   (can('finance.view')?'<div id="report-statement" class="report-pane hide"><div class="panel report-controls"><div class="section compact"><div><h3>Student Account Statement</h3><p class="muted">Generate the full financial statement from Reports. It includes charges, payments, advance credits, references and running balance.</p></div></div><div class="row"><div><label>Student</label><select id="statementStudent">'+students.map(function(s){return'<option value="'+s.id+'">'+esc(s.first_name+' '+s.last_name+' ('+s.admission_no+')')+'</option>'}).join('')+'</select></div><button id="loadStudentStatementReport" class="primary">Generate Statement</button></div></div><div id="studentStatementReportOut"></div></div>':'');
+
    E('content').querySelectorAll('[data-report-tab]').forEach(function(b){b.onclick=function(){E('content').querySelectorAll('.staff-tab').forEach(function(x){x.classList.toggle('active',x===b)});E('content').querySelectorAll('.report-pane').forEach(function(x){x.classList.add('hide')});E('report-'+b.dataset.reportTab).classList.remove('hide')}});
-   var loadStatementReport=E('loadStudentStatementReport');if(loadStatementReport)loadStatementReport.onclick=async function(){
-     var sid=E('statementStudent').value,st=await raw('/api/accounting/students/'+sid+'/statement'),body=studentStatementDocument(st);
-     E('studentStatementReportOut').innerHTML='<div class="panel"><div class="section compact"><div><h3>'+esc(st.student.first_name+' '+(st.student.middle_name||'')+' '+st.student.last_name)+'</h3><p class="muted">'+esc(st.student.admission_no)+' • '+esc(st.student.classroom_name||'')+'</p></div><button id="printStudentStatementReport" class="primary">Print Statement</button></div><div class="grid"><div class="panel stat"><span class="muted">Charges</span><b>'+docMoney(st.summary.charges,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Payments & Advances</span><b>'+docMoney(st.summary.payments,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Available Credit</span><b>'+docMoney(st.summary.creditAvailable||0,st.school.currency)+'</b></div><div class="panel stat"><span class="muted">Amount Due</span><b>'+docMoney(st.summary.amountDue||0,st.school.currency)+'</b></div></div>'+table(st.rows,[{key:'occurred_at',label:'Date',render:function(r){return esc(String(r.occurred_at).slice(0,10))}},{key:'kind',label:'Type',render:function(r){return esc(String(r.kind||'').replace(/_/g,' '))}},{key:'description'},{key:'reference'},{key:'debit',label:'Charge',render:function(r){return Number(r.debit)?docMoney(r.debit,st.school.currency):''}},{key:'credit',label:'Payment',render:function(r){return Number(r.credit)?docMoney(r.credit,st.school.currency):''}},{key:'running_balance',label:'Balance',render:function(r){return docMoney(r.running_balance,st.school.currency)}}])+'</div>';
-     E('printStudentStatementReport').onclick=function(){printStandalone('Student Statement - '+st.student.admission_no,body)}
-   };
    E('loadReport').onclick=async function(){
      var sid=E('reportStudent').value,tid=E('reportTerm').value,r=await raw('/api/report-cards/'+sid+'?termId='+tid),comments=r.comments||{},status=comments.workflow_status||'draft';
      E('reportOut').innerHTML=reportHtml(r)+'<div class="actions report-actions">'+((status==='draft'||status==='returned')?'<button id="editComments" class="ghost">Class teacher remarks</button><button id="submitReport" class="primary">Submit for headteacher review</button>':'')+(status==='submitted'?'<span class="badge warn">Awaiting headteacher review</span>':'')+(status==='approved'?'<span class="badge">Approved for parent/student portal</span>':'')+'<button id="printReport" class="ghost">Print / Save PDF</button></div>';
