@@ -332,20 +332,28 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       paymentMethodId:z.string().uuid(),
       note:z.string().trim().max(1200).optional(),
       paidAt:z.string().datetime().optional(),
-      mode:z.enum(['fees','direct_income']).default('fees'),
       amountReceived:z.number().positive(),
       directIncomeAccountId:z.string().uuid().optional(),
+      directIncomeAmount:z.number().min(0).default(0),
       allocations:z.array(z.object({
         studentFeeId:z.string().uuid(),
         amount:z.number().positive()
       })).max(50).default([])
     }).superRefine((v,ctx)=>{
-      if(v.mode==='direct_income'&&!v.directIncomeAccountId)ctx.addIssue({code:z.ZodIssueCode.custom,path:['directIncomeAccountId'],message:'Select an Income GL for direct income'});
-      if(v.mode==='direct_income'&&v.allocations.length)ctx.addIssue({code:z.ZodIssueCode.custom,path:['allocations'],message:'Fee allocations are disabled for direct income'});
-      if(v.mode==='fees'&&v.directIncomeAccountId)ctx.addIssue({code:z.ZodIssueCode.custom,path:['directIncomeAccountId'],message:'Direct income GL is only used in Direct Income mode'});
+      if(v.directIncomeAmount>0&&!v.directIncomeAccountId){
+        ctx.addIssue({code:z.ZodIssueCode.custom,path:['directIncomeAccountId'],message:'Select an Income GL when a direct income amount is entered'});
+      }
+      if(v.directIncomeAmount===0&&v.directIncomeAccountId){
+        ctx.addIssue({code:z.ZodIssueCode.custom,path:['directIncomeAmount'],message:'Enter a direct income amount or clear the Income GL'});
+      }
+      const allocated=v.allocations.reduce((s,x)=>s+Number(x.amount),0)+Number(v.directIncomeAmount||0);
+      if(allocated>Number(v.amountReceived)+0.005){
+        ctx.addIssue({code:z.ZodIssueCode.custom,path:['amountReceived'],message:'Fee allocations plus direct income cannot exceed the amount received'});
+      }
     }).parse(request.body);
-    const allocationTotal=b.allocations.reduce((s,x)=>s+Number(x.amount),0);
-    if(b.mode==='fees'&&allocationTotal>b.amountReceived+0.005)throw fail(400,'Fee allocations cannot exceed the amount received');
+
+    const feeAllocationTotal=b.allocations.reduce((s,x)=>s+Number(x.amount),0);
+    const directTotal=Number(b.directIncomeAmount||0);
     const result=await tx(db,async(client:any)=>{
       const student=await one<any>(client,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
       const method=await one<any>(client,`
@@ -354,6 +362,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE pm.id=$1 AND pm.organisation_id=$2 AND pm.enabled=true AND pm.allow_manual_receipt=true
       `,[b.paymentMethodId,a.core.organisation_id]);
       await assertAccount(client,a.core.organisation_id,method.settlement_account_id,'asset');
+
       const paidAt=b.paidAt??new Date().toISOString();
       const reference=await nextPaymentReference(client,a.core.organisation_id,method,student.admission_no);
       const receiptNo='RCT-'+reference;
@@ -363,58 +372,59 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *
       `,[a.core.organisation_id,receiptNo,b.studentId,method.id,method.settlement_account_id,b.amountReceived,reference,b.note??null,paidAt,a.core.id]);
 
-      let arTotal=0,directTotal=0;
+      let arTotal=0;
       const lines:any[]=[{accountId:method.settlement_account_id,debit:b.amountReceived,description:method.label+' receipt'}];
       const allocationRows:any[]=[];
 
-      if(b.mode==='direct_income'){
+      for(const allocation of b.allocations){
+        const fee=await one<any>(client,`
+          SELECT sf.*,f.name fee_name,f.income_account_id,
+            (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+          FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id
+          WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3 FOR UPDATE
+        `,[allocation.studentFeeId,b.studentId,a.core.organisation_id]);
+        if(Number(allocation.amount)>Number(fee.balance)+0.005)throw fail(400,'Payment allocation exceeds the outstanding balance for '+fee.fee_name);
+        if(Number(fee.balance)<=0)throw fail(409,fee.fee_name+' is already fully paid');
+        arTotal+=Number(allocation.amount);
+
+        const payment=await one<any>(client,`
+          INSERT INTO payments(
+            organisation_id,student_id,student_fee_id,amount,payment_method,reference,paid_at,received_by_os_user_id,note,source,finance_receipt_id,income_account_id
+          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'accounting_receipt',$10,$11) RETURNING *
+        `,[
+          a.core.organisation_id,b.studentId,fee.id,allocation.amount,method.method_key,
+          reference,paidAt,a.core.id,b.note??null,receipt.id,fee.income_account_id??null
+        ]);
+        await updateStudentFeeStatus(client,fee.id);
+        const alloc=await one<any>(client,`
+          INSERT INTO finance_student_receipt_allocations(receipt_id,student_fee_id,payment_id,income_account_id,amount)
+          VALUES($1,$2,$3,$4,$5) RETURNING *
+        `,[receipt.id,fee.id,payment.id,fee.income_account_id??null,allocation.amount]);
+        allocationRows.push({...alloc,fee_name:fee.fee_name});
+      }
+
+      if(arTotal>0){
+        const ar=await maybeOne<any>(client,"SELECT * FROM finance_accounts WHERE organisation_id=$1 AND code='1100' AND is_active=true",[a.core.organisation_id]);
+        if(!ar)throw fail(409,'Accounts Receivable GL (1100) is not configured');
+        lines.push({accountId:ar.id,credit:arTotal,description:'Student fee receivable settlement'});
+      }
+
+      if(directTotal>0){
         const income=await assertAccount(client,a.core.organisation_id,b.directIncomeAccountId!,'income');
-        directTotal=b.amountReceived;
         const payment=await one<any>(client,`
           INSERT INTO payments(
             organisation_id,student_id,student_fee_id,amount,payment_method,reference,paid_at,received_by_os_user_id,note,source,finance_receipt_id,income_account_id
           ) VALUES($1,$2,NULL,$3,$4,$5,$6,$7,$8,'accounting_receipt',$9,$10) RETURNING *
-        `,[a.core.organisation_id,b.studentId,b.amountReceived,method.method_key,reference,paidAt,a.core.id,b.note??null,receipt.id,income.id]);
+        `,[a.core.organisation_id,b.studentId,directTotal,method.method_key,reference,paidAt,a.core.id,b.note??null,receipt.id,income.id]);
         const alloc=await one<any>(client,`
           INSERT INTO finance_student_receipt_allocations(receipt_id,student_fee_id,payment_id,income_account_id,amount)
           VALUES($1,NULL,$2,$3,$4) RETURNING *
-        `,[receipt.id,payment.id,income.id,b.amountReceived]);
-        allocationRows.push({...alloc,income_account_code:income.code,income_account_name:income.name});
-        lines.push({accountId:income.id,credit:b.amountReceived,description:'Direct student income - '+income.name});
-      }else{
-        for(const allocation of b.allocations){
-          const fee=await one<any>(client,`
-            SELECT sf.*,f.name fee_name,f.income_account_id,
-              (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
-            FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id
-            WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3 FOR UPDATE
-          `,[allocation.studentFeeId,b.studentId,a.core.organisation_id]);
-          if(Number(allocation.amount)>Number(fee.balance)+0.005)throw fail(400,'Payment allocation exceeds the outstanding balance for '+fee.fee_name);
-          if(Number(fee.balance)<=0)throw fail(409,fee.fee_name+' is already fully paid');
-          arTotal+=Number(allocation.amount);
-          const payment=await one<any>(client,`
-            INSERT INTO payments(
-              organisation_id,student_id,student_fee_id,amount,payment_method,reference,paid_at,received_by_os_user_id,note,source,finance_receipt_id,income_account_id
-            ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'accounting_receipt',$10,$11) RETURNING *
-          `,[
-            a.core.organisation_id,b.studentId,fee.id,allocation.amount,method.method_key,
-            reference,paidAt,a.core.id,b.note??null,receipt.id,fee.income_account_id??null
-          ]);
-          await updateStudentFeeStatus(client,fee.id);
-          const alloc=await one<any>(client,`
-            INSERT INTO finance_student_receipt_allocations(receipt_id,student_fee_id,payment_id,income_account_id,amount)
-            VALUES($1,$2,$3,$4,$5) RETURNING *
-          `,[receipt.id,fee.id,payment.id,fee.income_account_id??null,allocation.amount]);
-          allocationRows.push({...alloc,fee_name:fee.fee_name});
-        }
-        if(arTotal>0){
-          const ar=await maybeOne<any>(client,"SELECT * FROM finance_accounts WHERE organisation_id=$1 AND code='1100' AND is_active=true",[a.core.organisation_id]);
-          if(!ar)throw fail(409,'Accounts Receivable GL (1100) is not configured');
-          lines.push({accountId:ar.id,credit:arTotal,description:'Student fee receivable settlement'});
-        }
+        `,[receipt.id,payment.id,income.id,directTotal]);
+        allocationRows.push({...alloc,fee_name:null,income_account_code:income.code,income_account_name:income.name});
+        lines.push({accountId:income.id,credit:directTotal,description:'Direct student income - '+income.name});
       }
 
-      const excess=b.mode==='fees'?Math.max(0,Number(b.amountReceived)-arTotal):0;
+      const excess=Math.max(0,Number(b.amountReceived)-arTotal-directTotal);
       let credit:any=null;
       if(excess>0.004){
         const deposit=await maybeOne<any>(client,"SELECT * FROM finance_accounts WHERE organisation_id=$1 AND code='2200' AND is_active=true",[a.core.organisation_id]);
@@ -433,11 +443,16 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         sourceType:'student_receipt',sourceId:receipt.id,reference,actorOsUserId:a.core.id,lines
       });
       await client.query('UPDATE finance_student_receipts SET journal_entry_id=$1 WHERE id=$2',[journal.id,receipt.id]);
-      return{receipt:{...receipt,journal_entry_id:journal.id},journal,allocations:allocationRows,credit,student,reference,appliedToFees:arTotal,directIncome:directTotal,overpaymentCredit:excess};
+
+      return{
+        receipt:{...receipt,journal_entry_id:journal.id},journal,allocations:allocationRows,credit,student,reference,
+        appliedToFees:arTotal,directIncome:directTotal,overpaymentCredit:excess
+      };
     });
+
     await audit(a.core.organisation_id,a.core.id,'finance.student_receipt.posted','finance_student_receipt',result.receipt.id,{
       receiptNo:result.receipt.receipt_no,reference:result.reference,amount:b.amountReceived,studentId:b.studentId,
-      allocationCount:b.allocations.length,overpaymentCredit:result.overpaymentCredit,mode:b.mode
+      allocationCount:b.allocations.length,appliedToFees:result.appliedToFees,directIncome:result.directIncome,overpaymentCredit:result.overpaymentCredit
     });
     return reply.code(201).send(result);
   });
