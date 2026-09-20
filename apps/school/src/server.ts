@@ -5404,7 +5404,7 @@ await registerFinanceLeaveRoutes(app,{
 });
 
 await registerAccountingRoutes(app,{
-  db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,reverseFinanceJournal
+  db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal
 });
 
 app.setErrorHandler(async(error:any,request,reply)=>{
