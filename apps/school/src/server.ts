@@ -1695,12 +1695,50 @@ app.delete('/api/class-subjects/:id',async(request,reply)=>{
 });
 
 app.get('/api/students',async request=>{
-  const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
+  const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
   return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
 });
 app.post('/api/students',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.create');const b=z.object({admissionNo:z.string().min(1).max(60),firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),admissionDate:z.string().date().optional(),notes:z.string().max(5000).optional()}).parse(request.body);
-  const row=await one<any>(db,'INSERT INTO students(organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,notes) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8::date,current_date),$9) RETURNING *',[a.core.organisation_id,b.admissionNo,b.firstName,b.middleName??null,b.lastName,b.sex??null,b.dateOfBirth??null,b.admissionDate??null,b.notes??null]);await audit(a.core.organisation_id,a.core.id,'student.created','student',row.id);return reply.code(201).send(row);
+  const a=await authorize(request,db,config,'students.create');
+  const b=z.object({
+    admissionNo:z.string().min(1).max(60),firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),
+    lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),
+    admissionDate:z.string().date().optional(),notes:z.string().max(5000).optional(),
+    guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
+    guardianPhone:z.string().min(5).max(60),guardianEmail:z.string().email(),
+    guardianRelationship:z.string().min(2).max(60)
+  }).parse(request.body);
+  const result=await tx(db,async client=>{
+    const student=await one<any>(client,`INSERT INTO students(
+      organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,notes
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8::date,current_date),$9) RETURNING *`,[
+      a.core.organisation_id,b.admissionNo,b.firstName,b.middleName??null,b.lastName,b.sex??null,
+      b.dateOfBirth??null,b.admissionDate??null,b.notes??null
+    ]);
+    let guardian=await maybeOne<any>(client,'SELECT * FROM guardians WHERE organisation_id=$1 AND phone=$2 ORDER BY created_at LIMIT 1',
+      [a.core.organisation_id,b.guardianPhone]);
+    if(!guardian){
+      guardian=await one<any>(client,`INSERT INTO guardians(organisation_id,first_name,last_name,phone,email)
+        VALUES($1,$2,$3,$4,$5) RETURNING *`,[
+        a.core.organisation_id,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianEmail
+      ]);
+    }else{
+      guardian=await one<any>(client,`UPDATE guardians SET first_name=$1,last_name=$2,email=$3
+        WHERE id=$4 RETURNING *`,[b.guardianFirstName,b.guardianLastName,b.guardianEmail,guardian.id]);
+    }
+    await client.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[student.id]);
+    await client.query(`INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary)
+      VALUES($1,$2,$3,true)
+      ON CONFLICT(student_id,guardian_id) DO UPDATE SET relationship=EXCLUDED.relationship,is_primary=true`,
+      [student.id,guardian.id,b.guardianRelationship]);
+    await client.query(`INSERT INTO student_status_history(organisation_id,student_id,old_status,new_status,reason,changed_by_os_user_id)
+      VALUES($1,$2,NULL,'active','Student onboarded',$3)`,[a.core.organisation_id,student.id,a.core.id]);
+    return{student,guardian};
+  });
+  await audit(a.core.organisation_id,a.core.id,'student.created','student',result.student.id,{
+    guardianId:result.guardian.id,guardianEmail:result.guardian.email
+  });
+  return reply.code(201).send(result);
 });
 app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
 
@@ -1777,11 +1815,101 @@ app.get('/api/students/:id/360',async request=>{
   const activity=(await db.query(`SELECT action,resource_type,resource_id,metadata,created_at FROM school_audit_logs
     WHERE organisation_id=$1 AND (resource_id=$2 OR metadata->>'studentId'=$2)
     ORDER BY created_at DESC LIMIT 20`,[a.core.organisation_id,id])).rows;
-  return{student,term,guardians,enrolments,attendance,recentAttendance,fees:fee,payments,subjects,performance,homework,promotions,comments,portal,activity};
+  const statusHistory=(await db.query(`SELECT * FROM student_status_history
+    WHERE organisation_id=$1 AND student_id=$2 ORDER BY changed_at DESC`,[a.core.organisation_id,id])).rows;
+  return{student,term,guardians,enrolments,attendance,recentAttendance,fees:fee,payments,subjects,performance,homework,promotions,comments,portal,activity,statusHistory};
 });
 app.patch('/api/students/:id',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({firstName:z.string().min(1).max(100).optional(),middleName:z.string().max(100).nullable().optional(),lastName:z.string().min(1).max(100).optional(),status:z.enum(['active','graduated','transferred','withdrawn']).optional(),notes:z.string().max(5000).nullable().optional()}).parse(request.body);
-  const row=await one<any>(db,`UPDATE students SET first_name=COALESCE($1,first_name),middle_name=CASE WHEN $2 THEN $3 ELSE middle_name END,last_name=COALESCE($4,last_name),status=COALESCE($5,status),notes=CASE WHEN $6 THEN $7 ELSE notes END,updated_at=now() WHERE id=$8 AND organisation_id=$9 RETURNING *`,[b.firstName??null,Object.hasOwn(b,'middleName'),b.middleName??null,b.lastName??null,b.status??null,Object.hasOwn(b,'notes'),b.notes??null,id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'student.updated','student',id);return row;
+  const a=await authorize(request,db,config,'students.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    firstName:z.string().min(1).max(100).optional(),middleName:z.string().max(100).nullable().optional(),
+    lastName:z.string().min(1).max(100).optional(),sex:z.enum(['male','female']).nullable().optional(),
+    dateOfBirth:z.string().date().nullable().optional(),admissionDate:z.string().date().optional(),
+    notes:z.string().max(5000).nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,`UPDATE students SET
+    first_name=COALESCE($1,first_name),
+    middle_name=CASE WHEN $2 THEN $3 ELSE middle_name END,
+    last_name=COALESCE($4,last_name),
+    sex=CASE WHEN $5 THEN $6 ELSE sex END,
+    date_of_birth=CASE WHEN $7 THEN $8::date ELSE date_of_birth END,
+    admission_date=COALESCE($9::date,admission_date),
+    notes=CASE WHEN $10 THEN $11 ELSE notes END,updated_at=now()
+    WHERE id=$12 AND organisation_id=$13 RETURNING *`,[
+      b.firstName??null,Object.hasOwn(b,'middleName'),b.middleName??null,b.lastName??null,
+      Object.hasOwn(b,'sex'),b.sex??null,Object.hasOwn(b,'dateOfBirth'),b.dateOfBirth??null,
+      b.admissionDate??null,Object.hasOwn(b,'notes'),b.notes??null,id,a.core.organisation_id
+    ]);
+  await audit(a.core.organisation_id,a.core.id,'student.updated','student',id);
+  return row;
+});
+
+app.post('/api/students/:id/status',async request=>{
+  const a=await authorize(request,db,config,'students.status');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({
+    status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']),
+    reason:z.string().trim().max(2000).optional(),
+    classroomId:z.string().uuid().optional()
+  }).superRefine((v,ctx)=>{
+    if(v.status!=='active'&&(!v.reason||v.reason.trim().length<3)){
+      ctx.addIssue({code:z.ZodIssueCode.custom,path:['reason'],message:'Give a reason for changing the student from active status'});
+    }
+  }).parse(request.body);
+
+  const result=await tx(db,async client=>{
+    const student=await one<any>(client,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+    if(student.status===b.status)return{student,unchanged:true,enrolment:null};
+
+    let enrolment=await maybeOne<any>(client,`SELECT e.*,c.name classroom_name FROM enrolments e
+      JOIN classrooms c ON c.id=e.classroom_id
+      WHERE e.organisation_id=$1 AND e.student_id=$2 AND e.status='active'
+      ORDER BY e.enrolled_at DESC LIMIT 1 FOR UPDATE OF e`,[a.core.organisation_id,id]);
+
+    if(b.status==='active'){
+      if(!enrolment){
+        const year=await maybeOne<any>(client,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id]);
+        if(!year)throw fail(409,'Activate an academic year before reactivating this student');
+        let targetClassId=b.classroomId??null;
+        if(!targetClassId){
+          const previous=await maybeOne<any>(client,`SELECT classroom_id FROM enrolments
+            WHERE organisation_id=$1 AND student_id=$2 AND academic_year_id=$3
+            ORDER BY enrolled_at DESC LIMIT 1`,[a.core.organisation_id,id,year.id]);
+          targetClassId=previous?.classroom_id??null;
+        }
+        if(!targetClassId)throw fail(409,'Choose the class the student should return to');
+        const cls=await one<any>(client,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND is_active=true',
+          [targetClassId,a.core.organisation_id,year.id]);
+        enrolment=await one<any>(client,`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status)
+          VALUES($1,$2,$3,$4,'active')
+          ON CONFLICT(student_id,academic_year_id)
+          DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()
+          RETURNING *`,[a.core.organisation_id,id,year.id,cls.id]);
+        await assignMandatoryFees(client,a.core.organisation_id,id,year.id,cls.id);
+      }
+      await client.query('UPDATE student_portal_access SET is_active=true,updated_at=now() WHERE student_id=$1',[id]);
+    }else{
+      const enrolmentStatus=b.status==='graduated'?'completed':b.status;
+      if(enrolment){
+        await client.query('UPDATE enrolments SET status=$1 WHERE id=$2',[enrolmentStatus,enrolment.id]);
+      }
+      await client.query('UPDATE student_portal_access SET is_active=false,updated_at=now() WHERE student_id=$1',[id]);
+      await client.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE student_id=$1 AND revoked_at IS NULL',[id]);
+    }
+
+    const updated=await one<any>(client,'UPDATE students SET status=$1,updated_at=now() WHERE id=$2 RETURNING *',[b.status,id]);
+    await client.query(`INSERT INTO student_status_history(
+      organisation_id,student_id,old_status,new_status,reason,enrolment_id,classroom_id,changed_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[
+      a.core.organisation_id,id,student.status,b.status,b.reason??null,enrolment?.id??null,enrolment?.classroom_id??b.classroomId??null,a.core.id
+    ]);
+    return{student:updated,unchanged:false,enrolment};
+  });
+  await audit(a.core.organisation_id,a.core.id,'student.status_changed','student',id,{
+    status:b.status,reason:b.reason??null,classroomId:b.classroomId??null
+  });
+  return result;
 });
 app.post('/api/students/:id/guardians',async(request,reply)=>{
   const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({firstName:z.string().min(1).max(100),lastName:z.string().min(1).max(100),phone:z.string().min(5).max(60),email:z.string().email().optional(),address:z.string().max(2000).optional(),relationship:z.string().min(2).max(60),isPrimary:z.boolean().default(false)}).parse(request.body);
@@ -4566,7 +4694,7 @@ app.post('/api/public/admissions',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email(),
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
@@ -4599,7 +4727,7 @@ app.post('/api/admissions/internal',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email(),
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
