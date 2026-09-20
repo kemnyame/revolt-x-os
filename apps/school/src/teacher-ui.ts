@@ -273,8 +273,7 @@ else if(p==='reports'){
    {key:'subject_name',label:'Subject',render:function(x){return'<b>'+esc(x.subject_name)+'</b>'}},
    {key:'class_assessment_score',label:'Class Assessment (30%)',render:function(x){return x.class_assessment_score==null?'—':esc(x.class_assessment_score)+' / 30'}},
    {key:'exam_score',label:'Exam (70%)',render:function(x){return x.exam_score==null?'—':esc(x.exam_score)+' / 70'}},
-   {key:'total',label:'Total',render:function(x){return x.total==null?'—':'<b>'+esc(x.total)+'%</b>'}},
-   {key:'grade',label:'Grade'},{key:'remark',label:'Remark'}
+   {key:'total',label:'Total',render:function(x){return x.total==null?'—':'<b>'+esc(x.total)+'%</b>'}}
  ])}
  E('content').innerHTML='<div class="section"><div><h1>Report Cards</h1><p class="muted">The system checks every subject before submission. Missing Class Assessment or Exam grades block the report so a report card cannot be issued without grades.</p></div></div>'+
  (worklist.filter(function(x){return x.workflow_status==='returned'}).length?'<div class="panel" style="border-color:#a96d33"><h3>● Returned for correction</h3>'+table(worklist.filter(function(x){return x.workflow_status==='returned'}),[{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},{key:"classroom_name",label:"Class"},{key:"term_name",label:"Term"},{key:"return_note",label:"Correction required"},{key:"workflow_status",label:"Status",render:function(r){return badge(r.workflow_status)}}],function(r){return '<button class="mini primary" data-open-returned="'+r.student_id+'" data-term="'+r.term_id+'">Correct report</button>'})+'</div>':'')+
