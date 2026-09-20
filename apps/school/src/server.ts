@@ -4089,6 +4089,73 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
   return{term,classroom,rows};
 }
 
+async function classReportReadinessDetails(organisationId:string,classroomId:string,termId:string){
+  const pool=await classReportPool(organisationId,classroomId,termId);
+  const assignments=(await db.query(`
+    SELECT ta.subject_id,ta.teacher_os_user_id,s.name subject_name
+    FROM teacher_assignments ta
+    JOIN subjects s ON s.id=ta.subject_id
+    WHERE ta.organisation_id=$1
+      AND ta.classroom_id=$2
+      AND ta.academic_year_id=$3
+      AND ta.is_active=true
+      AND ta.subject_id IS NOT NULL
+      AND (ta.term_id=$4 OR ta.term_id IS NULL)
+    ORDER BY s.name,ta.created_at
+  `,[organisationId,classroomId,pool.term.academic_year_id,termId])).rows;
+  const users=await fetchCoreUsers(organisationId);
+  const userMap=new Map(users.map((u:any)=>[u.id,u]));
+  const teachersBySubject=new Map<string,any[]>();
+  for(const a of assignments){
+    const u:any=userMap.get(a.teacher_os_user_id);
+    const list=teachersBySubject.get(a.subject_id)||[];
+    if(!list.some((x:any)=>x.id===a.teacher_os_user_id)){
+      list.push({
+        id:a.teacher_os_user_id,
+        name:u?(u.first_name+' '+u.last_name):a.teacher_os_user_id,
+        email:u?.email??null
+      });
+    }
+    teachersBySubject.set(a.subject_id,list);
+  }
+
+  const grouped=new Map<string,any>();
+  for(const row of pool.rows.filter((x:any)=>!x.assessment_ready)){
+    const readiness=await reportAssessmentReadiness(organisationId,row.student_id,termId,classroomId);
+    for(const missing of readiness.missing){
+      let subject=grouped.get(missing.subjectId);
+      if(!subject){
+        subject={
+          subjectId:missing.subjectId,
+          subjectName:missing.subjectName,
+          teachers:teachersBySubject.get(missing.subjectId)||[],
+          students:[]
+        };
+        grouped.set(missing.subjectId,subject);
+      }
+      subject.students.push({
+        studentId:row.student_id,
+        admissionNo:row.admission_no,
+        studentName:row.first_name+' '+row.last_name,
+        issues:missing.missing
+      });
+    }
+  }
+
+  const subjects=[...grouped.values()].sort((a:any,b:any)=>String(a.subjectName).localeCompare(String(b.subjectName)));
+  return{
+    term:pool.term,
+    classroom:pool.classroom,
+    summary:{
+      students:pool.rows.length,
+      readyStudents:pool.rows.filter((x:any)=>x.assessment_ready).length,
+      incompleteStudents:pool.rows.filter((x:any)=>!x.assessment_ready).length,
+      affectedSubjects:subjects.length
+    },
+    subjects
+  };
+}
+
 app.get('/api/teacher/report-pool',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
