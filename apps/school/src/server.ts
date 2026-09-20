@@ -5540,8 +5540,11 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(current.status==='sent')return current;
-  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL WHERE id=$1",[id]);
+  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL,next_attempt_at=now() WHERE id=$1",[id]);
   try{
+    await db.query(`UPDATE communication_outbox
+      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
+      WHERE id=$1`,[id]);
     const sent=await sendMessage(config,{
       channel:current.channel,
       to:current.channel==='email'?current.recipient_address:normalizePhone(current.recipient_address),
@@ -5550,13 +5553,14 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
       body:current.body
     });
     const row=await one<any>(db,`UPDATE communication_outbox SET status='sent',provider=$1,provider_message_id=$2,
-      attempt_count=attempt_count+1,sent_at=now(),last_error=NULL WHERE id=$3 RETURNING *`,
+      sent_at=now(),last_error=NULL,next_attempt_at=NULL WHERE id=$3 RETURNING *`,
       [sent.provider,sent.messageId,id]);
     await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'sent'});
     return row;
   }catch(error:any){
-    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',attempt_count=attempt_count+1,last_error=$1
-      WHERE id=$2 RETURNING *`,[String(error?.message||error),id]);
+    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1,
+      next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '5 minutes' END
+      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),id]);
     await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'failed'});
     return row;
   }
