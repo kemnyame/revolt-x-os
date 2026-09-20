@@ -337,13 +337,15 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
   app.post('/api/accounting/receipts/:id/reverse',async request=>{
     const a=await authorize(request,db,config,'finance.reverse');
     const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-    const b=z.object({reason:z.string().trim().min(3).max(1200)}).parse(request.body);
+    const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().trim().min(3).max(1200)}).parse(request.body);
     const result=await tx(db,async(client:any)=>{
       const receipt=await one<any>(client,`
         SELECT * FROM finance_student_receipts
         WHERE id=$1 AND organisation_id=$2 FOR UPDATE
       `,[id,a.core.organisation_id]);
       if(receipt.status==='voided')throw fail(409,'This receipt has already been reversed');
+      const expected=String(receipt.reference||receipt.receipt_no||'').trim().toLowerCase();
+      if(String(b.originalReference).trim().toLowerCase()!==expected)throw fail(409,'Original transaction reference does not match this receipt');
 
       const credits=(await client.query(`
         SELECT * FROM student_account_credits
@@ -391,7 +393,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       return{receipt:updated,reversal,voidedPayments:payments.length};
     });
     await audit(a.core.organisation_id,a.core.id,'finance.student_receipt.reversed','finance_student_receipt',id,{
-      reason:b.reason,voidedPayments:result.voidedPayments,reversalEntryId:result.reversal?.id??null
+      reason:b.reason,originalReference:b.originalReference,voidedPayments:result.voidedPayments,reversalEntryId:result.reversal?.id??null
     });
     return result;
   });
@@ -619,7 +621,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       LEFT JOIN terms t ON t.id=f.term_id
       LEFT JOIN finance_accounts ia ON ia.id=f.income_account_id
       LEFT JOIN finance_accounts fa ON fa.id=p.income_account_id
-      WHERE p.organisation_id=$1 AND p.student_id=$2 AND p.voided_at IS NULL AND p.source<>'credit_applied'
+      WHERE p.organisation_id=$1 AND p.student_id=$2 AND p.voided_at IS NULL AND p.source<>'credit_applied' AND p.student_fee_id IS NOT NULL
     `,[a.core.organisation_id,studentId])).rows;
     const credits=(await db.query(`
       SELECT c.id,c.created_at occurred_at,'advance_credit' kind,'Advance / overpayment credit' description,
