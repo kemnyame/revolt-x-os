@@ -4155,8 +4155,8 @@ app.get('/api/parent/students/:id/latest-report',async request=>{
   const student=await ensureGuardianStudent(g.guardian_id,id);
   const approved=await maybeOne<any>(db,`SELECT rc.*,t.name term_name,t.id term_id,t.academic_year_id
     FROM report_comments rc JOIN terms t ON t.id=rc.term_id
-    WHERE rc.organisation_id=$1 AND rc.student_id=$2 AND rc.workflow_status='approved'
-    ORDER BY rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[g.organisation_id,id]);
+    WHERE rc.organisation_id=$1 AND rc.student_id=$2 AND rc.workflow_status='approved' AND rc.released_at IS NOT NULL
+    ORDER BY rc.released_at DESC NULLS LAST,rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[g.organisation_id,id]);
   if(!approved)return{available:false,term:null,student,subjects:[],comments:null};
 
   const term=await one<any>(db,`SELECT t.*,y.name academic_year FROM terms t
@@ -4502,8 +4502,8 @@ app.get('/api/student/latest-report',async request=>{
   const s=await studentAuth(request);
   const approved=await maybeOne<any>(db,`SELECT rc.*,t.id term_id FROM report_comments rc
     JOIN terms t ON t.id=rc.term_id
-    WHERE rc.organisation_id=$1 AND rc.student_id=$2 AND rc.workflow_status='approved'
-    ORDER BY rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[s.organisation_id,s.student_id]);
+    WHERE rc.organisation_id=$1 AND rc.student_id=$2 AND rc.workflow_status='approved' AND rc.released_at IS NOT NULL
+    ORDER BY rc.released_at DESC NULLS LAST,rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[s.organisation_id,s.student_id]);
   if(!approved)return{available:false,term:null,subjects:[],comments:null};
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[approved.term_id]);
   const subjects=await calculateStudentTermResults(s.organisation_id,s.student_id,term.id);
