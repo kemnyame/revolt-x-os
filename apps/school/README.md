@@ -72,9 +72,21 @@ During development, the School frontend obtains the temporary Core OS preview se
 - parent and student portals
 - secure password/reset delivery
 - payment gateway integration
-- messaging providers
+- messaging providers (Brevo transactional email is supported; Twilio SMS/WhatsApp remain optional)
 - document/object storage for uploads
 - stronger teacher/class scoping
 - backup and monitoring policies
 - production-grade hosting tiers
 - removal of preview access
+
+
+## Transactional email
+
+Revolt-X School supports Brevo for automated transactional email. Set:
+
+- `EMAIL_PROVIDER=brevo`
+- `BREVO_API_KEY`
+- `BREVO_FROM_EMAIL` to a sender verified in Brevo
+- `BREVO_FROM_NAME` (for example, `Revolt-X School`)
+
+When configured, the existing communication outbox and notification rules send guardian/staff notifications through Brevo, including fee-payment confirmations, fee-payment requests, report workflow alerts and released report-card notifications. Provider message IDs are stored in the communication outbox for audit and retry.
