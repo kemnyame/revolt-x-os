@@ -199,15 +199,17 @@ async function deliverCommunication(input:{
 }){
   const status=providerStatus(config);
   const configured=input.channel==='email'?status.email.configured:input.channel==='sms'?status.sms.configured:status.whatsapp.configured;
-  const row=await one<any>(db,`INSERT INTO communication_outbox(
-      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
+  let row=await one<any>(db,`INSERT INTO communication_outbox(
+      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id,next_attempt_at
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12 THEN now() ELSE now()+interval '15 minutes' END) RETURNING *`,[
       input.organisationId,input.channel,input.recipientName??null,input.recipientAddress,input.subject??null,input.body,
-      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null
+      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null,configured
     ]);
   if(!configured)return row;
   try{
-    await db.query("UPDATE communication_outbox SET status='sending',attempt_count=attempt_count+1 WHERE id=$1",[row.id]);
+    row=await one<any>(db,`UPDATE communication_outbox
+      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
+      WHERE id=$1 RETURNING *`,[row.id]);
     const sent=await sendMessage(config,{
       channel:input.channel,
       to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
@@ -216,11 +218,12 @@ async function deliverCommunication(input:{
       body:input.body
     });
     return await one<any>(db,`UPDATE communication_outbox
-      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL
+      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL,next_attempt_at=NULL
       WHERE id=$3 RETURNING *`,[sent.provider,sent.messageId,row.id]);
   }catch(error:any){
-    return await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1 WHERE id=$2 RETURNING *`,
-      [String(error?.message||error),row.id]);
+    return await one<any>(db,`UPDATE communication_outbox
+      SET status='failed',last_error=$1,next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '1 minute' END
+      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),row.id]);
   }
 }
 
