@@ -4175,6 +4175,73 @@ app.get('/api/teacher/report-pool',async request=>{
   };
 });
 
+app.get('/api/teacher/report-pool/readiness',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,q.classroomId,q.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can review missing report grades for this class');
+  return classReportReadinessDetails(a.core.organisation_id,q.classroomId,q.termId);
+});
+
+app.post('/api/teacher/report-pool/remind-missing',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
+  if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can remind teachers about missing grades for this class');
+
+  const readiness=await classReportReadinessDetails(a.core.organisation_id,b.classroomId,b.termId);
+  const results:any[]=[];
+  for(const subject of readiness.subjects){
+    const students=subject.students.slice(0,40).map((x:any)=>x.admissionNo+' '+x.studentName+': '+x.issues.join('; '));
+    const bodyText=[
+      'Assessment grades are incomplete for '+readiness.classroom.name+' - '+subject.subjectName+'.',
+      '',
+      ...students,
+      '',
+      'Please enter the missing assessment scores in Revolt-X School. Report cards remain locked until all required grades are complete.'
+    ].join('\n');
+
+    if(!subject.teachers.length){
+      results.push({subjectId:subject.subjectId,subjectName:subject.subjectName,status:'no_teacher_assigned'});
+      continue;
+    }
+
+    for(const teacher of subject.teachers){
+      if(!teacher.email){
+        results.push({subjectId:subject.subjectId,subjectName:subject.subjectName,teacherId:teacher.id,teacherName:teacher.name,status:'missing_email'});
+        continue;
+      }
+      const delivery=await deliverCommunication({
+        organisationId:a.core.organisation_id,
+        actorOsUserId:a.core.id,
+        channel:'email',
+        recipientName:teacher.name,
+        recipientAddress:teacher.email,
+        subject:'Missing assessment grades - '+readiness.classroom.name+' / '+subject.subjectName,
+        body:bodyText,
+        templateKey:'assessment.missing_scores',
+        relatedType:'classroom',
+        relatedId:b.classroomId
+      });
+      results.push({
+        subjectId:subject.subjectId,
+        subjectName:subject.subjectName,
+        teacherId:teacher.id,
+        teacherName:teacher.name,
+        status:delivery.status
+      });
+    }
+  }
+
+  await audit(a.core.organisation_id,a.core.id,'reports.missing_grades_reminded','classroom',b.classroomId,{
+    termId:b.termId,
+    affectedSubjects:readiness.subjects.length,
+    incompleteStudents:readiness.summary.incompleteStudents,
+    deliveries:results
+  });
+  return{...readiness.summary,results};
+});
+
 app.post('/api/teacher/report-pool/release',async request=>{
   const a=await authorize(request,db,config,'reports.release');
   const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
