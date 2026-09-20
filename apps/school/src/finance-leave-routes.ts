@@ -157,6 +157,30 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     return reply.code(201).send(row);
   });
 
+  app.patch('/api/finance/accounts/:id',async request=>{
+    const a=await authorize(request,db,config,'finance.manage');
+    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const b=z.object({
+      name:z.string().trim().min(2).max(180).optional(),
+      subtype:z.string().trim().max(60).nullable().optional(),
+      isActive:z.boolean().optional()
+    }).refine(v=>Object.keys(v).length>0).parse(request.body);
+    const current=await one<any>(db,'SELECT * FROM finance_accounts WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(b.isActive===false&&current.is_system){
+      const required=new Set(['1000','1010','1020','1030','1100','2200','4000']);
+      if(required.has(String(current.code)))throw fail(409,'This system GL is required by School accounting and cannot be disabled');
+    }
+    const row=await one<any>(db,`UPDATE finance_accounts SET
+      name=COALESCE($1,name),
+      subtype=CASE WHEN $2 THEN $3 ELSE subtype END,
+      is_active=COALESCE($4,is_active),
+      updated_at=now()
+      WHERE id=$5 AND organisation_id=$6 RETURNING *`,
+      [b.name??null,Object.hasOwn(b,'subtype'),b.subtype??null,b.isActive??null,id,a.core.organisation_id]);
+    await audit(a.core.organisation_id,a.core.id,'finance.account_updated','finance_account',id,{code:row.code});
+    return row;
+  });
+
   app.get('/api/finance/vendors',async request=>{
     const a=await authorize(request,db,config,'finance.view');
     return (await db.query('SELECT * FROM finance_vendors WHERE organisation_id=$1 ORDER BY is_active DESC,name',[a.core.organisation_id])).rows;
