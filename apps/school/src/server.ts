@@ -1107,10 +1107,48 @@ app.get('/api/school/profile',async request=>{
 });
 app.patch('/api/school/profile',async request=>{
   const a=await authorize(request,db,config,'school.manage');
-  const b=z.object({schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),phone:z.string().max(60).nullable().optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),logoUrl:z.string().url().max(2000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
-  const row=await one<any>(db,`UPDATE school_profiles SET school_name=COALESCE($1,school_name),short_name=CASE WHEN $2 THEN $3 ELSE short_name END,motto=CASE WHEN $4 THEN $5 ELSE motto END,phone=CASE WHEN $6 THEN $7 ELSE phone END,email=CASE WHEN $8 THEN $9 ELSE email END,address=CASE WHEN $10 THEN $11 ELSE address END,logo_url=CASE WHEN $12 THEN $13 ELSE logo_url END,updated_at=now() WHERE organisation_id=$14 RETURNING *`,[b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,Object.hasOwn(b,'logoUrl'),b.logoUrl??null,a.core.organisation_id]);
+  const b=z.object({schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),phone:z.string().max(60).nullable().optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),logoImageData:z.string().max(1500000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  if(b.logoImageData&& !/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(b.logoImageData))throw fail(400,'School logo must be a PNG, JPG or WebP image');
+  const row=await one<any>(db,`UPDATE school_profiles SET school_name=COALESCE($1,school_name),short_name=CASE WHEN $2 THEN $3 ELSE short_name END,motto=CASE WHEN $4 THEN $5 ELSE motto END,phone=CASE WHEN $6 THEN $7 ELSE phone END,email=CASE WHEN $8 THEN $9 ELSE email END,address=CASE WHEN $10 THEN $11 ELSE address END,logo_image_data=CASE WHEN $12 THEN $13 ELSE logo_image_data END,updated_at=now() WHERE organisation_id=$14 RETURNING *`,[b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,Object.hasOwn(b,'logoImageData'),b.logoImageData??null,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'school.profile.updated','school_profile',a.core.organisation_id);
   return row;
+});
+
+app.get('/api/me/profile',async request=>{
+  const a=await authorize(request,db,config);
+  const local=await maybeOne<any>(db,'SELECT profile_photo_data FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',[a.core.organisation_id,a.core.id]);
+  return{
+    id:a.core.id,membershipId:a.core.membership_id,firstName:a.core.first_name,lastName:a.core.last_name,email:a.core.email,
+    profilePhotoData:local?.profile_photo_data??null,role:a.role,organisationName:a.core.organisation_name
+  };
+});
+app.patch('/api/me/profile',async request=>{
+  const a=await authorize(request,db,config,'profile.edit');
+  const b=z.object({
+    firstName:z.string().trim().min(1).max(100).optional(),
+    lastName:z.string().trim().min(1).max(100).optional(),
+    email:z.string().trim().toLowerCase().email().optional(),
+    profilePhotoData:z.string().max(1500000).nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
+  if(b.profilePhotoData && !/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(b.profilePhotoData))throw fail(400,'Profile picture must be a PNG, JPG or WebP image');
+  if(b.firstName!==undefined||b.lastName!==undefined||b.email!==undefined){
+    const base=config.CORE_OS_URL.replace(/\/$/,'');
+    const res=await fetch(base+'/v1/internal/school/users/'+encodeURIComponent(a.core.membership_id),{
+      method:'PATCH',headers:coreServiceHeaders(),signal:AbortSignal.timeout(10000),
+      body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,firstName:b.firstName,lastName:b.lastName,email:b.email})
+    });
+    if(!res.ok){
+      const body=await res.json().catch(()=>null) as any;
+      throw fail(res.status,body?.error?.message||'Could not update Core OS profile');
+    }
+    coreUsersCache.delete(a.core.organisation_id);
+  }
+  if(Object.hasOwn(b,'profilePhotoData')){
+    await db.query('UPDATE school_memberships SET profile_photo_data=$1,updated_at=now() WHERE organisation_id=$2 AND os_user_id=$3',
+      [b.profilePhotoData??null,a.core.organisation_id,a.core.id]);
+  }
+  await audit(a.core.organisation_id,a.core.id,'profile.self_updated','school_membership',a.core.id,{photoChanged:Object.hasOwn(b,'profilePhotoData')});
+  return{ok:true};
 });
 
 app.get('/api/dashboard',async request=>{
@@ -2962,16 +3000,17 @@ app.get('/api/payments',async request=>{
   return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,f.name fee_name FROM payments p JOIN students s ON s.id=p.student_id LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id WHERE p.organisation_id=$1 AND ($2::uuid IS NULL OR p.student_id=$2) ORDER BY p.paid_at DESC LIMIT $3`,[a.core.organisation_id,q.studentId??null,q.limit])).rows;
 });
 app.post('/api/payments/:id/void',async request=>{
-  const a=await authorize(request,db,config,'fees.void');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({reason:z.string().min(2).max(500)}).parse(request.body);
+  const a=await authorize(request,db,config,'fees.void');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().min(2).max(500)}).parse(request.body);
   const row=await tx(db,async client=>{
     const current=await one<any>(client,'SELECT * FROM payments WHERE id=$1 AND organisation_id=$2 AND voided_at IS NULL FOR UPDATE',[id,a.core.organisation_id]);
+    if(String(current.reference||'').trim().toLowerCase()!==String(b.originalReference).trim().toLowerCase())throw fail(409,'Original transaction reference does not match this payment');
     const updated=await one<any>(client,'UPDATE payments SET voided_at=now(),voided_by_os_user_id=$1,void_reason=$2 WHERE id=$3 RETURNING *',[a.core.id,b.reason,id]);
     if(updated.student_fee_id)await updateStudentFeeStatus(client,updated.student_fee_id);
     const journal=await maybeOne<any>(client,`SELECT * FROM finance_journal_entries WHERE organisation_id=$1 AND source_type='student_payment' AND source_id=$2 AND status='posted' ORDER BY created_at LIMIT 1`,[a.core.organisation_id,id]);
     if(journal)await reverseFinanceJournal(client,a.core.organisation_id,journal.id,a.core.id,b.reason,'student_payment_void',id);
     return updated;
   });
-  await audit(a.core.organisation_id,a.core.id,'payment.voided','payment',id,{reason:b.reason});return row;
+  await audit(a.core.organisation_id,a.core.id,'payment.voided','payment',id,{reason:b.reason,originalReference:b.originalReference});return row;
 });
 
 app.patch('/api/timetable/:id',async request=>{
