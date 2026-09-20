@@ -17,6 +17,10 @@ const schema = z.object({
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 
+  EMAIL_PROVIDER: z.enum(['auto','brevo','resend']).default('auto'),
+  BREVO_API_KEY: z.preprocess(emptyToUndefined,z.string().optional()),
+  BREVO_FROM_EMAIL: z.preprocess(emptyToUndefined,z.string().email().optional()),
+  BREVO_FROM_NAME: z.preprocess(emptyToUndefined,z.string().max(160).optional()).default('Revolt-X School'),
   RESEND_API_KEY: z.preprocess(emptyToUndefined,z.string().optional()),
   RESEND_FROM_EMAIL: z.preprocess(emptyToUndefined,z.string().optional()),
 
