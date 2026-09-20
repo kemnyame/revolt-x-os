@@ -415,10 +415,25 @@ async function assignMandatoryFees(client:any,organisationId:string,studentId:st
   return assigned;
 }
 
+async function nextSystemPaymentReference(client:any,organisationId:string,method:string,admissionNo:string){
+  const label=method==='mobile_money'?'Mobile Money':method==='card'?'Card':method.replace(/_/g,' ');
+  const prefix=label.replace(/[^A-Za-z]/g,'').slice(0,2).toUpperCase().padEnd(2,'X');
+  const key='student_receipt:'+method;
+  const counter=await one<any>(client,`
+    INSERT INTO finance_reference_counters(organisation_id,reference_key,next_number)
+    VALUES($1,$2,1)
+    ON CONFLICT(organisation_id,reference_key)
+    DO UPDATE SET next_number=finance_reference_counters.next_number+1,updated_at=now()
+    RETURNING next_number
+  `,[organisationId,key]);
+  const studentCode=String(admissionNo||'STUDENT').replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+  return prefix+'-'+studentCode+'-'+String(counter.next_number).padStart(4,'0');
+}
+
 async function settleOnlinePayment(reference:string){
   const intent=await maybeOne<any>(db,'SELECT * FROM payment_intents WHERE reference=$1',[reference]);
   if(!intent)throw fail(404,'Payment reference not found');
-  if(intent.status==='success'&&intent.settled_payment_id)return intent;
+  if(intent.status==='success')return intent;
   const verified=await verifyPaystack(config,reference);
   if(verified.status!=='success'){
     await db.query(`UPDATE payment_intents SET status=$1,failure_reason=$2,provider_payload=$3,updated_at=now() WHERE id=$4`,
@@ -431,18 +446,64 @@ async function settleOnlinePayment(reference:string){
   }
   return tx(db,async client=>{
     const locked=await one<any>(client,'SELECT * FROM payment_intents WHERE id=$1 FOR UPDATE',[intent.id]);
-    if(locked.status==='success'&&locked.settled_payment_id)return locked;
-    const payment=await one<any>(client,`INSERT INTO payments(
-      organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note,source,payment_intent_id
-    ) VALUES($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9) RETURNING *`,[
-      locked.organisation_id,locked.student_id,locked.student_fee_id,locked.amount,locked.method,
-      verified.reference,'Online payment verified by Paystack',locked.initiated_by_type==='guardian'?'parent_online':'school_online',locked.id
-    ]);
-    if(locked.student_fee_id)await updateStudentFeeStatus(client,locked.student_fee_id);
-    await postStudentPaymentLedger(client,payment.id,null);
+    if(locked.status==='success')return locked;
+    const student=await one<any>(client,'SELECT id,admission_no,first_name,last_name FROM students WHERE id=$1 AND organisation_id=$2',
+      [locked.student_id,locked.organisation_id]);
+    let remaining=Number(locked.amount),firstPayment:any=null;
+    const source=locked.initiated_by_type==='guardian'?'parent_online':'school_online';
+
+    // Allocate verified online money to the selected fee first, then other outstanding fees.
+    const openFees=(await client.query(`
+      SELECT sf.id,f.name fee_name,sf.created_at,
+        (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p
+          WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+      FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id
+      WHERE sf.organisation_id=$1 AND sf.student_id=$2
+        AND (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p
+          WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0)>0.004
+      ORDER BY CASE WHEN sf.id=$3::uuid THEN 0 ELSE 1 END,sf.created_at,sf.id
+      FOR UPDATE OF sf
+    `,[locked.organisation_id,locked.student_id,locked.student_fee_id??null])).rows;
+
+    for(const fee of openFees){
+      if(remaining<=0.004)break;
+      const amount=Math.min(remaining,Number(fee.balance));
+      if(amount<=0)continue;
+      const payment=await one<any>(client,`INSERT INTO payments(
+        organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note,source,payment_intent_id
+      ) VALUES($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9) RETURNING *`,[
+        locked.organisation_id,locked.student_id,fee.id,amount,locked.method,verified.reference,
+        'Online payment verified by Paystack',source,firstPayment?null:locked.id
+      ]);
+      if(!firstPayment)firstPayment=payment;
+      await updateStudentFeeStatus(client,fee.id);
+      await postStudentPaymentLedger(client,payment.id,null);
+      remaining-=amount;
+    }
+
+    // If the student paid more than current outstanding fees, carry it forward as a real liability credit.
+    if(remaining>0.004){
+      const deposit=await financeAccountByCode(client,locked.organisation_id,'2200');
+      const debitCode=locked.method==='mobile_money'?'1020':locked.method==='card'?'1030':'1010';
+      const settlement=await financeAccountByCode(client,locked.organisation_id,debitCode);
+      const credit=await one<any>(client,`INSERT INTO student_account_credits(
+        organisation_id,student_id,source_receipt_id,original_amount,balance,created_by_os_user_id
+      ) VALUES($1,$2,NULL,$3,$3,NULL) RETURNING *`,[locked.organisation_id,locked.student_id,remaining]);
+      await postFinanceJournal(client,{
+        organisationId:locked.organisation_id,entryDate:new Date().toISOString().slice(0,10),
+        description:'Online student advance - '+student.first_name+' '+student.last_name+' ('+student.admission_no+')',
+        sourceType:'online_student_credit',sourceId:credit.id,reference:verified.reference,actorOsUserId:null,
+        lines:[
+          {accountId:settlement.id,debit:remaining,description:locked.method+' online receipt'},
+          {accountId:deposit.id,credit:remaining,description:'Student advance / overpayment credit'}
+        ]
+      });
+    }
+
     if(locked.payment_request_id)await client.query("UPDATE fee_payment_requests SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1",[locked.payment_request_id]);
     const updated=await one<any>(client,`UPDATE payment_intents SET status='success',settled_payment_id=$1,paid_at=now(),
-      provider_payload=$2,updated_at=now() WHERE id=$3 RETURNING *`,[payment.id,JSON.stringify(verified.raw),locked.id]);
+      provider_payload=$2,failure_reason=NULL,updated_at=now() WHERE id=$3 RETURNING *`,
+      [firstPayment?.id??null,JSON.stringify(verified.raw),locked.id]);
     return updated;
   });
 }
@@ -4993,11 +5054,10 @@ app.post('/api/payment-intents',async(request,reply)=>{
     :await maybeOne<any>(db,`SELECT g.* FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC LIMIT 1`,[b.studentId]);
   if(!guardian?.email)throw fail(409,'The guardian needs an email address before an online payment can be initialized');
   if(b.studentFeeId){
-    const open=await one<any>(db,`SELECT (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
-      FROM student_fees sf WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[b.studentFeeId,b.studentId,a.core.organisation_id]);
-    if(b.amount>Number(open.balance)+0.001)throw fail(400,'Payment cannot exceed the outstanding fee balance');
+    await one<any>(db,'SELECT id FROM student_fees WHERE id=$1 AND student_id=$2 AND organisation_id=$3',
+      [b.studentFeeId,b.studentId,a.core.organisation_id]);
   }
-  const reference='RXS-'+Date.now().toString(36).toUpperCase()+'-'+randomBytes(4).toString('hex').toUpperCase();
+  const reference=await nextSystemPaymentReference(db,a.core.organisation_id,b.method,student.admission_no);
   const intent=await one<any>(db,`INSERT INTO payment_intents(
       organisation_id,student_id,student_fee_id,guardian_id,amount,currency,method,provider,reference,status,initiated_by_type,initiated_by_os_user_id
     ) VALUES($1,$2,$3,$4,$5,$6,$7,'paystack',$8,'initialized','school',$9) RETURNING *`,[
@@ -5051,12 +5111,12 @@ app.post('/api/parent/payment-intents',async(request,reply)=>{
     if(Math.abs(Number(requestRow.amount)-b.amount)>0.001)throw fail(400,'Payment amount must match the school payment request');
   }
   const feeId=b.studentFeeId??requestRow?.student_fee_id??null;
+  const parentStudent=await one<any>(db,'SELECT id,admission_no FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,g.organisation_id]);
   if(feeId){
-    const open=await one<any>(db,`SELECT (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
-      FROM student_fees sf WHERE sf.id=$1 AND sf.student_id=$2 AND sf.organisation_id=$3`,[feeId,b.studentId,g.organisation_id]);
-    if(b.amount>Number(open.balance)+0.001)throw fail(400,'Payment cannot exceed the outstanding fee balance');
+    await one<any>(db,'SELECT id FROM student_fees WHERE id=$1 AND student_id=$2 AND organisation_id=$3',
+      [feeId,b.studentId,g.organisation_id]);
   }
-  const reference='RXP-'+Date.now().toString(36).toUpperCase()+'-'+randomBytes(4).toString('hex').toUpperCase();
+  const reference=await nextSystemPaymentReference(db,g.organisation_id,b.method,parentStudent.admission_no);
   const intent=await one<any>(db,`INSERT INTO payment_intents(
       organisation_id,student_id,student_fee_id,payment_request_id,guardian_id,amount,currency,method,provider,reference,status,initiated_by_type,initiated_by_guardian_id
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'paystack',$9,'initialized','guardian',$10) RETURNING *`,[
