@@ -299,7 +299,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
       const yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
       const orgs=(await db.query('SELECT organisation_id FROM school_profiles')).rows;
       for(const org of orgs){
-        const existing=await maybeOne<any>(db,'SELECT id FROM finance_eod_runs WHERE organisation_id=$1 AND business_date=$2 AND status IN(\\'completed\\',\\'completed_with_warnings\\')',[org.organisation_id,yesterday]);
+        const existing=await maybeOne<any>(db,"SELECT id FROM finance_eod_runs WHERE organisation_id=$1 AND business_date=$2 AND status IN('completed','completed_with_warnings')",[org.organisation_id,yesterday]);
         if(!existing)await runEndOfDay(org.organisation_id,yesterday,null);
       }
     }catch(error){console.warn('Automatic School finance EOD failed',error)}
