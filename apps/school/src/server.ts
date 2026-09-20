@@ -1310,9 +1310,105 @@ app.post('/api/academic-years',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'academic_year.created','academic_year',row.id);
   return reply.code(201).send(row);
 });
+async function autoRolloverReleasedReports(client:any,organisationId:string,fromYearId:string,toYearId:string,actorOsUserId:string){
+  const finalTerm=await maybeOne<any>(client,`SELECT * FROM terms
+    WHERE organisation_id=$1 AND academic_year_id=$2 ORDER BY term_no DESC,end_date DESC LIMIT 1`,[organisationId,fromYearId]);
+  if(!finalTerm)return{processed:0,promoted:0,repeated:0,completed:0,unresolved:[{reason:'No term is configured for the previous academic year'}]};
+
+  const rows=(await client.query(`SELECT e.id enrolment_id,e.student_id,e.classroom_id,c.grade_level_id,c.stream,
+      g.level_order,g.code grade_code,g.name grade_name,s.admission_no,s.first_name,s.last_name,
+      rc.id report_id,rc.workflow_status,rc.released_at,rc.promotion_decision
+    FROM enrolments e
+    JOIN students s ON s.id=e.student_id
+    JOIN classrooms c ON c.id=e.classroom_id
+    JOIN grade_levels g ON g.id=c.grade_level_id
+    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=e.student_id AND rc.term_id=$3
+    WHERE e.organisation_id=$1 AND e.academic_year_id=$2 AND e.status='active' AND s.status='active'
+    ORDER BY g.level_order,c.name,s.last_name,s.first_name`,[organisationId,fromYearId,finalTerm.id])).rows;
+
+  let processed=0,promoted=0,repeated=0,completed=0;
+  const unresolved:any[]=[];
+  for(const row of rows){
+    const already=await maybeOne<any>(client,'SELECT id FROM student_promotions WHERE organisation_id=$1 AND student_id=$2 AND to_academic_year_id=$3',
+      [organisationId,row.student_id,toYearId]);
+    if(already){processed++;continue}
+    if(row.workflow_status!=='approved'||!row.released_at||!row.promotion_decision){
+      unresolved.push({studentId:row.student_id,admissionNo:row.admission_no,name:row.first_name+' '+row.last_name,reason:'Final report is not approved, released and assigned a promotion decision'});
+      continue;
+    }
+
+    let outcome=String(row.promotion_decision);
+    let targetClassId:string|null=null;
+    let targetGradeId:string|null=null;
+
+    if(outcome==='promoted'){
+      const nextGrade=await maybeOne<any>(client,`SELECT id FROM grade_levels
+        WHERE organisation_id=$1 AND is_active=true AND level_order>$2 ORDER BY level_order LIMIT 1`,[organisationId,row.level_order]);
+      if(!nextGrade)outcome='completed';
+      else targetGradeId=nextGrade.id;
+    }else if(outcome==='repeated'){
+      targetGradeId=row.grade_level_id;
+    }
+
+    if(outcome!=='completed'){
+      const candidates=(await client.query(`SELECT id,name,stream FROM classrooms
+        WHERE organisation_id=$1 AND academic_year_id=$2 AND grade_level_id=$3 AND is_active=true
+        ORDER BY name`,[organisationId,toYearId,targetGradeId])).rows;
+      const streamMatch=row.stream?candidates.filter((x:any)=>String(x.stream||'').toLowerCase()===String(row.stream||'').toLowerCase()):[];
+      if(streamMatch.length===1)targetClassId=streamMatch[0].id;
+      else if(candidates.length===1)targetClassId=candidates[0].id;
+      else{
+        unresolved.push({studentId:row.student_id,admissionNo:row.admission_no,name:row.first_name+' '+row.last_name,
+          reason:candidates.length?'Multiple destination classes exist; assign the destination in Promotion & Rollover':'Destination class has not been created'});
+        continue;
+      }
+    }
+
+    if(outcome==='completed'){
+      await client.query("UPDATE enrolments SET status='completed' WHERE id=$1",[row.enrolment_id]);
+      await client.query("UPDATE students SET status='graduated',updated_at=now() WHERE id=$1",[row.student_id]);
+      completed++;
+    }else{
+      await client.query("UPDATE enrolments SET status=$1 WHERE id=$2",[outcome==='promoted'?'promoted':'repeated',row.enrolment_id]);
+      await client.query(`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status)
+        VALUES($1,$2,$3,$4,'active')
+        ON CONFLICT(student_id,academic_year_id)
+        DO UPDATE SET classroom_id=EXCLUDED.classroom_id,status='active',enrolled_at=now()`,
+        [organisationId,row.student_id,toYearId,targetClassId]);
+      await assignMandatoryFees(client,organisationId,row.student_id,toYearId,targetClassId!);
+      await client.query("UPDATE students SET status='active',updated_at=now() WHERE id=$1",[row.student_id]);
+      if(outcome==='promoted')promoted++;else repeated++;
+    }
+
+    await client.query(`INSERT INTO student_promotions(
+      organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,processed_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT(student_id,to_academic_year_id)
+    DO UPDATE SET from_classroom_id=EXCLUDED.from_classroom_id,to_classroom_id=EXCLUDED.to_classroom_id,
+      outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,created_at=now()`,[
+      organisationId,row.student_id,fromYearId,toYearId,row.classroom_id,targetClassId,outcome,actorOsUserId
+    ]);
+    processed++;
+  }
+  return{processed,promoted,repeated,completed,unresolved,totalCandidates:rows.length,finalTermId:finalTerm.id};
+}
+
 app.post('/api/academic-years/:id/activate',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  return tx(db,async c=>{await c.query("UPDATE academic_years SET status='closed' WHERE organisation_id=$1 AND status='active' AND id<>$2",[a.core.organisation_id,id]);const row=await one<any>(c,"UPDATE academic_years SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'academic_year.activated','academic_year',id);return row});
+  const a=await authorize(request,db,config,'academic.edit');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const result=await tx(db,async c=>{
+    const target=await one<any>(c,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    const source=await maybeOne<any>(c,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' AND id<>$2 ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id,id]);
+    let rollover:any={processed:0,promoted:0,repeated:0,completed:0,unresolved:[]};
+    if(source&&new Date(target.start_date)>new Date(source.start_date)){
+      rollover=await autoRolloverReleasedReports(c,a.core.organisation_id,source.id,target.id,a.core.id);
+    }
+    await c.query("UPDATE academic_years SET status='closed' WHERE organisation_id=$1 AND status='active' AND id<>$2",[a.core.organisation_id,id]);
+    const row=await one<any>(c,"UPDATE academic_years SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",[id,a.core.organisation_id]);
+    return{...row,rollover};
+  });
+  await audit(a.core.organisation_id,a.core.id,'academic_year.activated','academic_year',id,{rollover:result.rollover});
+  return result;
 });
 
 app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
