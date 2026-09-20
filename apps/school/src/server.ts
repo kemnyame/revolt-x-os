@@ -138,7 +138,7 @@ function coreServiceHeaders(){
 }
 
 const coreUsersCache=new Map<string,{value:any[];expiresAt:number}>();
-const CORE_USERS_CACHE_MS=60_000;
+const CORE_USERS_CACHE_MS=300_000;
 const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
 
 async function fetchCoreUsers(organisationId:string){
@@ -148,9 +148,9 @@ async function fetchCoreUsers(organisationId:string){
   const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
   let lastError='Core OS staff directory is temporarily unavailable';
 
-  for(let attempt=0;attempt<5;attempt++){
+  for(let attempt=0;attempt<3;attempt++){
     try{
-      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(15000)});
+      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(6000)});
       const payload=await res.json().catch(()=>null) as any;
       if(res.ok){
         const value=Array.isArray(payload)?payload:[];
@@ -162,7 +162,7 @@ async function fetchCoreUsers(organisationId:string){
     }catch(error:any){
       lastError=String(error?.message||lastError);
     }
-    if(attempt<4)await new Promise(resolve=>setTimeout(resolve,[800,1500,2500,4000][attempt]||4000));
+    if(attempt<2)await new Promise(resolve=>setTimeout(resolve,[500,1000][attempt]||1000));
   }
 
   if(cached)return cached.value;
@@ -304,6 +304,54 @@ async function reverseFinanceJournal(client:any,organisationId:string,originalId
   return reversal;
 }
 
+async function applyStudentCreditsToFee(client:any,studentFeeId:string,actorOsUserId?:string|null){
+  const fee=await one<any>(client,`SELECT sf.*,f.name fee_name,s.admission_no,s.first_name,s.last_name,
+      (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) balance
+    FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id JOIN students s ON s.id=sf.student_id
+    WHERE sf.id=$1 FOR UPDATE`,[studentFeeId]);
+  let remaining=Math.max(0,Number(fee.balance||0));
+  if(remaining<=0.004)return{applied:0};
+  const credits=(await client.query(`SELECT * FROM student_account_credits
+    WHERE organisation_id=$1 AND student_id=$2 AND status='open' AND balance>0
+    ORDER BY created_at,id FOR UPDATE`,[fee.organisation_id,fee.student_id])).rows;
+  if(!credits.length)return{applied:0};
+  const deposit=await financeAccountByCode(client,fee.organisation_id,'2200');
+  const ar=await financeAccountByCode(client,fee.organisation_id,'1100');
+  let applied=0;
+  for(const credit of credits){
+    if(remaining<=0.004)break;
+    const amount=Math.min(remaining,Number(credit.balance));
+    if(amount<=0)continue;
+    const payment=await one<any>(client,`INSERT INTO payments(
+      organisation_id,student_id,student_fee_id,amount,payment_method,reference,paid_at,received_by_os_user_id,note,source
+    ) VALUES($1,$2,$3,$4,'other',$5,now(),$6,$7,'credit_applied') RETURNING *`,[
+      fee.organisation_id,fee.student_id,fee.id,amount,'CREDIT-'+String(credit.id).slice(0,8).toUpperCase(),actorOsUserId??null,
+      'Applied from student advance / overpayment credit'
+    ]);
+    const application=await one<any>(client,`INSERT INTO student_credit_applications(
+      organisation_id,credit_id,student_fee_id,payment_id,amount,created_by_os_user_id
+    ) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[
+      fee.organisation_id,credit.id,fee.id,payment.id,amount,actorOsUserId??null
+    ]);
+    const journal=await postFinanceJournal(client,{
+      organisationId:fee.organisation_id,entryDate:new Date().toISOString().slice(0,10),
+      description:'Apply student credit - '+fee.first_name+' '+fee.last_name+' ('+fee.admission_no+') - '+fee.fee_name,
+      sourceType:'student_credit_application',sourceId:application.id,reference:payment.reference,actorOsUserId:actorOsUserId??null,
+      lines:[
+        {accountId:deposit.id,debit:amount,description:'Release student deposit / credit'},
+        {accountId:ar.id,credit:amount,description:'Settle '+fee.fee_name+' receivable'}
+      ]
+    });
+    await client.query('UPDATE student_credit_applications SET journal_entry_id=$1 WHERE id=$2',[journal.id,application.id]);
+    const newBalance=Math.max(0,Number(credit.balance)-amount);
+    await client.query("UPDATE student_account_credits SET balance=$1,status=$2,updated_at=now() WHERE id=$3",
+      [newBalance,newBalance<=0.004?'used':'open',credit.id]);
+    remaining-=amount;applied+=amount;
+  }
+  await updateStudentFeeStatus(client,studentFeeId);
+  return{applied};
+}
+
 async function postStudentFeeReceivable(client:any,studentFeeId:string,actorOsUserId?:string|null){
   const sf=await one<any>(client,`SELECT sf.*,s.first_name,s.last_name,s.admission_no,f.name fee_name,f.income_account_id
     FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id
@@ -314,7 +362,7 @@ async function postStudentFeeReceivable(client:any,studentFeeId:string,actorOsUs
   const income=sf.income_account_id
     ?await one<any>(client,"SELECT * FROM finance_accounts WHERE id=$1 AND organisation_id=$2 AND account_type='income' AND is_active=true",[sf.income_account_id,sf.organisation_id])
     :await financeAccountByCode(client,sf.organisation_id,'4000');
-  return postFinanceJournal(client,{
+  const journal=await postFinanceJournal(client,{
     organisationId:sf.organisation_id,entryDate:String(sf.created_at||new Date().toISOString()).slice(0,10),
     description:`School fee receivable - ${sf.first_name} ${sf.last_name} (${sf.admission_no}) - ${sf.fee_name}`,
     sourceType:'student_fee',sourceId:sf.id,actorOsUserId:actorOsUserId??null,
@@ -323,6 +371,8 @@ async function postStudentFeeReceivable(client:any,studentFeeId:string,actorOsUs
       {accountId:income.id,credit:amount,description:sf.fee_name+' income'}
     ]
   });
+  await applyStudentCreditsToFee(client,studentFeeId,actorOsUserId??null);
+  return journal;
 }
 
 async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserId?:string|null){
@@ -996,8 +1046,8 @@ app.get('/api/school/profile',async request=>{
 });
 app.patch('/api/school/profile',async request=>{
   const a=await authorize(request,db,config,'school.manage');
-  const b=z.object({schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),phone:z.string().max(60).nullable().optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
-  const row=await one<any>(db,`UPDATE school_profiles SET school_name=COALESCE($1,school_name),short_name=CASE WHEN $2 THEN $3 ELSE short_name END,motto=CASE WHEN $4 THEN $5 ELSE motto END,phone=CASE WHEN $6 THEN $7 ELSE phone END,email=CASE WHEN $8 THEN $9 ELSE email END,address=CASE WHEN $10 THEN $11 ELSE address END,updated_at=now() WHERE organisation_id=$12 RETURNING *`,[b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,a.core.organisation_id]);
+  const b=z.object({schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),phone:z.string().max(60).nullable().optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),logoUrl:z.string().url().max(2000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const row=await one<any>(db,`UPDATE school_profiles SET school_name=COALESCE($1,school_name),short_name=CASE WHEN $2 THEN $3 ELSE short_name END,motto=CASE WHEN $4 THEN $5 ELSE motto END,phone=CASE WHEN $6 THEN $7 ELSE phone END,email=CASE WHEN $8 THEN $9 ELSE email END,address=CASE WHEN $10 THEN $11 ELSE address END,logo_url=CASE WHEN $12 THEN $13 ELSE logo_url END,updated_at=now() WHERE organisation_id=$14 RETURNING *`,[b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,Object.hasOwn(b,'logoUrl'),b.logoUrl??null,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'school.profile.updated','school_profile',a.core.organisation_id);
   return row;
 });
@@ -3736,7 +3786,15 @@ app.get('/api/parent/students/:id/latest-report',async request=>{
 
 app.get('/api/payments/:id/receipt',async request=>{
   const a=await authorize(request,db,config,'fees.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const payment=await one<any>(db,`SELECT p.*,s.admission_no,s.first_name,s.last_name,f.name fee_name,sp.school_name,sp.phone school_phone,sp.email school_email,sp.address school_address FROM payments p JOIN students s ON s.id=p.student_id LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id JOIN school_profiles sp ON sp.organisation_id=p.organisation_id WHERE p.id=$1 AND p.organisation_id=$2`,[id,a.core.organisation_id]);return payment;
+  const payment=await one<any>(db,`SELECT p.*,s.admission_no,s.first_name,s.middle_name,s.last_name,f.name fee_name,
+      sp.school_name,sp.short_name,sp.motto,sp.phone school_phone,sp.email school_email,sp.address school_address,sp.currency,sp.logo_url,
+      fr.receipt_no finance_receipt_no,fr.reference finance_reference,je.entry_no journal_entry_no
+    FROM payments p JOIN students s ON s.id=p.student_id
+    LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    JOIN school_profiles sp ON sp.organisation_id=p.organisation_id
+    LEFT JOIN finance_student_receipts fr ON fr.id=p.finance_receipt_id
+    LEFT JOIN finance_journal_entries je ON je.id=fr.journal_entry_id
+    WHERE p.id=$1 AND p.organisation_id=$2`,[id,a.core.organisation_id]);return payment;
 });
 
 
@@ -4251,6 +4309,30 @@ app.post('/api/admissions/:id/enrol',async(request,reply)=>{
     relatedType:'admission_application',relatedId:id
   });
   return reply.code(201).send(result);
+});
+
+app.get('/api/approvals/summary',async request=>{
+  const a=await authorize(request,db,config,'approvals.view');
+  const [admissions,leave,reports]=await Promise.all([
+    db.query(`SELECT id,application_no,first_name,last_name,requested_grade_code,status,submitted_at
+      FROM admission_applications WHERE organisation_id=$1 AND status IN('submitted','under_review')
+      ORDER BY submitted_at LIMIT 100`,[a.core.organisation_id]),
+    db.query(`SELECT lr.id,lr.applicant_os_user_id,lr.leave_type,lr.start_date,lr.end_date,lr.reason,lr.status,lr.created_at
+      FROM staff_leave_requests lr WHERE lr.organisation_id=$1 AND lr.status='submitted'
+      ORDER BY lr.created_at LIMIT 100`,[a.core.organisation_id]),
+    db.query(`SELECT rc.student_id,rc.term_id,rc.workflow_status,rc.submitted_at,s.admission_no,s.first_name,s.last_name,t.name term_name,c.name classroom_name
+      FROM report_comments rc JOIN students s ON s.id=rc.student_id JOIN terms t ON t.id=rc.term_id
+      LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id
+      WHERE rc.organisation_id=$1 AND rc.workflow_status='submitted' ORDER BY rc.submitted_at LIMIT 100`,[a.core.organisation_id])
+  ]);
+  const users=await fetchCoreUsers(a.core.organisation_id);
+  const userName=(id:string)=>{const u=users.find((x:any)=>x.id===id);return u?(u.first_name+' '+u.last_name):id};
+  return{
+    admissions:admissions.rows,
+    leave:leave.rows.map((x:any)=>({...x,applicant_name:userName(x.applicant_os_user_id)})),
+    reports:reports.rows,
+    counts:{admissions:admissions.rowCount??0,leave:leave.rowCount??0,reports:reports.rowCount??0,total:(admissions.rowCount??0)+(leave.rowCount??0)+(reports.rowCount??0)}
+  };
 });
 
 app.get('/api/roles/capabilities',async request=>{
