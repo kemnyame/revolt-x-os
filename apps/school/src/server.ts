@@ -6028,7 +6028,24 @@ app.setErrorHandler(async(error:any,request,reply)=>{
 });
 
 let shutting=false;
-async function shutdown(){if(shutting)return;shutting=true;await app.close();await db.end()}
+let communicationRetryTimer:ReturnType<typeof setInterval>|undefined;
+async function runCommunicationRetries(){
+  try{
+    const result=await retryCommunicationOutbox(db,config,config.COMMUNICATION_RETRY_BATCH_SIZE);
+    if(result.attempted||result.sent||result.failed){
+      app.log.info({communicationRetry:result},'Communication retry worker completed');
+    }
+  }catch(error){
+    app.log.error({error},'Communication retry worker failed');
+  }
+}
+async function shutdown(){
+  if(shutting)return;
+  shutting=true;
+  if(communicationRetryTimer)clearInterval(communicationRetryTimer);
+  await app.close();
+  await db.end();
+}
 process.once('SIGTERM',()=>void shutdown().finally(()=>process.exit(0)));
 process.once('SIGINT',()=>void shutdown().finally(()=>process.exit(0)));
 
@@ -6036,3 +6053,6 @@ await provisionDemoTeachers();
 
 await app.listen({host:config.HOST,port:config.PORT});
 console.log(`Revolt-X School listening on ${config.HOST}:${config.PORT}`);
+void runCommunicationRetries();
+communicationRetryTimer=setInterval(()=>void runCommunicationRetries(),config.COMMUNICATION_RETRY_INTERVAL_MS);
+communicationRetryTimer.unref();
