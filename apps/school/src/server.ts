@@ -17,6 +17,13 @@ import { loginFrontend } from './login-ui.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
+import {
+  assertPortalLoginAllowed,
+  clearPortalLoginThrottle,
+  recordPortalLoginFailure,
+  retryCommunicationOutbox,
+  throttleFingerprint
+} from './reliability.js';
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
