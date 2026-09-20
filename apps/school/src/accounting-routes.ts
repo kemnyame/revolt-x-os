@@ -12,10 +12,11 @@ type Deps={
   audit:(organisationId:string,userId:string,action:string,resourceType:string,resourceId?:string|null,metadata?:any)=>Promise<void>;
   postFinanceJournal:(client:any,input:any)=>Promise<any>;
   updateStudentFeeStatus:(client:any,studentFeeId:string)=>Promise<any>;
+  reverseFinanceJournal:(client:any,organisationId:string,originalId:string,actorOsUserId:string,reason:string,sourceType:string,sourceId:string)=>Promise<any>;
 };
 
 export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
-  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus}=d;
+  const {db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,reverseFinanceJournal}=d;
 
   async function assertAccount(client:any,organisationId:string,id:string,type?:string){
     const params:any[]=[id,organisationId];
@@ -39,6 +40,119 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
     const studentCode=String(admissionNo||'STUDENT').replace(/[^A-Za-z0-9]/g,'').toUpperCase();
     return prefix+'-'+studentCode+'-'+String(counter.next_number).padStart(4,'0');
   }
+
+  app.get('/api/accounting/reversals',async request=>{
+    const a=await authorize(request,db,config,'finance.reverse');
+    const q=z.object({limit:z.coerce.number().int().min(1).max(250).default(100)}).parse(request.query);
+    const receipts=(await db.query(`
+      SELECT r.id,r.receipt_no,r.reference,r.amount,r.paid_at,r.status,r.reversed_at,r.reversal_reason,
+             s.admission_no,s.first_name,s.last_name,pm.label payment_method_label,je.entry_no,
+             CASE WHEN EXISTS(
+               SELECT 1 FROM student_account_credits c
+               WHERE c.source_receipt_id=r.id AND c.balance<c.original_amount
+             ) THEN true ELSE false END credit_already_used
+      FROM finance_student_receipts r
+      JOIN students s ON s.id=r.student_id
+      JOIN finance_payment_methods pm ON pm.id=r.payment_method_id
+      LEFT JOIN finance_journal_entries je ON je.id=r.journal_entry_id
+      WHERE r.organisation_id=$1
+      ORDER BY r.paid_at DESC,r.created_at DESC
+      LIMIT $2
+    `,[a.core.organisation_id,q.limit])).rows;
+    const expenses=(await db.query(`
+      SELECT e.id,e.expense_no,e.expense_date,e.amount,e.tax_amount,e.description,e.reference,e.status,
+             v.name vendor_name,je.entry_no,je.reversed_at
+      FROM finance_expenses e
+      LEFT JOIN finance_vendors v ON v.id=e.vendor_id
+      LEFT JOIN finance_journal_entries je ON je.id=e.journal_entry_id
+      WHERE e.organisation_id=$1
+      ORDER BY e.expense_date DESC,e.created_at DESC
+      LIMIT $2
+    `,[a.core.organisation_id,q.limit])).rows;
+    const payments=(await db.query(`
+      SELECT p.id,p.amount,p.payment_method,p.reference,p.paid_at,p.voided_at,p.void_reason,
+             s.admission_no,s.first_name,s.last_name,f.name fee_name
+      FROM payments p
+      JOIN students s ON s.id=p.student_id
+      LEFT JOIN student_fees sf ON sf.id=p.student_fee_id
+      LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+      WHERE p.organisation_id=$1 AND p.finance_receipt_id IS NULL
+      ORDER BY p.paid_at DESC,p.created_at DESC
+      LIMIT $2
+    `,[a.core.organisation_id,q.limit])).rows;
+    const history=(await db.query(`
+      SELECT je.id,je.entry_no,je.entry_date,je.description,je.reference,je.source_type,je.reversed_at,
+             rev.entry_no reversal_entry_no
+      FROM finance_journal_entries je
+      LEFT JOIN finance_journal_entries rev ON rev.id=je.reversal_entry_id
+      WHERE je.organisation_id=$1 AND je.reversed_at IS NOT NULL
+      ORDER BY je.reversed_at DESC
+      LIMIT $2
+    `,[a.core.organisation_id,q.limit])).rows;
+    return{receipts,expenses,payments,history};
+  });
+
+  app.post('/api/accounting/receipts/:id/reverse',async request=>{
+    const a=await authorize(request,db,config,'finance.reverse');
+    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const b=z.object({reason:z.string().trim().min(3).max(1200)}).parse(request.body);
+    const result=await tx(db,async(client:any)=>{
+      const receipt=await one<any>(client,`
+        SELECT * FROM finance_student_receipts
+        WHERE id=$1 AND organisation_id=$2 FOR UPDATE
+      `,[id,a.core.organisation_id]);
+      if(receipt.status==='voided')throw fail(409,'This receipt has already been reversed');
+
+      const credits=(await client.query(`
+        SELECT * FROM student_account_credits
+        WHERE source_receipt_id=$1 FOR UPDATE
+      `,[id])).rows;
+      const usedCredit=credits.find((x:any)=>Number(x.balance)+0.005<Number(x.original_amount));
+      if(usedCredit)throw fail(409,'This receipt cannot be reversed because part of its advance credit has already been applied to a later fee');
+
+      const payments=(await client.query(`
+        SELECT * FROM payments
+        WHERE finance_receipt_id=$1 AND voided_at IS NULL
+        FOR UPDATE
+      `,[id])).rows;
+      const feeIds=[...new Set(payments.map((x:any)=>x.student_fee_id).filter(Boolean))] as string[];
+
+      await client.query(`
+        UPDATE payments
+        SET voided_at=now(),voided_by_os_user_id=$1,void_reason=$2
+        WHERE finance_receipt_id=$3 AND voided_at IS NULL
+      `,[a.core.id,b.reason,id]);
+
+      for(const feeId of feeIds)await updateStudentFeeStatus(client,feeId);
+
+      if(credits.length){
+        await client.query(`
+          UPDATE student_account_credits
+          SET balance=0,status='voided',updated_at=now()
+          WHERE source_receipt_id=$1
+        `,[id]);
+      }
+
+      let reversal:any=null;
+      if(receipt.journal_entry_id){
+        reversal=await reverseFinanceJournal(
+          client,a.core.organisation_id,receipt.journal_entry_id,a.core.id,b.reason,'student_receipt_reversal',receipt.id
+        );
+      }
+
+      const updated=await one<any>(client,`
+        UPDATE finance_student_receipts
+        SET status='voided',reversed_at=now(),reversed_by_os_user_id=$1,reversal_reason=$2,reversal_entry_id=$3
+        WHERE id=$4 RETURNING *
+      `,[a.core.id,b.reason,reversal?.id??null,id]);
+
+      return{receipt:updated,reversal,voidedPayments:payments.length};
+    });
+    await audit(a.core.organisation_id,a.core.id,'finance.student_receipt.reversed','finance_student_receipt',id,{
+      reason:b.reason,voidedPayments:result.voidedPayments,reversalEntryId:result.reversal?.id??null
+    });
+    return result;
+  });
 
   app.get('/api/accounting/payment-methods',async request=>{
     const a=await authorize(request,db,config,'finance.view');
