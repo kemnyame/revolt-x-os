@@ -4368,23 +4368,21 @@ app.post('/api/promotions/batch',async request=>{
 });
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
 
-app.post('/api/guardians/:id/portal-reset',async request=>{
-  const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const guardian=await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!guardian)throw fail(404,'Guardian not found');
-  const pin=String(randomInt(100000,1000000));
-  await db.query(`INSERT INTO guardian_portal_access(guardian_id,pin_hash,is_active) VALUES($1,$2,true) ON CONFLICT(guardian_id) DO UPDATE SET pin_hash=EXCLUDED.pin_hash,is_active=true,updated_at=now()`,[id,hashPortalPin(pin)]);
-  await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[id]);
-  await audit(a.core.organisation_id,a.core.id,'guardian.portal_pin_reset','guardian',id);
-  return{guardianId:id,pin};
-});
-
 app.post('/api/parent/login',async request=>{
-  const b=z.object({phone:z.string().min(5).max(60),admissionNo:z.string().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
-  const row=await maybeOne<any>(db,`SELECT g.*,gpa.pin_hash,gpa.is_active FROM guardians g JOIN guardian_portal_access gpa ON gpa.guardian_id=g.id JOIN student_guardians sg ON sg.guardian_id=g.id JOIN students s ON s.id=sg.student_id WHERE g.phone=$1 AND s.admission_no=$2 LIMIT 1`,[b.phone,b.admissionNo]);
-  if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash))throw fail(401,'Invalid parent portal credentials');
+  const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
+  const row=await maybeOne<any>(db,`
+    SELECT g.*
+    FROM guardians g
+    JOIN student_guardians sg ON sg.guardian_id=g.id
+    JOIN students s ON s.id=sg.student_id
+    WHERE g.organisation_id=s.organisation_id
+      AND regexp_replace(g.phone,'\\D','','g')=regexp_replace($1,'\\D','','g')
+      AND lower(s.admission_no)=lower($2)
+    LIMIT 1`,[b.phone,b.admissionNo]);
+  if(!row)throw fail(401,'Phone number and student admission number do not match a linked guardian');
   const token=randomBytes(48).toString('base64url');
+  await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
-  await db.query('UPDATE guardian_portal_access SET last_login_at=now() WHERE guardian_id=$1',[row.id]);
   return{token,expiresIn:28800};
 });
 app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request);await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE id=$1',[g.session_id]);return{ok:true}});
@@ -5874,9 +5872,9 @@ app.get('/api/system/diagnostics',async request=>{
   add('reports','Report approval workflow',Number(reportWorkflow.invalid_approved)===0,reportWorkflow);
 
   const portal=await one<any>(db,`SELECT
-    (SELECT count(*) FROM guardian_portal_access gpa JOIN guardians g ON g.id=gpa.guardian_id WHERE g.organisation_id=$1 AND gpa.is_active=true)::int guardian_access,
+    (SELECT count(*) FROM student_guardians sg JOIN guardians g ON g.id=sg.guardian_id WHERE g.organisation_id=$1)::int guardian_links,
     (SELECT count(*) FROM student_portal_access spa JOIN students s ON s.id=spa.student_id WHERE s.organisation_id=$1 AND spa.is_active=true)::int student_access`,[org]);
-  add('portals','Portal access provisioned',Number(portal.guardian_access)>0&&Number(portal.student_access)>0,portal,'warning');
+  add('portals','Portal access provisioned',Number(portal.guardian_links)>0&&Number(portal.student_access)>0,portal,'warning');
 
   const providers=providerStatus(config);
   add('email_provider','Email provider',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
