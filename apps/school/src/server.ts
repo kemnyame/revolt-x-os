@@ -2117,51 +2117,47 @@ app.get('/api/report-cards/:studentId',async request=>{
   const term=await one<any>(db,`SELECT t.*,y.name academic_year,y.start_date academic_year_start,y.end_date academic_year_end
     FROM terms t JOIN academic_years y ON y.id=t.academic_year_id
     WHERE t.id=$1 AND t.organisation_id=$2`,[q.termId,a.core.organisation_id]);
-  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,g.name grade_name,g.code grade_code,
-      e.academic_year_id,y.name academic_year
-    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id
-    WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,c.grade_level_id,
+      g.name grade_name,g.code grade_code,g.level_order,e.academic_year_id,y.name academic_year
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+    JOIN academic_years y ON y.id=e.academic_year_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2
+    ORDER BY e.enrolled_at DESC LIMIT 1`,[studentId,term.academic_year_id]);
   const comments=await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]);
+
   if(current?.classroom_id){
     const returnedToMe=comments?.workflow_status==='returned'&&comments?.submitted_by_os_user_id===a.core.id;
     if(!returnedToMe)await ensureTeacherScope(a,current.classroom_id,null);
     current.class_teacher_os_user_id=await effectiveClassTeacher(a.core.organisation_id,current.classroom_id,q.termId);
   }
-  let subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
+
+  const subjects=await calculateStudentTermResults(a.core.organisation_id,studentId,q.termId);
+  const readiness=await reportAssessmentReadiness(a.core.organisation_id,studentId,q.termId,current?.classroom_id??null);
+  const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,q.termId,current?.classroom_id??null,subjects);
   const coreUsers=await fetchCoreUsers(a.core.organisation_id);
   const userLabel=(id:string|null|undefined)=>{
     const u=id?coreUsers.find((x:any)=>x.id===id):null;
     return u?(u.first_name+' '+u.last_name).trim():'Not assigned';
   };
-  if(current?.classroom_id&&subjects.length){
-    const subjectIds=subjects.map((x:any)=>x.subject_id);
-    const teacherRows=(await db.query(`
-      SELECT DISTINCT ON (ta.subject_id) ta.subject_id,ta.teacher_os_user_id,ta.term_id
-      FROM teacher_assignments ta
-      WHERE ta.organisation_id=$1 AND ta.classroom_id=$2 AND ta.subject_id=ANY($3::uuid[]) AND ta.is_active=true
-        AND (ta.term_id=$4 OR ta.term_id IS NULL)
-      ORDER BY ta.subject_id,(ta.term_id=$4) DESC,ta.created_at DESC`,
-      [a.core.organisation_id,current.classroom_id,subjectIds,q.termId])).rows;
-    subjects=subjects.map((s:any)=>{
-      const ta=teacherRows.find((x:any)=>x.subject_id===s.subject_id);
-      const teacherId=ta?.teacher_os_user_id??current.class_teacher_os_user_id??null;
-      return{...s,subject_teacher_os_user_id:teacherId,subject_teacher_name:userLabel(teacherId)};
-    });
-  }
   const classTeacherName=userLabel(current?.class_teacher_os_user_id);
-  let overallAverage=subjects.length?Math.round((subjects.filter((s:any)=>s.percentage!=null).reduce((sum:number,s:any)=>sum+Number(s.percentage||0),0)/Math.max(1,subjects.filter((s:any)=>s.percentage!=null).length))*100)/100:null;
+
+  let overallAverage=promotion.overallAverage;
   let classPosition:number|null=null,classSize:number|null=null;
-  if(current?.classroom_id){
+  if(current?.classroom_id&&readiness.complete){
     const rank=await calculateClassRank(a.core.organisation_id,current.classroom_id,q.termId,studentId);
     if(rank){overallAverage=Number(rank.average);classPosition=rank.position;classSize=rank.class_size}
   }
+
   const attendanceRows=(await db.query(`SELECT status,count(*)::int count FROM attendance_records ar
     WHERE ar.organisation_id=$1 AND ar.student_id=$2 AND ar.attendance_date BETWEEN $3::date AND $4::date
     GROUP BY status`,[a.core.organisation_id,studentId,term.start_date,term.end_date])).rows;
   const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
-  for(const r of attendanceRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
+  for(const row of attendanceRows){attendance[row.status]=Number(row.count);attendance.total+=Number(row.count)}
   attendance.rate=attendance.total?Math.round(((attendance.present+attendance.late)/attendance.total)*1000)/10:0;
-  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
+
+  const school=await one<any>(db,`SELECT school_name,short_name,motto,phone,email,address,currency,logo_url,logo_image_data,
+      promotion_threshold_percent FROM school_profiles WHERE organisation_id=$1`,[a.core.organisation_id]);
+  const chosenDecision=comments?.promotion_decision??promotion.suggestedDecision??null;
   return{
     school,
     student:{...student,...(current||{})},
@@ -2169,12 +2165,19 @@ app.get('/api/report-cards/:studentId',async request=>{
     termId:q.termId,
     subjects,
     performance:{overallAverage,classPosition,classSize},
+    assessmentReadiness:readiness,
+    promotion:{
+      ...promotion,
+      decision:chosenDecision,
+      basis:comments?.promotion_basis??(chosenDecision?'threshold':null),
+      releasedAt:comments?.released_at??null
+    },
     attendance,
     comments,
     reportResponsibility:{
       classTeacherOsUserId:current?.class_teacher_os_user_id??null,
       classTeacherName,
-      rule:'Subject Teachers enter and own the scores for their assigned subjects. The Class Teacher compiles the complete report, writes the overall Class Teacher remark, and submits it for approval.'
+      rule:'Subject teachers submit scores. The Class Teacher is alerted to missing scores, completes the report and submits it for approval. An approved report is released to families only from the Class Teacher report pool.'
     },
     generatedAt:new Date().toISOString()
   };
