@@ -4375,6 +4375,12 @@ app.get('/api/promotions',async request=>{const a=await authorize(request,db,con
 
 app.post('/api/parent/login',async request=>{
   const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
+  const normalizedPhone=b.phone.replace(/\\D/g,'');
+  const identityKey=throttleFingerprint(normalizedPhone+'|'+b.admissionNo.toLowerCase());
+  const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
+  await assertPortalLoginAllowed(db,'parent_identity',identityKey);
+  await assertPortalLoginAllowed(db,'parent_ip',ipKey);
+
   const row=await maybeOne<any>(db,`
     SELECT g.*
     FROM guardians g
@@ -4384,7 +4390,20 @@ app.post('/api/parent/login',async request=>{
       AND regexp_replace(g.phone,'\\D','','g')=regexp_replace($1,'\\D','','g')
       AND lower(s.admission_no)=lower($2)
     LIMIT 1`,[b.phone,b.admissionNo]);
-  if(!row)throw fail(401,'Phone number and student admission number do not match a linked guardian');
+
+  if(!row){
+    await Promise.all([
+      recordPortalLoginFailure(db,'parent_identity',identityKey,config.PARENT_LOGIN_FAILURE_LIMIT,config.PARENT_LOGIN_BLOCK_MINUTES),
+      recordPortalLoginFailure(db,'parent_ip',ipKey,config.PARENT_LOGIN_FAILURE_LIMIT*3,config.PARENT_LOGIN_BLOCK_MINUTES)
+    ]);
+    throw fail(401,'Invalid parent portal credentials');
+  }
+
+  await Promise.all([
+    clearPortalLoginThrottle(db,'parent_identity',identityKey),
+    clearPortalLoginThrottle(db,'parent_ip',ipKey)
+  ]);
+
   const token=randomBytes(48).toString('base64url');
   await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
