@@ -6067,8 +6067,28 @@ app.get('/api/system/diagnostics',async request=>{
     (SELECT count(*) FROM student_portal_access spa JOIN students s ON s.id=spa.student_id WHERE s.organisation_id=$1 AND spa.is_active=true)::int student_access`,[org]);
   add('portals','Portal access provisioned',Number(portal.guardian_links)>0&&Number(portal.student_access)>0,portal,'warning');
 
+  const communicationQueue=await one<any>(db,`SELECT
+    count(*) FILTER(WHERE status='queued')::int queued,
+    count(*) FILTER(WHERE status='pending_configuration')::int pending_configuration,
+    count(*) FILTER(WHERE status='failed')::int failed,
+    count(*) FILTER(WHERE status='sending' AND COALESCE(last_attempt_at,created_at)<now()-interval '10 minutes')::int stuck_sending,
+    count(*) FILTER(WHERE status='sent')::int sent
+    FROM communication_outbox WHERE organisation_id=$1`,[org]);
+  add('communication_queue','Notification delivery queue',
+    Number(communicationQueue.failed)===0&&Number(communicationQueue.stuck_sending)===0,
+    communicationQueue,
+    'warning');
+
   const providers=providerStatus(config);
-  add('email_provider','Email provider',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
+  add('email_provider','Email provider configuration',providers.email.configured,providers.email,providers.email.configured?'info':'warning');
+  if(providers.email.provider==='brevo'&&providers.email.configured){
+    try{
+      const verification=await validateBrevoConnection(config);
+      add('email_provider_auth','Brevo authentication and sender',Boolean(verification.authenticated&&verification.senderReady),verification,'warning');
+    }catch(error:any){
+      add('email_provider_auth','Brevo authentication and sender',false,{error:String(error?.message||error)},'warning');
+    }
+  }
   add('sms_provider','SMS provider',providers.sms.configured,providers.sms,providers.sms.configured?'info':'warning');
   add('whatsapp_provider','WhatsApp provider',providers.whatsapp.configured,providers.whatsapp,providers.whatsapp.configured?'info':'warning');
   add('payments_provider','Online payment provider',providers.payments.configured,providers.payments,providers.payments.configured?'info':'warning');
