@@ -28,6 +28,7 @@ await migrateSchool(db);
 new Script(schoolAppScript,{filename:'school-app.js'});
 
 const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
+app.log.info({emailProvider:config.EMAIL_PROVIDER,brevoApiKeyPresent:Boolean(config.BREVO_API_KEY),brevoFromEmailPresent:Boolean(config.BREVO_FROM_EMAIL),brevoFromNamePresent:Boolean(config.BREVO_FROM_NAME)},'Email provider startup status');
 if(config.BREVO_API_KEY){void validateBrevoConnection(config).then(result=>app.log.info({provider:'brevo',authenticated:result.authenticated,senderReady:result.senderReady,senderSource:result.senderSource},'Brevo connection verified')).catch(error=>app.log.warn({provider:'brevo',error:String(error?.message||error)},'Brevo connection verification failed'));}
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{origin:config.CORS_ORIGINS==='*'?true:config.CORS_ORIGINS.split(',').map(x=>x.trim()),credentials:true});
