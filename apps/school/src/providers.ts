@@ -2,13 +2,26 @@ import type { SchoolConfig } from './config.js';
 
 export type MessageChannel='email'|'sms'|'whatsapp';
 
+function selectedEmailProvider(config:SchoolConfig){
+  if(config.EMAIL_PROVIDER==='brevo')return'brevo' as const;
+  if(config.EMAIL_PROVIDER==='resend')return'resend' as const;
+  if(config.BREVO_API_KEY&&config.BREVO_FROM_EMAIL)return'brevo' as const;
+  if(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL)return'resend' as const;
+  return'brevo' as const;
+}
+
 export function providerStatus(config:SchoolConfig){
   const twilioAuth=Boolean(config.TWILIO_ACCOUNT_SID&&((config.TWILIO_API_KEY_SID&&config.TWILIO_API_KEY_SECRET)||config.TWILIO_AUTH_TOKEN));
+  const emailProvider=selectedEmailProvider(config);
+  const emailConfigured=emailProvider==='brevo'
+    ?Boolean(config.BREVO_API_KEY&&config.BREVO_FROM_EMAIL)
+    :Boolean(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL);
   return{
     email:{
-      provider:'resend',
-      configured:Boolean(config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL),
-      mode:config.RESEND_FROM_EMAIL&&/(@|<)[^>]*resend\.dev>?$/i.test(config.RESEND_FROM_EMAIL)?'testing':'production'
+      provider:emailProvider,
+      configured:emailConfigured,
+      sender:emailProvider==='brevo'?config.BREVO_FROM_EMAIL:config.RESEND_FROM_EMAIL,
+      mode:emailProvider==='resend'&&config.RESEND_FROM_EMAIL&&/(@|<)[^>]*resend\.dev>?$/i.test(config.RESEND_FROM_EMAIL)?'testing':'production'
     },
     sms:{
       provider:'twilio',
@@ -79,15 +92,46 @@ export async function sendMessage(config:SchoolConfig,input:{
   body:string;
 }){
   if(input.channel==='email'){
-    if(!config.RESEND_API_KEY||!config.RESEND_FROM_EMAIL)throw new Error('Email provider is not configured');
+    const provider=selectedEmailProvider(config);
+    const subject=input.subject||'Revolt-X School notification';
+    const htmlContent='<div style="font-family:Arial,sans-serif;line-height:1.6;color:#172027">'+
+      '<h2 style="margin:0 0 14px">Revolt-X School</h2>'+
+      (input.recipientName?'<p>Hello '+htmlEscape(input.recipientName)+',</p>':'')+
+      '<div style="white-space:pre-wrap">'+htmlEscape(input.body).replace(/\n/g,'<br>')+'</div>'+
+      '<p style="margin-top:24px;color:#667780;font-size:12px">This is an automated notification from Revolt-X School.</p></div>';
+
+    if(provider==='brevo'){
+      if(!config.BREVO_API_KEY||!config.BREVO_FROM_EMAIL)throw new Error('Brevo email provider is not configured');
+      const res=await fetch('https://api.brevo.com/v3/smtp/email',{
+        method:'POST',
+        headers:{
+          accept:'application/json',
+          'api-key':config.BREVO_API_KEY,
+          'content-type':'application/json'
+        },
+        body:JSON.stringify({
+          sender:{name:config.BREVO_FROM_NAME||'Revolt-X School',email:config.BREVO_FROM_EMAIL},
+          to:[{email:input.to,name:input.recipientName||undefined}],
+          subject,
+          htmlContent,
+          tags:['revolt-x-school']
+        }),
+        signal:AbortSignal.timeout(15000)
+      });
+      const data=await res.json().catch(()=>({})) as any;
+      if(!res.ok)throw new Error(data?.message||data?.error?.message||'Brevo email request failed');
+      return{provider:'brevo',messageId:String(data.messageId||data.messageIds?.[0]||''),providerStatus:'sent'};
+    }
+
+    if(!config.RESEND_API_KEY||!config.RESEND_FROM_EMAIL)throw new Error('Resend email provider is not configured');
     const res=await fetch('https://api.resend.com/emails',{
       method:'POST',
       headers:{authorization:'Bearer '+config.RESEND_API_KEY,'content-type':'application/json'},
       body:JSON.stringify({
         from:config.RESEND_FROM_EMAIL,
         to:[input.to],
-        subject:input.subject||'Revolt-X School notification',
-        html:'<div style="font-family:Arial,sans-serif;white-space:pre-wrap">'+htmlEscape(input.body).replace(/\n/g,'<br>')+'</div>'
+        subject,
+        html:htmlContent
       }),
       signal:AbortSignal.timeout(15000)
     });
