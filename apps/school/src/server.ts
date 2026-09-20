@@ -1286,6 +1286,15 @@ app.patch('/api/me/profile',async request=>{
   return{ok:true};
 });
 
+app.patch('/api/school/promotion-settings',async request=>{
+  const a=await authorize(request,db,config,'school.manage');
+  const b=z.object({thresholdPercent:z.number().min(0).max(100)}).parse(request.body);
+  const row=await one<any>(db,`UPDATE school_profiles SET promotion_threshold_percent=$1,updated_at=now()
+    WHERE organisation_id=$2 RETURNING promotion_threshold_percent`,[b.thresholdPercent,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'school.promotion_threshold.updated','school_profile',a.core.organisation_id,{thresholdPercent:b.thresholdPercent});
+  return row;
+});
+
 app.get('/api/dashboard',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const y=await activeYear(a.core.organisation_id),t=await activeTerm(a.core.organisation_id);
