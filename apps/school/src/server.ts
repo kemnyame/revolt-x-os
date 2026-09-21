@@ -5717,7 +5717,7 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
 app.post('/api/communications/retry-pending',async request=>{
   const a=await authorize(request,db,config,'communications.send');
   const b=z.object({limit:z.number().int().min(1).max(100).default(100)}).parse(request.body??{});
-  const result=await retryCommunicationOutbox(db,config,b.limit);
+  const result=await retryCommunicationOutbox(db,config,b.limit,a.core.organisation_id);
   await audit(a.core.organisation_id,a.core.id,'communications.bulk_retry','communication_outbox',null,result);
   return result;
 });
