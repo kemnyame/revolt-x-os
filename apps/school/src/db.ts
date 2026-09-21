@@ -5,9 +5,20 @@ import type { SchoolConfig } from './config.js';
 
 export type SchoolDb = pg.Pool | pg.PoolClient;
 
+function normalizeDatabaseUrl(value:string){
+  try{
+    const url=new URL(value);
+    const mode=url.searchParams.get('sslmode');
+    if(mode==='prefer'||mode==='require'||mode==='verify-ca')url.searchParams.set('sslmode','verify-full');
+    return url.toString();
+  }catch{
+    return value;
+  }
+}
+
 export function createSchoolDb(config: SchoolConfig) {
   return new pg.Pool({
-    connectionString: config.SCHOOL_DATABASE_URL,
+    connectionString: normalizeDatabaseUrl(config.SCHOOL_DATABASE_URL),
     max: config.DB_POOL_MAX,
     application_name: 'revolt-x-school'
   });
