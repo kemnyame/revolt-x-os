@@ -316,7 +316,7 @@ async function page(p){
        admissionNo:v.admissionNo,firstName:v.firstName,middleName:v.middleName||undefined,lastName:v.lastName,
        sex:v.sex||undefined,dateOfBirth:v.dateOfBirth||undefined,admissionDate:v.admissionDate||undefined,notes:v.notes||undefined,
        guardianFirstName:v.guardianFirstName,guardianLastName:v.guardianLastName,guardianPhone:v.guardianPhone,
-       guardianEmail:v.guardianEmail,guardianRelationship:v.guardianRelationship
+       guardianEmail:v.guardianEmail||undefined,guardianRelationship:v.guardianRelationship
      })});
      var cls=studentClasses.find(function(c){return c.id===v.classroomId});
      await raw('/api/enrolments',{method:'POST',body:JSON.stringify({studentId:created.student.id,academicYearId:cls.academic_year_id,classroomId:v.classroomId})});
