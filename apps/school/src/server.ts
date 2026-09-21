@@ -1353,21 +1353,141 @@ app.post('/api/academic-years',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'academic_year.created','academic_year',row.id);
   return reply.code(201).send(row);
 });
+async function academicYearPromotionEvidence(queryDb:any,organisationId:string,academicYearId:string,classroomId?:string|null){
+  const terms=(await queryDb.query(`SELECT id,term_no,name,start_date,end_date
+    FROM terms WHERE organisation_id=$1 AND academic_year_id=$2
+    ORDER BY term_no,start_date`,[organisationId,academicYearId])).rows;
+  const thresholdRow=await one<any>(queryDb,'SELECT COALESCE(promotion_threshold_percent,50)::numeric threshold FROM school_profiles WHERE organisation_id=$1',[organisationId]);
+  const threshold=Number(thresholdRow.threshold||50);
+  if(!terms.length)return{terms,threshold,byStudent:new Map<string,any>()};
+
+  const rows=(await queryDb.query(`
+    WITH year_terms AS (
+      SELECT id term_id,term_no,name term_name
+      FROM terms
+      WHERE organisation_id=$1 AND academic_year_id=$2
+    ),
+    source_students AS (
+      SELECT e.student_id,e.classroom_id
+      FROM enrolments e
+      JOIN students s ON s.id=e.student_id
+      WHERE e.organisation_id=$1 AND e.academic_year_id=$2
+        AND e.status='active' AND s.status='active'
+        AND ($3::uuid IS NULL OR e.classroom_id=$3)
+    ),
+    category_scores AS (
+      SELECT ss.student_id,yt.term_id,yt.term_no,yt.term_name,cs.subject_id,
+        COALESCE(ac.id,a.id) category_id,
+        COALESCE(ac.code,upper(a.assessment_type)) category_code,
+        COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
+        ROUND(AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END)::numeric,2) category_average,
+        COUNT(a.id)::int assessment_count,
+        COUNT(sc.score)::int scored_count
+      FROM source_students ss
+      CROSS JOIN year_terms yt
+      JOIN class_subjects cs ON cs.organisation_id=$1
+        AND cs.classroom_id=ss.classroom_id
+        AND cs.academic_year_id=$2
+        AND cs.is_active=true
+      LEFT JOIN assessments a ON a.organisation_id=$1
+        AND a.classroom_id=ss.classroom_id
+        AND a.subject_id=cs.subject_id
+        AND a.term_id=yt.term_id
+      LEFT JOIN assessment_categories ac ON ac.id=a.category_id
+      LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=ss.student_id
+      GROUP BY ss.student_id,yt.term_id,yt.term_no,yt.term_name,cs.subject_id,
+        COALESCE(ac.id,a.id),COALESCE(ac.code,upper(a.assessment_type)),
+        COALESCE(ac.weight_percent,a.weight,0)
+    ),
+    subject_scores AS (
+      SELECT student_id,term_id,term_no,term_name,subject_id,
+        COALESCE(SUM(assessment_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_assessment_count,
+        COALESCE(SUM(scored_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_scored_count,
+        COALESCE(SUM(assessment_count) FILTER(WHERE category_code='EXAM'),0)::int exam_count,
+        COALESCE(SUM(scored_count) FILTER(WHERE category_code='EXAM'),0)::int exam_scored_count,
+        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)>0
+          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
+            / SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
+          ELSE NULL END class_assessment_raw,
+        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)>0
+          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
+            / SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
+          ELSE NULL END exam_raw
+      FROM category_scores
+      GROUP BY student_id,term_id,term_no,term_name,subject_id
+    ),
+    subject_totals AS (
+      SELECT *,
+        (class_assessment_count>0 AND exam_count>0
+          AND class_scored_count=class_assessment_count
+          AND exam_scored_count=exam_count
+          AND class_assessment_raw IS NOT NULL
+          AND exam_raw IS NOT NULL) subject_complete,
+        ROUND((class_assessment_raw*0.30+exam_raw*0.70)::numeric,2) total
+      FROM subject_scores
+    ),
+    term_summary AS (
+      SELECT student_id,term_id,term_no,term_name,
+        COUNT(*)::int subject_count,
+        COUNT(*) FILTER(WHERE subject_complete)::int complete_subjects,
+        ROUND(AVG(total) FILTER(WHERE subject_complete)::numeric,2) term_average
+      FROM subject_totals
+      GROUP BY student_id,term_id,term_no,term_name
+    ),
+    term_evidence AS (
+      SELECT ts.*,
+        (ts.subject_count>0 AND ts.complete_subjects=ts.subject_count) academic_complete,
+        (rc.workflow_status='approved' AND rc.released_at IS NOT NULL) report_released
+      FROM term_summary ts
+      LEFT JOIN report_comments rc ON rc.organisation_id=$1
+        AND rc.student_id=ts.student_id AND rc.term_id=ts.term_id
+    )
+    SELECT student_id,
+      COUNT(*)::int configured_terms,
+      COUNT(*) FILTER(WHERE academic_complete)::int complete_terms,
+      COUNT(*) FILTER(WHERE academic_complete AND report_released)::int ready_terms,
+      ROUND(AVG(term_average) FILTER(WHERE academic_complete)::numeric,2) academic_average,
+      jsonb_agg(jsonb_build_object(
+        'termId',term_id,'termNo',term_no,'termName',term_name,
+        'average',term_average,'academicComplete',academic_complete,
+        'reportReleased',report_released,'subjectCount',subject_count,
+        'completeSubjects',complete_subjects
+      ) ORDER BY term_no) term_averages
+    FROM term_evidence
+    GROUP BY student_id
+  `,[organisationId,academicYearId,classroomId??null])).rows;
+
+  const byStudent=new Map<string,any>();
+  for(const row of rows){
+    const configuredTerms=Number(row.configured_terms||0);
+    const completeTerms=Number(row.complete_terms||0);
+    const readyTerms=Number(row.ready_terms||0);
+    const annualAverage=row.academic_average==null?null:Number(row.academic_average);
+    const ready=configuredTerms===3&&completeTerms===3&&readyTerms===3&&annualAverage!=null;
+    let reason:string|null=null;
+    if(configuredTerms<3)reason='All three terms must be configured before promotion';
+    else if(completeTerms<3)reason='All three terms must have complete assessment results';
+    else if(readyTerms<3)reason='All three term reports must be approved and released';
+    byStudent.set(row.student_id,{
+      configuredTerms,completeTerms,readyTerms,annualAverage,
+      termAverages:row.term_averages||[],ready,reason,threshold
+    });
+  }
+  return{terms,threshold,byStudent};
+}
+
 async function autoRolloverReleasedReports(client:any,organisationId:string,fromYearId:string,toYearId:string,actorOsUserId:string){
-  const finalTerm=await maybeOne<any>(client,`SELECT * FROM terms
-    WHERE organisation_id=$1 AND academic_year_id=$2 ORDER BY term_no DESC,end_date DESC LIMIT 1`,[organisationId,fromYearId]);
-  if(!finalTerm)return{processed:0,promoted:0,repeated:0,completed:0,unresolved:[{reason:'No term is configured for the previous academic year'}]};
+  const evidence=await academicYearPromotionEvidence(client,organisationId,fromYearId,null);
+  if(evidence.terms.length<3)return{processed:0,promoted:0,repeated:0,completed:0,unresolved:[{reason:'All three terms must be configured before academic-year rollover'}]};
 
   const rows=(await client.query(`SELECT e.id enrolment_id,e.student_id,e.classroom_id,c.grade_level_id,c.stream,
-      g.level_order,g.code grade_code,g.name grade_name,s.admission_no,s.first_name,s.last_name,
-      rc.id report_id,rc.workflow_status,rc.released_at,rc.promotion_decision
+      g.level_order,g.code grade_code,g.name grade_name,s.admission_no,s.first_name,s.last_name
     FROM enrolments e
     JOIN students s ON s.id=e.student_id
     JOIN classrooms c ON c.id=e.classroom_id
     JOIN grade_levels g ON g.id=c.grade_level_id
-    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=e.student_id AND rc.term_id=$3
     WHERE e.organisation_id=$1 AND e.academic_year_id=$2 AND e.status='active' AND s.status='active'
-    ORDER BY g.level_order,c.name,s.last_name,s.first_name`,[organisationId,fromYearId,finalTerm.id])).rows;
+    ORDER BY g.level_order,c.name,s.last_name,s.first_name`,[organisationId,fromYearId])).rows;
 
   let processed=0,promoted=0,repeated=0,completed=0;
   const unresolved:any[]=[];
@@ -1375,12 +1495,14 @@ async function autoRolloverReleasedReports(client:any,organisationId:string,from
     const already=await maybeOne<any>(client,'SELECT id FROM student_promotions WHERE organisation_id=$1 AND student_id=$2 AND to_academic_year_id=$3',
       [organisationId,row.student_id,toYearId]);
     if(already){processed++;continue}
-    if(row.workflow_status!=='approved'||!row.released_at||!row.promotion_decision){
-      unresolved.push({studentId:row.student_id,admissionNo:row.admission_no,name:row.first_name+' '+row.last_name,reason:'Final report is not approved, released and assigned a promotion decision'});
+    const ev=evidence.byStudent.get(row.student_id);
+    if(!ev?.ready){
+      unresolved.push({studentId:row.student_id,admissionNo:row.admission_no,name:row.first_name+' '+row.last_name,reason:ev?.reason||'Academic-year promotion evidence is incomplete'});
       continue;
     }
 
-    let outcome=String(row.promotion_decision);
+    const passed=Number(ev.annualAverage)>=evidence.threshold;
+    let outcome=passed?'promoted':'repeated';
     let targetClassId:string|null=null;
     let targetGradeId:string|null=null;
 
@@ -1389,7 +1511,7 @@ async function autoRolloverReleasedReports(client:any,organisationId:string,from
         WHERE organisation_id=$1 AND is_active=true AND level_order>$2 ORDER BY level_order LIMIT 1`,[organisationId,row.level_order]);
       if(!nextGrade)outcome='completed';
       else targetGradeId=nextGrade.id;
-    }else if(outcome==='repeated'){
+    }else{
       targetGradeId=row.grade_level_id;
     }
 
@@ -1424,16 +1546,20 @@ async function autoRolloverReleasedReports(client:any,organisationId:string,from
     }
 
     await client.query(`INSERT INTO student_promotions(
-      organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,processed_by_os_user_id
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+      organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,
+      outcome,processed_by_os_user_id,academic_average,terms_count,promotion_basis
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'academic_year_average')
     ON CONFLICT(student_id,to_academic_year_id)
     DO UPDATE SET from_classroom_id=EXCLUDED.from_classroom_id,to_classroom_id=EXCLUDED.to_classroom_id,
-      outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,created_at=now()`,[
-      organisationId,row.student_id,fromYearId,toYearId,row.classroom_id,targetClassId,outcome,actorOsUserId
+      outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,
+      academic_average=EXCLUDED.academic_average,terms_count=EXCLUDED.terms_count,
+      promotion_basis=EXCLUDED.promotion_basis,created_at=now()`,[
+      organisationId,row.student_id,fromYearId,toYearId,row.classroom_id,targetClassId,outcome,actorOsUserId,
+      ev.annualAverage,ev.completeTerms
     ]);
     processed++;
   }
-  return{processed,promoted,repeated,completed,unresolved,totalCandidates:rows.length,finalTermId:finalTerm.id};
+  return{processed,promoted,repeated,completed,unresolved,totalCandidates:rows.length,threshold:evidence.threshold};
 }
 
 app.post('/api/academic-years/:id/activate',async request=>{
@@ -4428,25 +4554,22 @@ app.get('/api/promotions/preview',async request=>{
     FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND g.code=$3 AND c.is_active=true ORDER BY c.name`,
     [a.core.organisation_id,q.toAcademicYearId,classroom.grade_code])).rows;
-  const finalTerm=await maybeOne<any>(db,`SELECT * FROM terms WHERE organisation_id=$1 AND academic_year_id=$2
-    ORDER BY term_no DESC,end_date DESC LIMIT 1`,[a.core.organisation_id,q.fromAcademicYearId]);
   const rawStudents=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,
-      e.id enrolment_id,c.name classroom_name,g.name grade_name,
-      rc.workflow_status report_status,rc.promotion_decision,rc.released_at
+      e.id enrolment_id,c.name classroom_name,g.name grade_name
     FROM enrolments e JOIN students s ON s.id=e.student_id JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
-    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=s.id AND rc.term_id=$4
     WHERE e.organisation_id=$1 AND e.academic_year_id=$2 AND e.classroom_id=$3 AND e.status='active'
-    ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.fromAcademicYearId,q.classroomId,finalTerm?.id??null])).rows;
-  const defaultOutcome=nextGrade?'promoted':'completed';
-  const students=rawStudents.map((row:any)=>({...row,recommended_outcome:row.promotion_decision??defaultOutcome}));
+    ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.fromAcademicYearId,q.classroomId])).rows;
+  const evidence=await academicYearPromotionEvidence(db,a.core.organisation_id,q.fromAcademicYearId,q.classroomId);
+  const students=rawStudents.map((row:any)=>{
+    const ev=evidence.byStudent.get(row.id)||{configuredTerms:evidence.terms.length,completeTerms:0,readyTerms:0,annualAverage:null,termAverages:[],ready:false,reason:'Academic results are not complete',threshold:evidence.threshold};
+    let recommendedOutcome='repeated';
+    if(ev.ready&&Number(ev.annualAverage)>=evidence.threshold)recommendedOutcome=nextGrade?'promoted':'completed';
+    return{...row,...ev,recommended_outcome:recommendedOutcome};
+  });
   return{
-    classroom,
-    nextGrade,
-    finalTerm,
-    defaultOutcome,
-    destinations,
-    repeatDestinations,
-    students
+    classroom,nextGrade,terms:evidence.terms,threshold:evidence.threshold,
+    defaultOutcome:nextGrade?'promoted':'completed',
+    destinations,repeatDestinations,students
   };
 });
 app.post('/api/promotions/batch',async request=>{
@@ -4468,6 +4591,8 @@ app.post('/api/promotions/batch',async request=>{
     ) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[
       a.core.organisation_id,b.fromAcademicYearId,b.toAcademicYearId,b.fromClassroomId??null,a.core.id,b.records.length
     ]);
+    const evidence=await academicYearPromotionEvidence(client,a.core.organisation_id,b.fromAcademicYearId,b.fromClassroomId??null);
+    if(evidence.terms.length!==3)throw fail(409,'Promotion requires three configured terms in the source academic year');
     let processed=0,promoted=0,repeated=0,completed=0;
     for(const r of b.records){
       const old=await maybeOne<any>(client,`SELECT e.*,c.grade_level_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
@@ -4475,6 +4600,12 @@ app.post('/api/promotions/batch',async request=>{
         [r.studentId,b.fromAcademicYearId,a.core.organisation_id]);
       if(!old)throw fail(409,'One or more selected students no longer have an active enrolment in the source year');
       if(b.fromClassroomId&&old.classroom_id!==b.fromClassroomId)throw fail(409,'A selected student is no longer in the source class');
+      const ev=evidence.byStudent.get(r.studentId);
+      if(!ev?.ready)throw fail(409,(ev?.reason||'Academic-year promotion evidence is incomplete')+' for one or more selected students');
+      const nextGrade=await maybeOne<any>(client,`SELECT id FROM grade_levels WHERE organisation_id=$1 AND is_active=true AND level_order>(
+        SELECT g.level_order FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.id=$2
+      ) ORDER BY level_order LIMIT 1`,[a.core.organisation_id,old.classroom_id]);
+      const recommendedOutcome=Number(ev.annualAverage)>=evidence.threshold?(nextGrade?'promoted':'completed'):'repeated';
       if(r.outcome!=='completed'){
         if(!r.toClassroomId)throw fail(400,'A destination class is required for promoted or repeated students');
         const dest=await one<any>(client,`SELECT c.*,g.level_order FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
@@ -4498,12 +4629,16 @@ app.post('/api/promotions/batch',async request=>{
         if(r.outcome==='promoted')promoted++;else repeated++;
       }
       await client.query(`INSERT INTO student_promotions(
-        organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,processed_by_os_user_id
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+        organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,
+        outcome,processed_by_os_user_id,academic_average,terms_count,promotion_basis
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       ON CONFLICT(student_id,to_academic_year_id)
       DO UPDATE SET from_classroom_id=EXCLUDED.from_classroom_id,to_classroom_id=EXCLUDED.to_classroom_id,
-        outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,created_at=now()`,
-        [a.core.organisation_id,r.studentId,b.fromAcademicYearId,b.toAcademicYearId,old.classroom_id,r.toClassroomId??null,r.outcome,a.core.id]);
+        outcome=EXCLUDED.outcome,processed_by_os_user_id=EXCLUDED.processed_by_os_user_id,
+        academic_average=EXCLUDED.academic_average,terms_count=EXCLUDED.terms_count,
+        promotion_basis=EXCLUDED.promotion_basis,created_at=now()`,
+        [a.core.organisation_id,r.studentId,b.fromAcademicYearId,b.toAcademicYearId,old.classroom_id,r.toClassroomId??null,r.outcome,a.core.id,
+          ev.annualAverage,ev.completeTerms,r.outcome===recommendedOutcome?'academic_year_average':'manual_override']);
       processed++;
     }
     await client.query(`UPDATE promotion_batches SET promoted_count=$1,repeated_count=$2,completed_count=$3 WHERE id=$4`,
