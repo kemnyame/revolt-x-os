@@ -18,6 +18,7 @@ function selectedEmailProvider(config:SchoolConfig){
 
 export function providerStatus(config:SchoolConfig){
   const twilioAuth=Boolean(config.TWILIO_ACCOUNT_SID&&((config.TWILIO_API_KEY_SID&&config.TWILIO_API_KEY_SECRET)||config.TWILIO_AUTH_TOKEN));
+  const emailCandidates=emailProviderCandidates(config);
   const emailProvider=selectedEmailProvider(config);
   const emailConfigured=emailProvider==='brevo'
     ?Boolean(config.BREVO_API_KEY)
@@ -25,6 +26,8 @@ export function providerStatus(config:SchoolConfig){
   return{
     email:{
       provider:emailProvider,
+      candidates:emailCandidates,
+      fallbackConfigured:emailCandidates.length>1,
       configured:emailConfigured,
       sender:emailProvider==='brevo'?config.BREVO_FROM_EMAIL:config.RESEND_FROM_EMAIL,
       mode:emailProvider==='resend'&&config.RESEND_FROM_EMAIL&&/(@|<)[^>]*resend\.dev>?$/i.test(config.RESEND_FROM_EMAIL)?'testing':'production'
