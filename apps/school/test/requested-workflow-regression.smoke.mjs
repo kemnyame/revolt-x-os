@@ -45,6 +45,22 @@ test('student management paginates large directories in the browser',async()=>{
   assert.match(ui,/studentNext/);
 });
 
+test('student directory uses server-side pagination for large schools',async()=>{
+  const server=await read('server.js');
+  const ui=await read('ui.js');
+  assert.match(server,/\/api\/students\/directory/);
+  assert.match(server,/pageSize:\s*z\.coerce\.number/);
+  assert.match(server,/LIMIT \$5 OFFSET \$6/);
+  assert.match(ui,/\/api\/students\/directory\?page=/);
+  assert.doesNotMatch(ui,/Promise\.all\(\[raw\('\/api\/students'\),raw\('\/api\/classes'/);
+});
+
+test('School proactively warms the persistent staff directory after startup',async()=>{
+  const server=await read('server.js');
+  assert.match(server,/async function warmCoreUserDirectories/);
+  assert.match(server,/void warmCoreUserDirectories\(\)/);
+});
+
 test('guardian email is optional in admissions and student onboarding',async()=>{
   const ui=await read('ui.js');
   const admissions=await read('admissions-ui.js');
