@@ -13,6 +13,8 @@ const schema = z.object({
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
   PARENT_LOGIN_FAILURE_LIMIT: z.coerce.number().int().min(3).max(20).default(5),
   PARENT_LOGIN_BLOCK_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
+  STUDENT_LOGIN_FAILURE_LIMIT: z.coerce.number().int().min(3).max(20).default(5),
+  STUDENT_LOGIN_BLOCK_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
   COMMUNICATION_RETRY_INTERVAL_MS: z.coerce.number().int().min(15000).max(900000).default(60000),
   COMMUNICATION_RETRY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
   PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
