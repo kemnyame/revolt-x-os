@@ -4845,14 +4845,16 @@ app.get('/api/test-access/students',async request=>{
     WHERE s.organisation_id=$1 AND s.status='active'
     ORDER BY c.name NULLS LAST,s.last_name,s.first_name`,[school.organisation_id])).rows;
 });
-app.post('/api/test-access/student-login',async request=>{
+app.post('/api/test-access/student-login',async(request,reply)=>{
   requireTestAccess(request);
   const b=z.object({studentId:z.string().uuid()}).parse(request.body);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND status=\'active\'',[b.studentId]);
   const token=randomBytes(48).toString('base64url');
+  await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE student_id=$1 AND revoked_at IS NULL',[student.id]);
   await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at)
     VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800,testAccess:true};
+  setPortalSessionCookie(reply,'rx_student_session',token,28800);
+  return{ok:true,expiresIn:28800,testAccess:true};
 });
 async function testStaffDirectory(roles:string[]){
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
@@ -4935,16 +4937,40 @@ app.post('/api/students/:id/portal-reset',async request=>{
   await audit(a.core.organisation_id,a.core.id,'student.portal_pin_reset','student',id);
   return{studentId:id,pin};
 });
-app.post('/api/student/login',async request=>{
-  const b=z.object({admissionNo:z.string().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
-  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active FROM students s JOIN student_portal_access spa ON spa.student_id=s.id WHERE s.admission_no=$1 AND s.status='active' LIMIT 1`,[b.admissionNo]);
-  if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash))throw fail(401,'Invalid student portal credentials');
+app.post('/api/student/login',async(request,reply)=>{
+  const b=z.object({admissionNo:z.string().trim().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
+  const identityKey=throttleFingerprint(b.admissionNo.toLowerCase());
+  const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
+  await assertPortalLoginAllowed(db,'student_identity',identityKey);
+  await assertPortalLoginAllowed(db,'student_ip',ipKey);
+
+  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active FROM students s JOIN student_portal_access spa ON spa.student_id=s.id WHERE lower(s.admission_no)=lower($1) AND s.status='active' LIMIT 1`,[b.admissionNo]);
+  if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash)){
+    await Promise.all([
+      recordPortalLoginFailure(db,'student_identity',identityKey,config.STUDENT_LOGIN_FAILURE_LIMIT,config.STUDENT_LOGIN_BLOCK_MINUTES),
+      recordPortalLoginFailure(db,'student_ip',ipKey,config.STUDENT_LOGIN_FAILURE_LIMIT*3,config.STUDENT_LOGIN_BLOCK_MINUTES)
+    ]);
+    throw fail(401,'Invalid student portal credentials');
+  }
+
+  await Promise.all([
+    clearPortalLoginThrottle(db,'student_identity',identityKey),
+    clearPortalLoginThrottle(db,'student_ip',ipKey)
+  ]);
+
   const token=randomBytes(48).toString('base64url');
+  await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE student_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
   await db.query('UPDATE student_portal_access SET last_login_at=now() WHERE student_id=$1',[row.id]);
-  return{token,expiresIn:28800};
+  setPortalSessionCookie(reply,'rx_student_session',token,28800);
+  return{ok:true,expiresIn:28800};
 });
-app.post('/api/student/logout',async request=>{const s=await studentAuth(request);await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE id=$1',[s.session_id]);return{ok:true}});
+app.post('/api/student/logout',async(request,reply)=>{
+  const token=portalSessionToken(request,'rx_student_session');
+  if(token)await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hashPortalToken(token)]);
+  clearPortalSessionCookie(reply,'rx_student_session');
+  return{ok:true};
+});
 app.get('/api/student/me',async request=>{
   const s=await studentAuth(request);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[s.student_id]);
