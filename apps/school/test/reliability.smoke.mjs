@@ -5,6 +5,7 @@ import {
   normalizeDeliveryPhone,
   throttleFingerprint
 } from '../dist/reliability.js';
+import { emailProviderCandidates } from '../dist/providers.js';
 
 test('communication retry backoff grows safely',()=>{
   assert.equal(communicationBackoffMinutes(1),1);
@@ -25,4 +26,19 @@ test('throttle fingerprints are stable and non-reversible identifiers',()=>{
   assert.equal(a,b);
   assert.equal(a.length,64);
   assert.notEqual(a,'parent@example.com');
+});
+
+
+test('email provider auto mode preserves a working fallback',()=>{
+  const base={
+    EMAIL_PROVIDER:'auto',
+    BREVO_API_KEY:'invalid-or-temporarily-unavailable',
+    BREVO_FROM_EMAIL:undefined,
+    BREVO_FROM_NAME:'Revolt-X School',
+    RESEND_API_KEY:'resend-key',
+    RESEND_FROM_EMAIL:'School <school@example.com>'
+  };
+  assert.deepEqual(emailProviderCandidates(base),['brevo','resend']);
+  assert.deepEqual(emailProviderCandidates({...base,EMAIL_PROVIDER:'brevo'}),['brevo']);
+  assert.deepEqual(emailProviderCandidates({...base,EMAIL_PROVIDER:'resend'}),['resend']);
 });
