@@ -51,7 +51,7 @@ test('student statements use search instead of a student dropdown',async()=>{
 test('promotion uses complete three-term academic-year evidence',async()=>{
   const server=await read('server.js');
   const ui=await read('ui.js');
-  assert.match(server,/configuredTerms===3&&completeTerms===3&&readyTerms===3/);
+  assert.match(server,/configuredTerms\s*===\s*3\s*&&\s*completeTerms\s*===\s*3\s*&&\s*readyTerms\s*===\s*3/);
   assert.match(server,/academic_year_average/);
   assert.match(ui,/Term 1/);
   assert.match(ui,/Term 2/);
@@ -61,9 +61,9 @@ test('promotion uses complete three-term academic-year evidence',async()=>{
 test('staff login is routed by active role profile and demo access includes active roles',async()=>{
   const server=await read('server.js');
   const login=await read('login-ui.js');
-  assert.match(server,/roleProfile\.portal_mode==='teacher'\?'\/teacher':'\/'/);
+  assert.match(server,/roleProfile\.portal_mode\s*===\s*'teacher'\s*\?\s*'\/teacher'\s*:\s*'\/'/);
   assert.match(server,/JOIN school_roles sr/);
-  assert.match(login,/profile&&profile\.portal_mode==='teacher'/);
+  assert.match(login,/profile\s*&&\s*profile\.portal_mode\s*===\s*'teacher'/);
 });
 
 test('lesson notes support real attachments',async()=>{
@@ -79,6 +79,6 @@ test('external admission uses an application reference and only creates Student 
   const server=await read('server.js');
   assert.match(admissions,/This is not a Student ID/);
   assert.match(admissions,/Student ID will be generated after the school approves and enrols the applicant/);
-  assert.match(server,/if\(appRow\.status!=='approved'\)throw fail\(409,'Approve the application before enrolling the student'\)/);
-  assert.match(server,/const admissionNo=b\.admissionNo\|\|\('RX\//);
+  assert.match(server,/if\s*\(appRow\.status\s*!==\s*'approved'\)\s*throw fail\(409,\s*'Approve the application before enrolling the student'\s*\)/);
+  assert.match(server,/const admissionNo\s*=\s*b\.admissionNo\s*\|\|\s*\('RX\//);
 });
