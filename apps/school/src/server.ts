@@ -2047,6 +2047,17 @@ app.get('/api/students/:id/360',async request=>{
   const payments=(await db.query(`SELECT p.id,p.amount,p.payment_method,p.reference,p.paid_at,p.voided_at,f.name fee_name
     FROM payments p LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
     WHERE p.organisation_id=$1 AND p.student_id=$2 ORDER BY p.paid_at DESC LIMIT 15`,[a.core.organisation_id,id])).rows;
+  const feeItems=(await db.query(`SELECT sf.id,f.name fee_name,sf.amount_due,sf.discount,sf.status,
+      y.name academic_year,t.name term_name,
+      COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid,
+      GREATEST(0,(sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0)) balance
+    FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id
+    JOIN academic_years y ON y.id=f.academic_year_id
+    LEFT JOIN terms t ON t.id=f.term_id
+    WHERE sf.organisation_id=$1 AND sf.student_id=$2
+    ORDER BY y.start_date DESC,t.term_no NULLS LAST,f.name`,[a.core.organisation_id,id])).rows;
+  const accountCredits=(await db.query(`SELECT id,original_amount,balance,created_at FROM student_account_credits
+    WHERE organisation_id=$1 AND student_id=$2 ORDER BY created_at DESC`,[a.core.organisation_id,id])).rows;
   let subjects:any[]=[];let performance:any={overallAverage:null,classPosition:null,classSize:null};
   if(term){
     subjects=await calculateStudentTermResults(a.core.organisation_id,id,term.id);
@@ -2071,6 +2082,17 @@ app.get('/api/students/:id/360',async request=>{
     JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id
     LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id
     WHERE p.organisation_id=$1 AND p.student_id=$2 ORDER BY p.created_at DESC`,[a.core.organisation_id,id])).rows;
+  const reportHistory=(await db.query(`SELECT rc.id,rc.workflow_status,rc.submitted_at,rc.reviewed_at,rc.released_at,
+      rc.promotion_decision,rc.class_teacher_comment,rc.headteacher_comment,t.name term_name,y.name academic_year
+    FROM report_comments rc JOIN terms t ON t.id=rc.term_id JOIN academic_years y ON y.id=t.academic_year_id
+    WHERE rc.organisation_id=$1 AND rc.student_id=$2
+    ORDER BY y.start_date DESC,t.term_no DESC`,[a.core.organisation_id,id])).rows;
+  const statementRequests=(await db.query(`SELECT id,purpose,status,statement_reference,requested_by_type,requested_at,reviewed_at,issued_at
+    FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 ORDER BY requested_at DESC`,
+    [a.core.organisation_id,id])).rows;
+  const admissionApplication=await maybeOne<any>(db,`SELECT id,application_no,source,requested_grade_code,status,submitted_at,reviewed_at,review_note
+    FROM admission_applications WHERE organisation_id=$1 AND student_id=$2 ORDER BY submitted_at DESC LIMIT 1`,
+    [a.core.organisation_id,id]);
   const comments=term?await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,id,term.id]):null;
   const portal=await maybeOne<any>(db,`SELECT spa.is_active,spa.last_login_at,
       (SELECT count(*)::int FROM student_portal_sessions sps WHERE sps.student_id=spa.student_id AND sps.revoked_at IS NULL AND sps.expires_at>now()) active_sessions
@@ -2080,7 +2102,7 @@ app.get('/api/students/:id/360',async request=>{
     ORDER BY created_at DESC LIMIT 20`,[a.core.organisation_id,id])).rows;
   const statusHistory=(await db.query(`SELECT * FROM student_status_history
     WHERE organisation_id=$1 AND student_id=$2 ORDER BY changed_at DESC`,[a.core.organisation_id,id])).rows;
-  return{student,term,guardians,enrolments,attendance,recentAttendance,fees:fee,payments,subjects,performance,homework,promotions,comments,portal,activity,statusHistory};
+  return{student,term,guardians,enrolments,attendance,recentAttendance,fees:fee,feeItems,payments,accountCredits,subjects,performance,homework,promotions,reportHistory,statementRequests,admissionApplication,comments,portal,activity,statusHistory};
 });
 app.patch('/api/students/:id',async request=>{
   const a=await authorize(request,db,config,'students.edit');
