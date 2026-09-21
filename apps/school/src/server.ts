@@ -1840,7 +1840,7 @@ app.post('/api/students',async(request,reply)=>{
     lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),
     admissionDate:z.string().date().optional(),notes:z.string().max(5000).optional(),
     guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianEmail:z.string().email(),
+    guardianPhone:z.string().min(5).max(60),guardianEmail:z.string().email().optional(),
     guardianRelationship:z.string().min(2).max(60)
   }).parse(request.body);
   const result=await tx(db,async client=>{
@@ -1855,11 +1855,11 @@ app.post('/api/students',async(request,reply)=>{
     if(!guardian){
       guardian=await one<any>(client,`INSERT INTO guardians(organisation_id,first_name,last_name,phone,email)
         VALUES($1,$2,$3,$4,$5) RETURNING *`,[
-        a.core.organisation_id,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianEmail
+        a.core.organisation_id,b.guardianFirstName,b.guardianLastName,b.guardianPhone,b.guardianEmail??null
       ]);
     }else{
       guardian=await one<any>(client,`UPDATE guardians SET first_name=$1,last_name=$2,email=$3
-        WHERE id=$4 RETURNING *`,[b.guardianFirstName,b.guardianLastName,b.guardianEmail,guardian.id]);
+        WHERE id=$4 RETURNING *`,[b.guardianFirstName,b.guardianLastName,b.guardianEmail??guardian.email??null,guardian.id]);
     }
     await client.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[student.id]);
     await client.query(`INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary)
@@ -4985,7 +4985,7 @@ app.post('/api/public/admissions',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
@@ -5018,7 +5018,7 @@ app.post('/api/admissions/internal',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
