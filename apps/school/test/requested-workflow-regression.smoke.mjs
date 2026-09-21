@@ -37,7 +37,7 @@ test('School-local sessions never fall through to Core OS',async()=>{
   assert.match(auth,/const schoolContext = await fetchSchoolSessionContext/);
   assert.match(auth,/schoolContext \?\? await fetchCoreContext/);
   assert.match(server,/\/health\/live/);
-  assert.match(server,/res\.status<500/);
+  assert.match(server,/res\.status\s*<\s*500/);
 });
 
 test('staff directory survives Core OS sleep and partial Core directories',async()=>{
