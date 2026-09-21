@@ -6690,6 +6690,17 @@ async function runCommunicationRetries(){
     app.log.error({error},'Communication retry worker failed');
   }
 }
+async function warmCoreUserDirectories(){
+  try{
+    const organisations=(await db.query('SELECT organisation_id FROM school_profiles ORDER BY organisation_id')).rows;
+    for(const row of organisations){
+      const users=await fetchCoreUsers(row.organisation_id);
+      app.log.info({organisationId:row.organisation_id,staffUsers:users.length},'School staff directory warmed');
+    }
+  }catch(error){
+    app.log.warn({error},'School staff directory warm-up deferred');
+  }
+}
 async function shutdown(){
   if(shutting)return;
   shutting=true;
@@ -6704,6 +6715,7 @@ await provisionDemoTeachers();
 
 await app.listen({host:config.HOST,port:config.PORT});
 console.log(`Revolt-X School listening on ${config.HOST}:${config.PORT}`);
+void warmCoreUserDirectories();
 void runCommunicationRetries();
 communicationRetryTimer=setInterval(()=>void runCommunicationRetries(),config.COMMUNICATION_RETRY_INTERVAL_MS);
 communicationRetryTimer.unref();
