@@ -4543,7 +4543,7 @@ app.post('/api/promotions/batch',async request=>{
 });
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
 
-app.post('/api/parent/login',async request=>{
+app.post('/api/parent/login',async(request,reply)=>{
   const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
   const normalizedPhone=b.phone.replace(/\\D/g,'');
   const identityKey=throttleFingerprint(normalizedPhone+'|'+b.admissionNo.toLowerCase());
@@ -4577,9 +4577,15 @@ app.post('/api/parent/login',async request=>{
   const token=randomBytes(48).toString('base64url');
   await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800};
+  setPortalSessionCookie(reply,'rx_parent_session',token,28800);
+  return{ok:true,expiresIn:28800};
 });
-app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request);await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE id=$1',[g.session_id]);return{ok:true}});
+app.post('/api/parent/logout',async(request,reply)=>{
+  const token=portalSessionToken(request,'rx_parent_session');
+  if(token)await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hashPortalToken(token)]);
+  clearPortalSessionCookie(reply,'rx_parent_session');
+  return{ok:true};
+});
 app.get('/api/parent/me',async request=>{
   const g=await guardianAuth(request);
   const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.name classroom_name FROM student_guardians sg JOIN students s ON s.id=sg.student_id LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id WHERE sg.guardian_id=$1 ORDER BY s.first_name,s.last_name`,[g.guardian_id])).rows;
