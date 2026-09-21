@@ -5560,6 +5560,41 @@ app.put('/api/roles/:role/capabilities',async request=>{
     'finance.eod.view','finance.reports.view'
   ]);
   const financeWorkspaceEnabled=b.permissions.some(p=>financeWorkspaceKeys.has(p.capabilityKey)&&p.allowed);
+  const screenDependencies:Record<string,string[]>={
+    'screen.dashboard.view':['reports.view'],
+    'screen.setup.view':['academic.view'],
+    'screen.admissions.view':['admissions.view'],
+    'screen.students.view':['students.view'],
+    'screen.approvals.view':['approvals.view'],
+    'screen.academic_manager.view':['academic.view','teaching_assignments.view'],
+    'screen.promotions.view':['promotion.manage'],
+    'screen.attendance.view':['attendance.view'],
+    'screen.assessments.view':['assessment.view'],
+    'screen.homework.view':['homework.view'],
+    'screen.lesson_notes.view':['lesson_notes.view'],
+    'screen.report_cards.view':['reports.view'],
+    'screen.student_statements.view':['finance.view'],
+    'screen.grading.view':['assessment.view'],
+    'screen.finance.view':['finance.view'],
+    'screen.leave.view':['leave.view'],
+    'screen.timetable.view':['timetable.view'],
+    'screen.teacher_schedule.view':['teaching_assignments.view','timetable.view'],
+    'screen.communications.view':['communications.view'],
+    'screen.access_management.view':['staff.view','roles.view'],
+    'screen.system.view':['system.logs.view'],
+    'screen.portals.view':['portals.manage'],
+    'students.profile.view':['students.view'],
+    'students.360.view':['students.view']
+  };
+  const requiredDependencies=new Set<string>();
+  for(const permission of b.permissions){
+    if(!permission.allowed)continue;
+    for(const dependency of screenDependencies[permission.capabilityKey]??[])requiredDependencies.add(dependency);
+  }
+  if(financeWorkspaceEnabled){
+    requiredDependencies.add('screen.finance.view');
+    for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view'])requiredDependencies.add(dependency);
+  }
   await tx(db,async client=>{
     for(const p of b.permissions){
       await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
@@ -5567,21 +5602,17 @@ app.put('/api/roles/:role/capabilities',async request=>{
         ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
         [a.core.organisation_id,role,p.capabilityKey,p.allowed]);
     }
-    if(financeWorkspaceEnabled){
-      // Finance screens rely on student, academic, fee and report reference data. Keep those
-      // read dependencies in sync so assigning a Finance tab never produces a hidden 403.
-      for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view']){
-        await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
-          VALUES($1,$2,$3,true,now())
-          ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
-          [a.core.organisation_id,role,dependency]);
-      }
+    for(const dependency of requiredDependencies){
+      await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
+        VALUES($1,$2,$3,true,now())
+        ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
+        [a.core.organisation_id,role,dependency]);
     }
   });
   await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{
-    count:b.permissions.length,financeWorkspaceEnabled
+    count:b.permissions.length,financeWorkspaceEnabled,dependencyCount:requiredDependencies.size
   });
-  return{role,updated:b.permissions.length,financeWorkspaceEnabled};
+  return{role,updated:b.permissions.length,financeWorkspaceEnabled,dependencyCount:requiredDependencies.size};
 });
 
 app.get('/api/teacher/timetable',async request=>{
