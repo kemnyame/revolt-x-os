@@ -234,6 +234,7 @@ async function deliverCommunication(input:{
 async function notifyContact(input:{
   organisationId:string;
   actorOsUserId?:string|null|undefined;
+  guardianId?:string|null|undefined;
   eventKey:string;
   name?:string|null|undefined;
   email?:string|null|undefined;
@@ -243,6 +244,17 @@ async function notifyContact(input:{
   relatedType?:string|null|undefined;
   relatedId?:string|null|undefined;
 }){
+  if(input.guardianId){
+    await db.query(`
+      INSERT INTO guardian_notifications(
+        organisation_id,guardian_id,event_key,subject,body,related_type,related_id
+      ) VALUES($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT DO NOTHING
+    `,[
+      input.organisationId,input.guardianId,input.eventKey,input.subject,input.body,
+      input.relatedType??null,input.relatedId??null
+    ]);
+  }
   const rules=(await db.query('SELECT channel,enabled FROM notification_rules WHERE organisation_id=$1 AND event_key=$2',[input.organisationId,input.eventKey])).rows;
   const active=rules.length?rules.filter((r:any)=>r.enabled).map((r:any)=>r.channel):['email'];
   const results:any[]=[];
@@ -2462,7 +2474,7 @@ app.patch('/api/academic-statement-requests/:id',async request=>{
     const guardian=await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1',[row.guardian_id]);
     if(guardian){
       await notifyContact({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.approved',
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:guardian.id,eventKey:'reports.approved',
         name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
         subject:b.status==='approved'?'Cumulative academic statement ready':'Academic statement request updated',
         body:b.status==='approved'
@@ -2687,7 +2699,7 @@ app.post('/api/payments',async(request,reply)=>{
   if(guardian){
     const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
     await notifyContact({
-      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_received',
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:guardian.id,eventKey:'fees.payment_received',
       name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
       subject:'School fee payment received',
       body:`${school.school_name} has recorded a payment of ${school.currency||'GHS'} ${Number(b.amount).toFixed(2)} for ${student.first_name} ${student.last_name}. Method: ${b.paymentMethod.replace('_',' ')}.${b.reference?' Reference: '+b.reference+'.':''}`,
@@ -3947,7 +3959,7 @@ app.post('/api/homework/:id/publish',async request=>{
     const due=h.due_at?new Date(h.due_at).toLocaleString('en-GB',{timeZone:'UTC'}):'No due date set';
     for(const g of recipients){
       await notifyContact({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'homework.published',
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:g.id,eventKey:'homework.published',
         name:g.first_name+' '+g.last_name,email:g.email,phone:g.phone,
         subject:'New homework: '+h.title,
         body:`${h.school_name} has published homework for ${g.student_first_name} ${g.student_last_name}. Subject: ${h.subject_name}. Class: ${h.classroom_name}. Due: ${due}. Instructions: ${h.instructions}. Open the Parent Portal to view the homework and track its submission status.`,
@@ -4009,7 +4021,7 @@ app.post('/api/homework/:id/submissions',async request=>{
       : `The homework submission has been recorded as ${r.status.replace('_',' ')}.`;
     for(const g of guardians){
       await notifyContact({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey,
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:g.id,eventKey,
         name:g.first_name+' '+g.last_name,email:g.email,phone:g.phone,
         subject:(r.status==='graded'?'Homework graded: ':'Homework submission recorded: ')+h.title,
         body:`${h.school_name}: ${student.first_name} ${student.last_name} - ${h.subject_name}, ${h.title}. ${resultText} Open the Parent Portal for the full instructions and current status.`,
@@ -4199,7 +4211,7 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
   const classroom=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',[classroomId,organisationId,term.academic_year_id]);
   const rows=(await db.query(`
     SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,
-      g.first_name guardian_first_name,g.last_name guardian_last_name,g.email guardian_email,g.phone guardian_phone,
+      g.id guardian_id,g.first_name guardian_first_name,g.last_name guardian_last_name,g.email guardian_email,g.phone guardian_phone,
       rc.id report_id,COALESCE(rc.workflow_status,'not_started') workflow_status,rc.submitted_at,rc.reviewed_at,
       rc.promotion_decision,rc.promotion_basis,rc.released_at,
       (SELECT count(*)::int FROM class_subjects cs
@@ -4228,7 +4240,7 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
     JOIN students s ON s.id=e.student_id
     LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=s.id AND rc.term_id=$3
     LEFT JOIN LATERAL (
-      SELECT gx.first_name,gx.last_name,gx.email,gx.phone
+      SELECT gx.id,gx.first_name,gx.last_name,gx.email,gx.phone
       FROM student_guardians sg JOIN guardians gx ON gx.id=sg.guardian_id
       WHERE sg.student_id=s.id ORDER BY sg.is_primary DESC,gx.created_at LIMIT 1
     ) g ON true
@@ -4437,9 +4449,10 @@ app.post('/api/teacher/report-pool/release',async request=>{
   const school=await one<any>(db,'SELECT school_name FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
   let communicationCount=0,missingGuardianEmail=0;
   for(const row of newlyReleased){
-    if(!row.guardian_email){missingGuardianEmail++;continue}
+    if(!row.guardian_email)missingGuardianEmail++;
+    if(!row.guardian_id)continue;
     const results=await notifyContact({
-      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.released',
+      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:row.guardian_id,eventKey:'reports.released',
       name:((row.guardian_first_name||'')+' '+(row.guardian_last_name||'')).trim(),
       email:row.guardian_email,phone:row.guardian_phone,
       subject:'Report card available - '+row.first_name+' '+row.last_name,
@@ -4718,61 +4731,24 @@ app.get('/api/parent/me',async request=>{
 app.get('/api/parent/alerts',async request=>{
   const g=await guardianAuth(request);
   const rows=(await db.query(`
-    WITH matched AS (
-      SELECT DISTINCT ON (
-        COALESCE(co.related_type,''),
-        COALESCE(co.related_id::text,co.id::text),
-        COALESCE(co.template_key,''),
-        co.body
-      )
-        co.id,co.subject,co.body,co.template_key,co.related_type,co.related_id,
-        co.channel,co.status delivery_status,co.created_at
-      FROM communication_outbox co
-      JOIN guardians gr ON gr.id=$1
-      WHERE co.organisation_id=$2
-        AND (
-          (co.channel='email' AND gr.email IS NOT NULL AND lower(co.recipient_address)=lower(gr.email))
-          OR
-          (co.channel IN('sms','whatsapp')
-            AND regexp_replace(co.recipient_address,'\\D','','g')=regexp_replace(gr.phone,'\\D','','g'))
-        )
-      ORDER BY
-        COALESCE(co.related_type,''),
-        COALESCE(co.related_id::text,co.id::text),
-        COALESCE(co.template_key,''),
-        co.body,
-        co.created_at DESC
-    )
-    SELECT m.*,gar.read_at
-    FROM matched m
-    LEFT JOIN guardian_alert_reads gar
-      ON gar.guardian_id=$1 AND gar.communication_id=m.id
-    ORDER BY m.created_at DESC
+    SELECT id,event_key,subject,body,related_type,related_id,created_at,read_at
+    FROM guardian_notifications
+    WHERE organisation_id=$1 AND guardian_id=$2
+    ORDER BY created_at DESC
     LIMIT 100
-  `,[g.guardian_id,g.organisation_id])).rows;
+  `,[g.organisation_id,g.guardian_id])).rows;
   return{alerts:rows,unread:rows.filter((x:any)=>!x.read_at).length};
 });
 app.post('/api/parent/alerts/:id/read',async request=>{
   const g=await guardianAuth(request);
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  await one<any>(db,`
-    SELECT co.id
-    FROM communication_outbox co
-    JOIN guardians gr ON gr.id=$2
-    WHERE co.id=$1 AND co.organisation_id=$3
-      AND (
-        (co.channel='email' AND gr.email IS NOT NULL AND lower(co.recipient_address)=lower(gr.email))
-        OR
-        (co.channel IN('sms','whatsapp')
-          AND regexp_replace(co.recipient_address,'\\D','','g')=regexp_replace(gr.phone,'\\D','','g'))
-      )
-  `,[id,g.guardian_id,g.organisation_id]);
-  await db.query(`
-    INSERT INTO guardian_alert_reads(guardian_id,communication_id,read_at)
-    VALUES($1,$2,now())
-    ON CONFLICT(guardian_id,communication_id) DO UPDATE SET read_at=now()
-  `,[g.guardian_id,id]);
-  return{read:true};
+  const row=await one<any>(db,`
+    UPDATE guardian_notifications
+    SET read_at=COALESCE(read_at,now())
+    WHERE id=$1 AND organisation_id=$2 AND guardian_id=$3
+    RETURNING id,read_at
+  `,[id,g.organisation_id,g.guardian_id]);
+  return{read:true,readAt:row.read_at};
 });
 app.get('/api/parent/students/:id/dashboard',async request=>{
   const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await ensureGuardianStudent(g.guardian_id,id);
@@ -5424,7 +5400,7 @@ app.post('/api/admissions/:id/enrol',async(request,reply)=>{
   });
   await audit(a.core.organisation_id,a.core.id,'admission.enrolled','admission_application',id,{studentId:result.student.id,classroomId:b.classroomId});
   await notifyContact({
-    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'admission.status_changed',
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:result.guardian.id,eventKey:'admission.status_changed',
     name:result.guardian.first_name+' '+result.guardian.last_name,email:result.guardian.email,phone:result.guardian.phone,
     subject:'Admission completed',
     body:`Admission has been completed for ${result.student.first_name} ${result.student.last_name}. Student admission number: ${result.student.admission_no}.`,
@@ -6098,7 +6074,7 @@ app.post('/api/fees/payment-requests',async(request,reply)=>{
     ]);
   const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
   await notifyContact({
-    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_requested',
+    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:guardian.id,eventKey:'fees.payment_requested',
     name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
     subject:'School fee payment request',
     body:`${school.school_name} has requested a fee payment of ${school.currency||'GHS'} ${Number(b.amount).toFixed(2)} for ${student.first_name} ${student.last_name}${fee?' - '+fee.fee_name:''}. Sign in to the Parent Portal to review and pay.`,
@@ -6246,7 +6222,7 @@ app.post('/api/payments/paystack/webhook',async(request,reply)=>{
       const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1',[intent.student_id]);
       if(guardian&&student){
         await notifyContact({
-          organisationId:intent.organisation_id,eventKey:'fees.payment_received',
+          organisationId:intent.organisation_id,guardianId:guardian.id,eventKey:'fees.payment_received',
           name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
           subject:'School fee payment received',
           body:`Payment of ${intent.currency} ${Number(intent.amount).toFixed(2)} for ${student.first_name} ${student.last_name} has been received successfully. Reference: ${intent.reference}.`,
