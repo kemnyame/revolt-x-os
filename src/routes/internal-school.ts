@@ -55,7 +55,6 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       firstName:z.string().min(1).max(100),
       lastName:z.string().min(1).max(100),
       jobTitle:z.string().max(160).optional(),
-      employeeNumber:z.string().max(80).optional(),
       roleKey:z.string().default('member')
     }).parse(request.body);
 
@@ -77,12 +76,27 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         );
         if(existing.rowCount)throw conflict('User is already a member');
 
+        // Staff numbers are generated centrally by Core OS. The transaction lock keeps
+        // the organisation-local sequence safe when staff are created concurrently.
+        await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`school-staff-number:${b.organisationId}`]);
+        const staffSequence=await one<{next_no:number}>(
+          c,
+          `SELECT COALESCE(MAX(
+             CASE WHEN employee_number ~ '^STF-[0-9]{6}$'
+                  THEN substring(employee_number from 5)::int
+                  ELSE NULL END
+           ),0)+1 AS next_no
+           FROM organisation_memberships
+           WHERE organisation_id=$1`,
+          [b.organisationId]
+        );
+        const employeeNumber='STF-'+String(staffSequence.next_no).padStart(6,'0');
         const membership=await one<any>(
           c,
           `INSERT INTO organisation_memberships(organisation_id,user_id,job_title,employee_number,status)
            VALUES($1,$2,$3,$4,'invited')
            RETURNING *`,
-          [b.organisationId,user.id,b.jobTitle??null,b.employeeNumber??null]
+          [b.organisationId,user.id,b.jobTitle??null,employeeNumber]
         );
         const assigned=await c.query(
           `INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id,granted_by)
@@ -97,7 +111,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         await audit(c,{
           organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
           action:'school_service.user_invited',resourceType:'membership',resourceId:membership.id,
-          afterState:{email:b.email??null,role:b.roleKey,emailPending:!b.email}
+          afterState:{email:b.email??null,role:b.roleKey,emailPending:!b.email,employeeNumber:membership.employee_number}
         });
         await emitEvent(c,b.organisationId,'core.user.invited.v1','membership',membership.id,{membershipId:membership.id,email:b.email??null,emailPending:!b.email});
         return membership;

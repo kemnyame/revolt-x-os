@@ -3112,7 +3112,6 @@ app.post('/api/staff/users',async(request,reply)=>{
     lastName:z.string().trim().min(1).max(100),
     email:z.string().trim().toLowerCase().email().optional(),
     jobTitle:z.string().trim().max(160).optional(),
-    employeeNumber:z.string().trim().max(80).optional(),
     schoolRole:z.string().min(1).max(40)
   }).parse(request.body);
 
@@ -3130,7 +3129,6 @@ app.post('/api/staff/users',async(request,reply)=>{
       lastName:b.lastName,
       ...(b.email?{email:b.email}:{}),
       jobTitle:b.jobTitle||role.name,
-      employeeNumber:b.employeeNumber||undefined,
       roleKey:'member'
     }),
     signal:AbortSignal.timeout(15000)
@@ -3193,7 +3191,7 @@ The link expires in 24 hours.`,
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'school_user.created',
     resourceType:'school_user',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:b.employeeNumber??null,emailConfigured:Boolean(b.email),status:'active'}
+    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:payload.employee_number??null,emailConfigured:Boolean(b.email),status:'active'}
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
@@ -3208,8 +3206,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     email:z.string().email(),
     firstName:z.string().min(1).max(100),
     lastName:z.string().min(1).max(100),
-    jobTitle:z.string().min(2).max(160).default('Teacher'),
-    employeeNumber:z.string().max(80).optional()
+    jobTitle:z.string().min(2).max(160).default('Teacher')
   }).parse(request.body);
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const created=await fetch(base+'/v1/internal/school/users',{
@@ -3282,7 +3279,7 @@ If you did not expect this invitation, contact your school administrator.`,
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.created',
     resourceType:'teacher',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:b.employeeNumber??null,schoolRole:'teacher',status:'active'},
+    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:payload.employee_number??null,schoolRole:'teacher',status:'active'},
     metadata:{invitationStatus:invitation.status}
   });
   return reply.code(201).send({
@@ -5418,14 +5415,14 @@ app.get('/api/approvals/summary',async request=>{
   const [admissions,leave,reports]=await Promise.all([
     db.query(`SELECT id,application_no,first_name,last_name,requested_grade_code,status,submitted_at
       FROM admission_applications WHERE organisation_id=$1 AND status IN('submitted','under_review')
-      ORDER BY submitted_at LIMIT 100`,[a.core.organisation_id]),
+      ORDER BY submitted_at`,[a.core.organisation_id]),
     db.query(`SELECT lr.id,lr.applicant_os_user_id,lr.leave_type,lr.start_date,lr.end_date,lr.reason,lr.status,lr.created_at
       FROM staff_leave_requests lr WHERE lr.organisation_id=$1 AND lr.status='submitted'
-      ORDER BY lr.created_at LIMIT 100`,[a.core.organisation_id]),
+      ORDER BY lr.created_at`,[a.core.organisation_id]),
     db.query(`SELECT rc.student_id,rc.term_id,rc.workflow_status,rc.submitted_at,s.admission_no,s.first_name,s.last_name,t.name term_name,c.name classroom_name
       FROM report_comments rc JOIN students s ON s.id=rc.student_id JOIN terms t ON t.id=rc.term_id
       LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id
-      WHERE rc.organisation_id=$1 AND rc.workflow_status='submitted' ORDER BY rc.submitted_at LIMIT 100`,[a.core.organisation_id])
+      WHERE rc.organisation_id=$1 AND rc.workflow_status='submitted' ORDER BY rc.submitted_at`,[a.core.organisation_id])
   ]);
   const users=await fetchCoreUsers(a.core.organisation_id);
   const userName=(id:string)=>{const u=users.find((x:any)=>x.id===id);return u?(u.first_name+' '+u.last_name):id};
@@ -5507,6 +5504,13 @@ app.put('/api/roles/:role/capabilities',async request=>{
   const b=z.object({permissions:z.array(z.object({capabilityKey:z.string().min(1).max(100),allowed:z.boolean()})).min(1).max(200)}).parse(request.body);
   const known=(await db.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>x.key);
   for(const p of b.permissions)if(!known.includes(p.capabilityKey))throw fail(400,`Unknown school capability: ${p.capabilityKey}`);
+  const financeWorkspaceKeys=new Set([
+    'finance.overview.view','finance.student_payments.view','finance.parent_payment_requests.view',
+    'finance.setup.view','finance.expenses.view','finance.journals.view','finance.taxes.view',
+    'finance.budgets.view','finance.accounts.view','finance.vendors.view','finance.reversals.view',
+    'finance.eod.view','finance.reports.view'
+  ]);
+  const financeWorkspaceEnabled=b.permissions.some(p=>financeWorkspaceKeys.has(p.capabilityKey)&&p.allowed);
   await tx(db,async client=>{
     for(const p of b.permissions){
       await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
@@ -5514,9 +5518,21 @@ app.put('/api/roles/:role/capabilities',async request=>{
         ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
         [a.core.organisation_id,role,p.capabilityKey,p.allowed]);
     }
+    if(financeWorkspaceEnabled){
+      // Finance screens rely on student, academic, fee and report reference data. Keep those
+      // read dependencies in sync so assigning a Finance tab never produces a hidden 403.
+      for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view']){
+        await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
+          VALUES($1,$2,$3,true,now())
+          ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
+          [a.core.organisation_id,role,dependency]);
+      }
+    }
   });
-  await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{count:b.permissions.length});
-  return{role,updated:b.permissions.length};
+  await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{
+    count:b.permissions.length,financeWorkspaceEnabled
+  });
+  return{role,updated:b.permissions.length,financeWorkspaceEnabled};
 });
 
 app.get('/api/teacher/timetable',async request=>{
