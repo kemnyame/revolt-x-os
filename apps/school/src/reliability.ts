@@ -95,7 +95,8 @@ function channelConfigured(config:SchoolConfig,channel:MessageChannel){
 export async function retryCommunicationOutbox(
   db:SchoolDb,
   config:SchoolConfig,
-  limit=20
+  limit=20,
+  organisationId?:string
 ){
   const candidates=(await db.query(`
     SELECT *
@@ -103,9 +104,10 @@ export async function retryCommunicationOutbox(
     WHERE status IN('queued','failed','pending_configuration')
       AND attempt_count<max_attempts
       AND COALESCE(next_attempt_at,created_at)<=now()
+      AND ($2::uuid IS NULL OR organisation_id=$2)
     ORDER BY created_at
     LIMIT $1
-  `,[Math.max(1,Math.min(100,limit))])).rows;
+  `,[Math.max(1,Math.min(100,limit)),organisationId??null])).rows;
 
   const result={scanned:candidates.length,attempted:0,sent:0,failed:0,pendingConfiguration:0};
   const providers=providerStatus(config);
