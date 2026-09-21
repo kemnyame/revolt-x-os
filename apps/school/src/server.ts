@@ -5,6 +5,7 @@ import helmet from '@fastify/helmet';
 import { z } from 'zod';
 import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Script } from 'node:vm';
+import { createRequire } from 'node:module';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
@@ -24,6 +25,9 @@ import {
   retryCommunicationOutbox,
   throttleFingerprint
 } from './reliability.js';
+
+const require=createRequire(import.meta.url);
+const PDFDocument:any=require('pdfkit');
 
 const config=loadSchoolConfig();
 const db=createSchoolDb(config);
@@ -4553,6 +4557,66 @@ app.get('/api/parent/me',async request=>{
   const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
   return{guardian:g,students,school};
 });
+
+app.get('/api/parent/alerts',async request=>{
+  const g=await guardianAuth(request);
+  const rows=(await db.query(`
+    WITH matched AS (
+      SELECT DISTINCT ON (
+        COALESCE(co.related_type,''),
+        COALESCE(co.related_id::text,co.id::text),
+        COALESCE(co.template_key,''),
+        co.body
+      )
+        co.id,co.subject,co.body,co.template_key,co.related_type,co.related_id,
+        co.channel,co.status delivery_status,co.created_at
+      FROM communication_outbox co
+      JOIN guardians gr ON gr.id=$1
+      WHERE co.organisation_id=$2
+        AND (
+          (co.channel='email' AND gr.email IS NOT NULL AND lower(co.recipient_address)=lower(gr.email))
+          OR
+          (co.channel IN('sms','whatsapp')
+            AND regexp_replace(co.recipient_address,'\\D','','g')=regexp_replace(gr.phone,'\\D','','g'))
+        )
+      ORDER BY
+        COALESCE(co.related_type,''),
+        COALESCE(co.related_id::text,co.id::text),
+        COALESCE(co.template_key,''),
+        co.body,
+        co.created_at DESC
+    )
+    SELECT m.*,gar.read_at
+    FROM matched m
+    LEFT JOIN guardian_alert_reads gar
+      ON gar.guardian_id=$1 AND gar.communication_id=m.id
+    ORDER BY m.created_at DESC
+    LIMIT 100
+  `,[g.guardian_id,g.organisation_id])).rows;
+  return{alerts:rows,unread:rows.filter((x:any)=>!x.read_at).length};
+});
+app.post('/api/parent/alerts/:id/read',async request=>{
+  const g=await guardianAuth(request);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  await one<any>(db,`
+    SELECT co.id
+    FROM communication_outbox co
+    JOIN guardians gr ON gr.id=$2
+    WHERE co.id=$1 AND co.organisation_id=$3
+      AND (
+        (co.channel='email' AND gr.email IS NOT NULL AND lower(co.recipient_address)=lower(gr.email))
+        OR
+        (co.channel IN('sms','whatsapp')
+          AND regexp_replace(co.recipient_address,'\\D','','g')=regexp_replace(gr.phone,'\\D','','g'))
+      )
+  `,[id,g.guardian_id,g.organisation_id]);
+  await db.query(`
+    INSERT INTO guardian_alert_reads(guardian_id,communication_id,read_at)
+    VALUES($1,$2,now())
+    ON CONFLICT(guardian_id,communication_id) DO UPDATE SET read_at=now()
+  `,[g.guardian_id,id]);
+  return{read:true};
+});
 app.get('/api/parent/students/:id/dashboard',async request=>{
   const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await ensureGuardianStudent(g.guardian_id,id);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[id]);
@@ -4568,9 +4632,7 @@ app.get('/api/parent/students/:id/fees',async request=>{
   const items=(await db.query(`SELECT sf.id,f.name fee_name,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid,((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0)) balance,sf.status FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.organisation_id=$1 AND sf.student_id=$2 GROUP BY sf.id,f.id ORDER BY sf.created_at DESC`,[g.organisation_id,id])).rows;
   const payments=(await db.query('SELECT id,amount,payment_method,reference,paid_at,note FROM payments WHERE organisation_id=$1 AND student_id=$2 AND voided_at IS NULL ORDER BY paid_at DESC',[g.organisation_id,id])).rows;return{items,payments};
 });
-app.get('/api/parent/students/:id/latest-report',async request=>{
-  const g=await guardianAuth(request);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+async function buildGuardianReleasedReport(g:any,id:string){
   const student=await ensureGuardianStudent(g.guardian_id,id);
   const approved=await maybeOne<any>(db,`SELECT rc.*,t.name term_name,t.id term_id,t.academic_year_id
     FROM report_comments rc JOIN terms t ON t.id=rc.term_id
@@ -4580,8 +4642,8 @@ app.get('/api/parent/students/:id/latest-report',async request=>{
 
   const term=await one<any>(db,`SELECT t.*,y.name academic_year FROM terms t
     JOIN academic_years y ON y.id=t.academic_year_id WHERE t.id=$1`,[approved.term_id]);
-  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,c.class_teacher_os_user_id
-    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,gl.name grade_name,c.class_teacher_os_user_id
+    FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels gl ON gl.id=c.grade_level_id
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[id,term.academic_year_id]);
   Object.assign(student,current||{});
   const subjects=await calculateStudentTermResults(g.organisation_id,id,term.id);
@@ -4599,7 +4661,7 @@ app.get('/api/parent/students/:id/latest-report',async request=>{
     WHERE organisation_id=$1 AND student_id=$2 AND attendance_date BETWEEN $3::date AND $4::date GROUP BY status`,
     [g.organisation_id,id,term.start_date,term.end_date])).rows;
   const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
-  for(const r of attRows){attendance[r.status]=r.count;attendance.total+=Number(r.count)}
+  for(const r of attRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
   if(attendance.total)attendance.rate=Math.round(((attendance.present+attendance.late+attendance.excused)/attendance.total)*10000)/100;
   const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
 
@@ -4608,6 +4670,79 @@ app.get('/api/parent/students/:id/latest-report',async request=>{
     performance:{overallAverage,classPosition,classSize},
     attendance
   };
+}
+
+app.get('/api/parent/students/:id/latest-report',async request=>{
+  const g=await guardianAuth(request);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  return buildGuardianReleasedReport(g,id);
+});
+
+app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
+  const g=await guardianAuth(request);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const report:any=await buildGuardianReleasedReport(g,id);
+  if(!report.available)throw fail(404,'No released report card is available');
+
+  const pdf:Buffer=await new Promise((resolve,reject)=>{
+    const doc=new PDFDocument({size:'A4',margin:42,info:{Title:'Student Report Card'}});
+    const chunks:Buffer[]=[];
+    doc.on('data',(chunk:Buffer)=>chunks.push(chunk));
+    doc.on('error',reject);
+    doc.on('end',()=>resolve(Buffer.concat(chunks)));
+
+    const school=report.school||{},student=report.student||{},term=report.term||{},
+      performance=report.performance||{},attendance=report.attendance||{},comments=report.comments||{};
+    const title=school.school_name||'Revolt-X School';
+    doc.fontSize(19).font('Helvetica-Bold').text(title,{align:'center'});
+    if(school.motto)doc.fontSize(9).font('Helvetica').text(String(school.motto),{align:'center'});
+    doc.moveDown(.2).fontSize(8).text([school.address,school.phone,school.email].filter(Boolean).join('  •  '),{align:'center'});
+    doc.moveDown(.8).fontSize(15).font('Helvetica-Bold').text('STUDENT REPORT CARD',{align:'center'});
+    doc.fontSize(10).font('Helvetica').text((term.academic_year||'')+' • '+(term.name||''),{align:'center'});
+    doc.moveDown();
+
+    const fullName=[student.first_name,student.middle_name,student.last_name].filter(Boolean).join(' ');
+    const meta=[
+      ['Student',fullName],['Student ID',student.admission_no||'—'],
+      ['Class',student.classroom_name||'—'],['Grade',student.grade_name||'—'],
+      ['Overall Average',performance.overallAverage==null?'—':performance.overallAverage+'%'],
+      ['Class Position',performance.classPosition?(performance.classPosition+' / '+performance.classSize):'—'],
+      ['Attendance',String(attendance.rate||0)+'%'],['Promotion',String(comments.promotion_decision||'Pending').replace(/_/g,' ')]
+    ];
+    meta.forEach(([label,value])=>{
+      doc.fontSize(8).fillColor('#667780').text(label,{continued:true,width:120});
+      doc.fillColor('#172027').font('Helvetica-Bold').text('  '+value).font('Helvetica');
+    });
+    doc.moveDown(.7).fillColor('#172027').fontSize(11).font('Helvetica-Bold').text('Academic Performance');
+    doc.moveDown(.2);
+    const widths=[180,95,95,70];
+    const headers=['Subject','Class Assessment','Exam','Total'];
+    let x=doc.x,y=doc.y;
+    doc.fontSize(8).font('Helvetica-Bold');
+    headers.forEach((h,i)=>doc.text(h,x+widths.slice(0,i).reduce((a,b)=>a+b,0),y,{width:widths[i]}));
+    y+=16;doc.moveTo(x,y-3).lineTo(x+widths.reduce((a,b)=>a+b,0),y-3).strokeColor('#cccccc').stroke();
+    doc.font('Helvetica');
+    for(const row of report.subjects||[]){
+      if(y>720){doc.addPage();y=48}
+      const vals=[row.subject_name||'',row.class_assessment_score==null?'—':row.class_assessment_score+' / 30',row.exam_score==null?'—':row.exam_score+' / 70',row.total==null?'—':row.total+'%'];
+      vals.forEach((v,i)=>doc.text(String(v),x+widths.slice(0,i).reduce((a,b)=>a+b,0),y,{width:widths[i]}));
+      y+=15;
+    }
+    doc.y=y+8;
+    doc.fontSize(10).font('Helvetica-Bold').text('Attendance Summary');
+    doc.fontSize(9).font('Helvetica').text('Present: '+(attendance.present||0)+'   Absent: '+(attendance.absent||0)+'   Late: '+(attendance.late||0)+'   Excused: '+(attendance.excused||0));
+    doc.moveDown(.7).font('Helvetica-Bold').text('Class Teacher Remark');
+    doc.font('Helvetica').text(comments.class_teacher_comment||'—');
+    doc.moveDown(.5).font('Helvetica-Bold').text('Headteacher Remark');
+    doc.font('Helvetica').text(comments.headteacher_comment||'—');
+    doc.moveDown(.7).fontSize(8).fillColor('#667780').text('Official report released by the school through Revolt-X School. Generated '+new Date().toLocaleString()+'.',{align:'center'});
+    doc.end();
+  });
+  const safeName=String(report.student.admission_no||'student').replace(/[^A-Za-z0-9_-]/g,'_');
+  return reply.header('content-type','application/pdf')
+    .header('content-disposition','attachment; filename="report-card-'+safeName+'.pdf"')
+    .header('cache-control','private, no-store')
+    .send(pdf);
 });
 
 app.get('/api/payments/:id/receipt',async request=>{
