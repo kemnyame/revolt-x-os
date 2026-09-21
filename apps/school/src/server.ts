@@ -5648,7 +5648,21 @@ app.get('/api/search',async request=>{
 app.get('/api/communications/status',async request=>{
   const a=await authorize(request,db,config,'communications.view');
   const rules=(await db.query('SELECT event_key,channel,enabled,updated_at FROM notification_rules WHERE organisation_id=$1 ORDER BY event_key,channel',[a.core.organisation_id])).rows;
-  return{providers:providerStatus(config),rules};
+  const queue=(await db.query(`
+    SELECT channel,status,count(*)::int count
+    FROM communication_outbox
+    WHERE organisation_id=$1
+    GROUP BY channel,status
+    ORDER BY channel,status
+  `,[a.core.organisation_id])).rows;
+  const summary=queue.reduce((acc:any,row:any)=>{
+    const n=Number(row.count||0);
+    acc.total+=n;
+    acc[row.status]=(acc[row.status]||0)+n;
+    acc.byChannel[row.channel]=(acc.byChannel[row.channel]||0)+n;
+    return acc;
+  },{total:0,queued:0,pending_configuration:0,sending:0,sent:0,failed:0,byChannel:{email:0,sms:0,whatsapp:0}});
+  return{providers:providerStatus(config),rules,queue,summary};
 });
 app.put('/api/communications/rules',async request=>{
   const a=await authorize(request,db,config,'communications.manage');
@@ -5698,6 +5712,14 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
     await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'failed'});
     return row;
   }
+});
+
+app.post('/api/communications/retry-pending',async request=>{
+  const a=await authorize(request,db,config,'communications.send');
+  const b=z.object({limit:z.number().int().min(1).max(100).default(100)}).parse(request.body??{});
+  const result=await retryCommunicationOutbox(db,config,b.limit);
+  await audit(a.core.organisation_id,a.core.id,'communications.bulk_retry','communication_outbox',null,result);
+  return result;
 });
 
 app.get('/api/communications/outbox',async request=>{
