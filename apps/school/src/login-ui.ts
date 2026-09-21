@@ -33,7 +33,7 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
     <div>
       <div class="brand"><span>REVOLT-X</span> SCHOOL</div>
       <h1>One secure sign-in for every School staff user.</h1>
-      <p>Your School role decides what opens after sign-in. Teachers, headteachers, administrators, registrars and bursars use the same account screen.</p>
+      <p>Your School role decides what opens after sign-in. Every active School role uses this same account screen. The role profile and privileges decide which workspace and functions open after sign-in.</p>
       <div class="role-grid">
         <div class="role"><b>Teachers</b><small>Classes, scores, attendance, lesson notes and reports</small></div>
         <div class="role"><b>Headteachers</b><small>Academic oversight, approvals and teaching access</small></div>
@@ -59,7 +59,7 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <div id="demoAccess" class="demo-box hide">
           <div class="eyebrow">Demo access</div>
           <h3>Select a School user</h3>
-          <p class="muted">Keep this testing route until production sign-in is fully commissioned.</p>
+          <p class="muted">Demo users include every active School role, including custom roles. Each opens the workspace configured on its role profile.</p>
           <div id="demoGate">
             <label>Demo access password</label>
             <input id="demoPassword" type="password" autocomplete="current-password">
@@ -94,18 +94,16 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
 function E(id){return document.getElementById(id)}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 async function json(path,opt){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
-function roleHome(role){return role==='teacher'?'/teacher':role==='headteacher'?'/headteacher':role==='bursar'?'/bursar':role==='registrar'?'/registrar':'/'}
-function allowedNext(role,next){
-  var home=roleHome(role);
+function roleHome(profile){return profile&&profile.portal_mode==='teacher'?'/teacher':'/'}
+function allowedNext(profile,next){
+  var home=roleHome(profile);
   if(next&&next===home)return next;
-  if(next==='/teacher'&&['teacher','headteacher','school_admin'].indexOf(role)>=0)return role==='headteacher'?'/headteacher':'/teacher';
-  if(next==='/'&&role!=='teacher'&&role!=='headteacher')return'/';
   return home
 }
 async function existingSession(){
   try{
     var r=await fetch('/api/context'),j=await r.json();
-    if(r.ok&&j&&j.schoolRole){location.replace(allowedNext(j.schoolRole,new URLSearchParams(location.search).get('next')||''));return true}
+    if(r.ok&&j&&j.schoolRole){location.replace(allowedNext(j.roleProfile,new URLSearchParams(location.search).get('next')||''));return true}
   }catch(e){}
   return false
 }
@@ -117,9 +115,9 @@ async function signIn(){
   try{
     var x=await json('/api/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password})});
     status.textContent='Signed in as '+(x.user?x.user.firstName+' '+x.user.lastName:'School user')+'. Opening your workspace...';
-    try{sessionStorage.setItem('rx_school_token',x.accessToken);if(x.schoolRole==='teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken)}catch(e){}
+    try{sessionStorage.setItem('rx_school_token',x.accessToken);if(x.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken);else sessionStorage.removeItem('rx_teacher_token')}catch(e){}
     var next=new URLSearchParams(location.search).get('next')||'';
-    location.replace(x.redirectTo||allowedNext(x.schoolRole,next))
+    location.replace(x.redirectTo||allowedNext(x.roleProfile,next))
   }catch(err){
     E('message').innerHTML='<div class="error">'+esc(err.message)+'</div>';status.style.display='none';btn.disabled=false;btn.textContent='Sign in to Revolt-X School'
   }
@@ -158,9 +156,9 @@ async function configureDemoAccess(){
       var x=await json('/api/test-access/staff-login',{method:'POST',body:JSON.stringify({osUserId:id})});
       try{
         sessionStorage.setItem('rx_school_token',x.accessToken);
-        if(x.schoolRole==='teacher'||x.schoolRole==='headteacher'||x.schoolRole==='school_admin')sessionStorage.setItem('rx_teacher_token',x.accessToken)
+        if(x.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken);else sessionStorage.removeItem('rx_teacher_token')
       }catch(e){}
-      location.replace(x.redirectTo||roleHome(x.schoolRole))
+      location.replace(x.redirectTo||roleHome(x.roleProfile))
     }catch(err){E('demoStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Selected Workspace'}
   };
   if(state.unlocked)await loadStaff()
