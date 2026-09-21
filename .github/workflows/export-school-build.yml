@@ -14,10 +14,19 @@ jobs:
       - name: Checkout current main
         uses: actions/checkout@v4
 
-      - name: Create source ZIP
+      - name: Build Revolt-X School
+        working-directory: apps/school
         run: |
-          mkdir -p export
-          zip -r export/revolt-x-school-current-build.zip apps/school             -x "apps/school/node_modules/*"                "apps/school/dist/*"                "apps/school/.env"
+          npm install
+          npm run build
+
+      - name: Create source and runtime ZIPs
+        run: |
+          mkdir -p export/runtime/revolt-x-school
+          zip -r export/revolt-x-school-source.zip apps/school             -x "apps/school/node_modules/*" "apps/school/dist/*" "apps/school/.env"
+          rsync -a apps/school/dist apps/school/migrations apps/school/package.json apps/school/package-lock.json apps/school/.env.example apps/school/README.md export/runtime/revolt-x-school/
+          cd export/runtime
+          zip -r ../revolt-x-school-runtime-build.zip revolt-x-school
 
       - name: Add build metadata
         run: |
@@ -28,7 +37,8 @@ jobs:
         with:
           name: revolt-x-school-current-build
           path: |
-            export/revolt-x-school-current-build.zip
+            export/revolt-x-school-source.zip
+            export/revolt-x-school-runtime-build.zip
             export/BUILD_INFO.txt
           if-no-files-found: error
           retention-days: 7
