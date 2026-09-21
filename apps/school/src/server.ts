@@ -3198,6 +3198,11 @@ app.post('/api/staff/users',async(request,reply)=>{
     VALUES($1,$2,$3,'active')
     ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()
     RETURNING *`,[a.core.organisation_id,payload.user_id,b.schoolRole]);
+  await persistCoreUsers(a.core.organisation_id,[{
+    id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
+    email:b.email??null,job_title:b.jobTitle||role.name,employee_number:payload.employee_number??null,
+    status:'active',membership_status:'active',roles:['member']
+  }]);
 
   let invitation:any={status:b.email?'not_started':'email_not_set'};
   if(b.email){
@@ -3285,6 +3290,11 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     VALUES($1,$2,'teacher','active')
     ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()
     RETURNING *`,[a.core.organisation_id,payload.user_id]);
+  await persistCoreUsers(a.core.organisation_id,[{
+    id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
+    email:b.email,job_title:b.jobTitle,employee_number:payload.employee_number??null,
+    status:'active',membership_status:'active',roles:['member']
+  }]);
 
   let invitation:any={status:'not_created'};
   const setupRes=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-setup',{
