@@ -6166,8 +6166,8 @@ app.patch('/api/system/errors/:id',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({resolved:z.boolean(),resolutionNote:z.string().max(4000).optional()}).parse(request.body);
   const row=await one<any>(db,`UPDATE system_errors SET resolved_at=CASE WHEN $1 THEN now() ELSE NULL END,
-    resolved_by_os_user_id=CASE WHEN $1 THEN $2 ELSE NULL END,resolution_note=$3
-    WHERE id=$4 AND (organisation_id=$5 OR organisation_id IS NULL) RETURNING *`,
+    resolved_by_os_user_id=CASE WHEN $1 THEN $2::uuid ELSE NULL END,resolution_note=$3
+    WHERE id=$4::uuid AND (organisation_id=$5::uuid OR organisation_id IS NULL) RETURNING *`,
     [b.resolved,a.core.id,b.resolutionNote??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,b.resolved?'system_error.resolved':'system_error.reopened','system_error',id,{resolutionNote:b.resolutionNote??null});
   return row;

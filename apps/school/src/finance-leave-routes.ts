@@ -610,7 +610,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/leave/eligible-relievers',async request=>{
     const a=await authorize(request,db,config,'leave.view');
-    const q=z.object({applicantOsUserId:z.string().uuid().optional()}).parse(request.query);
+    const q=z.object({applicantOsUserId:z.preprocess(v=>typeof v==='string'&&v.trim()===''?undefined:v,z.string().uuid().optional())}).parse(request.query);
     const users=await fetchCoreUsers(a.core.organisation_id);
     const teaching=(await db.query(
       "SELECT sm.os_user_id,sm.role,sr.name role_name FROM school_memberships sm JOIN school_roles sr "+
