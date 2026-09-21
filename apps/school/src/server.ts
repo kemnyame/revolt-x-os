@@ -3112,7 +3112,6 @@ app.post('/api/staff/users',async(request,reply)=>{
     lastName:z.string().trim().min(1).max(100),
     email:z.string().trim().toLowerCase().email().optional(),
     jobTitle:z.string().trim().max(160).optional(),
-    employeeNumber:z.string().trim().max(80).optional(),
     schoolRole:z.string().min(1).max(40)
   }).parse(request.body);
 
@@ -3130,7 +3129,6 @@ app.post('/api/staff/users',async(request,reply)=>{
       lastName:b.lastName,
       ...(b.email?{email:b.email}:{}),
       jobTitle:b.jobTitle||role.name,
-      employeeNumber:b.employeeNumber||undefined,
       roleKey:'member'
     }),
     signal:AbortSignal.timeout(15000)
@@ -3193,7 +3191,7 @@ The link expires in 24 hours.`,
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'school_user.created',
     resourceType:'school_user',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:b.employeeNumber??null,emailConfigured:Boolean(b.email),status:'active'}
+    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:payload.employee_number??null,emailConfigured:Boolean(b.email),status:'active'}
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
@@ -5507,6 +5505,13 @@ app.put('/api/roles/:role/capabilities',async request=>{
   const b=z.object({permissions:z.array(z.object({capabilityKey:z.string().min(1).max(100),allowed:z.boolean()})).min(1).max(200)}).parse(request.body);
   const known=(await db.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>x.key);
   for(const p of b.permissions)if(!known.includes(p.capabilityKey))throw fail(400,`Unknown school capability: ${p.capabilityKey}`);
+  const financeWorkspaceKeys=new Set([
+    'finance.overview.view','finance.student_payments.view','finance.parent_payment_requests.view',
+    'finance.setup.view','finance.expenses.view','finance.journals.view','finance.taxes.view',
+    'finance.budgets.view','finance.accounts.view','finance.vendors.view','finance.reversals.view',
+    'finance.eod.view','finance.reports.view'
+  ]);
+  const financeWorkspaceEnabled=b.permissions.some(p=>financeWorkspaceKeys.has(p.capabilityKey)&&p.allowed);
   await tx(db,async client=>{
     for(const p of b.permissions){
       await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
@@ -5514,9 +5519,21 @@ app.put('/api/roles/:role/capabilities',async request=>{
         ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
         [a.core.organisation_id,role,p.capabilityKey,p.allowed]);
     }
+    if(financeWorkspaceEnabled){
+      // Finance screens rely on student, academic, fee and report reference data. Keep those
+      // read dependencies in sync so assigning a Finance tab never produces a hidden 403.
+      for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view']){
+        await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
+          VALUES($1,$2,$3,true,now())
+          ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
+          [a.core.organisation_id,role,dependency]);
+      }
+    }
   });
-  await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{count:b.permissions.length});
-  return{role,updated:b.permissions.length};
+  await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{
+    count:b.permissions.length,financeWorkspaceEnabled
+  });
+  return{role,updated:b.permissions.length,financeWorkspaceEnabled};
 });
 
 app.get('/api/teacher/timetable',async request=>{
