@@ -230,12 +230,18 @@ async function boot(){try{
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var initialPath=location.pathname.match(/^\\/students\\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1]){selectedStudentId=decodeURIComponent(initialPath[1]);await page('studentdetail');}else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage}))await page(requestedPage);else await page('dashboard')
 }catch(e){
-  E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app now retries transient wake-up/network delays automatically. Core OS being offline does not by itself block an already-valid School session.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="checkSchoolCore" class="primary">Check system status</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button><button id="retrySchool" class="ghost">Retry</button></div></div>';
+  E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app retries transient network delays automatically and can explicitly wake Core OS.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="wakeSchoolCore" class="primary">Wake Core OS</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Retry</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button></div></div>';
   E('retrySchool').onclick=function(){location.reload()};
   E('returnSchoolLogin').onclick=function(){location.replace('/login')};
+  E('wakeSchoolCore').onclick=async function(){
+    var btn=E('wakeSchoolCore');btn.disabled=true;btn.textContent='Waking Core OS...';E('schoolConnectionStatus').textContent='Sending the Core OS wake sequence...';
+    try{var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();E('schoolConnectionStatus').textContent=j.message+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'');if(r.ok)setTimeout(function(){location.reload()},700)}
+    catch(err){E('schoolConnectionStatus').textContent=err.message}
+    finally{btn.disabled=false;btn.textContent='Wake Core OS'}
+  };
   E('checkSchoolCore').onclick=async function(){
     var btn=E('checkSchoolCore');btn.disabled=true;E('schoolConnectionStatus').textContent='Checking School, database and Core OS...';
-    try{var r=await fetch('/api/system/core-status'),j=await r.json(),coreOnline=!!(j.core&&j.core.reachable);E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(coreOnline?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')+(j.school==='ready'&&j.database==='ready'&&!coreOnline?' • School is available; Core-dependent sign-in/sync functions may be temporarily limited.':'')}
+    try{var r=await fetch('/api/system/core-status'),j=await r.json(),coreOnline=!!(j.core&&j.core.reachable);E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(coreOnline?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')+(j.school==='ready'&&j.database==='ready'&&!coreOnline?' • Use Wake Core OS to start the Core service now.':'')}
     catch(err){E('schoolConnectionStatus').textContent=err.message}
     finally{btn.disabled=false}
   }
