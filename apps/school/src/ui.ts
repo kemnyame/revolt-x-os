@@ -234,9 +234,22 @@ async function boot(){try{
   E('retrySchool').onclick=function(){location.reload()};
   E('returnSchoolLogin').onclick=function(){location.replace('/login')};
   E('wakeSchoolCore').onclick=async function(){
-    var btn=E('wakeSchoolCore');btn.disabled=true;btn.textContent='Waking Core OS...';E('schoolConnectionStatus').textContent='Sending the Core OS wake sequence...';
-    try{var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();E('schoolConnectionStatus').textContent=j.message+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'');if(r.ok)setTimeout(function(){location.reload()},700)}
-    catch(err){E('schoolConnectionStatus').textContent=err.message}
+    var btn=E('wakeSchoolCore');btn.disabled=true;btn.textContent='Starting Core OS...';E('schoolConnectionStatus').textContent='Starting Core OS in the background...';
+    try{
+      var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();
+      E('schoolConnectionStatus').textContent=j.message||'Core OS wake started.';
+      if(r.status===200&&j.core&&j.core.reachable){E('schoolConnectionStatus').textContent='Core OS is online. Reconnecting School...';setTimeout(function(){location.reload()},500);return}
+      for(var attempt=0;attempt<24;attempt++){
+        await wait(2500);
+        var s=await fetch('/api/system/core-status'),status=await s.json().catch(function(){return null});
+        if(status&&status.core&&status.core.reachable){
+          E('schoolConnectionStatus').textContent='Core OS is online. Reconnecting School...';
+          setTimeout(function(){location.reload()},500);return
+        }
+        E('schoolConnectionStatus').textContent='Core OS is starting... health check '+(attempt+1)+' / 24';
+      }
+      E('schoolConnectionStatus').textContent='Core OS is taking longer than expected. School remains available for existing local sessions; retry sign-in shortly if you need a new session.'
+    }catch(err){E('schoolConnectionStatus').textContent=err.message}
     finally{btn.disabled=false;btn.textContent='Wake Core OS'}
   };
   E('checkSchoolCore').onclick=async function(){
