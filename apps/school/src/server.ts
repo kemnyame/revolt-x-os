@@ -155,30 +155,79 @@ const coreUsersCache=new Map<string,{value:any[];expiresAt:number}>();
 const CORE_USERS_CACHE_MS=300_000;
 const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
 
+async function readPersistentCoreUsers(organisationId:string){
+  return (await db.query(`
+    SELECT os_user_id id,email,first_name,last_name,user_status status,
+           core_membership_id membership_id,job_title,employee_number,
+           membership_status,roles,synced_at
+    FROM school_user_directory
+    WHERE organisation_id=$1
+    ORDER BY first_name,last_name
+  `,[organisationId])).rows.map((u:any)=>({...u,roles:Array.isArray(u.roles)?u.roles:[]}));
+}
+
+async function persistCoreUsers(organisationId:string,users:any[]){
+  await tx(db,async client=>{
+    for(const u of users){
+      if(!u?.id)continue;
+      await client.query(`
+        INSERT INTO school_user_directory(
+          organisation_id,os_user_id,core_membership_id,first_name,last_name,email,
+          job_title,employee_number,user_status,membership_status,roles,synced_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now())
+        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
+          core_membership_id=EXCLUDED.core_membership_id,
+          first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=EXCLUDED.email,
+          job_title=EXCLUDED.job_title,employee_number=EXCLUDED.employee_number,
+          user_status=EXCLUDED.user_status,membership_status=EXCLUDED.membership_status,
+          roles=EXCLUDED.roles,synced_at=now()
+      `,[
+        organisationId,u.id,u.membership_id??null,u.first_name??'',u.last_name??'',u.email??null,
+        u.job_title??null,u.employee_number??null,u.status??null,u.membership_status??null,
+        JSON.stringify(Array.isArray(u.roles)?u.roles:[])
+      ]);
+    }
+  });
+}
+
 async function fetchCoreUsers(organisationId:string){
   const cached=coreUsersCache.get(organisationId);
   if(cached&&cached.expiresAt>Date.now())return cached.value;
 
-  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
-  let lastError='Core OS staff directory is temporarily unavailable';
+  const persistent=await readPersistentCoreUsers(organisationId).catch(()=>[] as any[]);
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const url=base+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
+  const maxAttempts=persistent.length?1:4;
+  const timeoutMs=persistent.length?2500:12000;
 
-  for(let attempt=0;attempt<3;attempt++){
+  for(let attempt=0;attempt<maxAttempts;attempt++){
     try{
-      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(6000)});
+      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(timeoutMs)});
       const payload=await res.json().catch(()=>null) as any;
       if(res.ok){
         const value=Array.isArray(payload)?payload:[];
-        coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+        if(value.length){
+          await persistCoreUsers(organisationId,value);
+          coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+          return value;
+        }
+        if(persistent.length){
+          coreUsersCache.set(organisationId,{value:persistent,expiresAt:Date.now()+60_000});
+          return persistent;
+        }
         return value;
       }
-      lastError=payload?.error?.message||lastError;
       if(!CORE_SERVICE_TRANSIENT_STATUSES.has(res.status))break;
-    }catch(error:any){
-      lastError=String(error?.message||lastError);
-    }
-    if(attempt<2)await new Promise(resolve=>setTimeout(resolve,[500,1000][attempt]||1000));
+    }catch{}
+    if(attempt+1<maxAttempts)await new Promise(resolve=>setTimeout(resolve,[700,1400,2500][attempt]||2500));
   }
 
+  if(persistent.length){
+    // Serve the last complete staff directory immediately and wake Core in parallel.
+    void fetch(base+'/health/live',{signal:AbortSignal.timeout(20_000)}).catch(()=>null);
+    coreUsersCache.set(organisationId,{value:persistent,expiresAt:Date.now()+60_000});
+    return persistent;
+  }
   if(cached)return cached.value;
   return[] as any[];
 }
@@ -2021,10 +2070,10 @@ app.post('/api/students',async(request,reply)=>{
   });
   return reply.code(201).send(result);
 });
-app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
+app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.profile.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
 
 app.get('/api/students/:id/360',async request=>{
-  const a=await authorize(request,db,config,'students.view');
+  const a=await authorize(request,db,config,'students.360.view');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,`SELECT s.*,e.id enrolment_id,e.academic_year_id,c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,
       g.id grade_level_id,g.code grade_code,g.name grade_name,y.name academic_year
