@@ -40,6 +40,16 @@ test('School-local sessions never fall through to Core OS',async()=>{
   assert.match(server,/reachable:\s*res\.status\s*<\s*500/);
 });
 
+test('Core wake recovery is non-blocking and automatically health-polls',async()=>{
+  const server=await read('server.js');
+  const ui=await read('ui.js');
+  assert.match(server,/reply\.code\(202\)/);
+  assert.match(server,/Background Core OS wake failed/);
+  assert.match(ui,/Core OS is starting\.\.\. health check/);
+  assert.match(ui,/\/api\/system\/core-status/);
+  assert.match(ui,/Core OS is online\. Reconnecting School/);
+});
+
 test('staff directory survives Core OS sleep and partial Core directories',async()=>{
   const server=await read('server.js');
   assert.match(server,/school_user_directory/);
