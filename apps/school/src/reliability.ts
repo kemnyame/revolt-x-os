@@ -110,7 +110,8 @@ export async function retryCommunicationOutbox(
   const result={scanned:candidates.length,attempted:0,sent:0,failed:0,pendingConfiguration:0};
   const providers=providerStatus(config);
   let emailProviderError:string|null=null;
-  if(providers.email.provider==='brevo'&&providers.email.configured){
+  const resendFallbackReady=Boolean(config.EMAIL_PROVIDER==='auto'&&config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL);
+  if(providers.email.provider==='brevo'&&providers.email.configured&&!resendFallbackReady){
     try{
       const verification=await validateBrevoConnection(config);
       if(!verification.authenticated||!verification.senderReady){
