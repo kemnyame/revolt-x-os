@@ -49,7 +49,7 @@ test('student directory uses server-side pagination for large schools',async()=>
   const server=await read('server.js');
   const ui=await read('ui.js');
   assert.match(server,/\/api\/students\/directory/);
-  assert.match(server,/pageSize:z\.coerce\.number/);
+  assert.match(server,/pageSize:\s*z\.coerce\.number/);
   assert.match(server,/LIMIT \$5 OFFSET \$6/);
   assert.match(ui,/\/api\/students\/directory\?page=/);
   assert.doesNotMatch(ui,/Promise\.all\(\[raw\('\/api\/students'\),raw\('\/api\/classes'/);
