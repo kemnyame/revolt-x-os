@@ -47,8 +47,13 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   async function buildEodReports(client:any,organisationId:string,businessDate:string){
     const yearStart=businessDate.slice(0,4)+'-01-01';
-    const [trial,income,cash,balance,aging,fees,expenses,taxes,budgets,ledger,students,integrity]=await Promise.all([
-      client.query(`
+    async function serialQueries(jobs:Array<()=>Promise<any>>){
+      const results:any[]=[];
+      for(const job of jobs)results.push(await job());
+      return results;
+    }
+    const [trial,income,cash,balance,aging,fees,expenses,taxes,budgets,ledger,students,integrity]=await serialQueries([
+      ()=>client.query(`
         SELECT fa.code,fa.name,fa.account_type,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit ELSE 0 END),0) debit,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit ELSE 0 END),0) credit
@@ -57,7 +62,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id AND je.status='posted' AND je.entry_date<=$2
         WHERE fa.organisation_id=$1 GROUP BY fa.id ORDER BY fa.code
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT fa.code,fa.name,fa.account_type,
           CASE WHEN fa.account_type='income'
             THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0)
@@ -68,7 +73,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE fa.organisation_id=$1 AND fa.account_type IN('income','expense')
         GROUP BY fa.id ORDER BY fa.account_type DESC,fa.code
       `,[organisationId,yearStart,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT fa.code,fa.name,fa.opening_balance,
           COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) movement,
           fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0) closing_balance
@@ -78,7 +83,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE fa.organisation_id=$1 AND fa.is_cash_account=true
         GROUP BY fa.id ORDER BY fa.code
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT fa.code,fa.name,fa.account_type,fa.opening_balance,
           CASE WHEN fa.account_type='asset'
             THEN fa.opening_balance+COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.debit-jl.credit ELSE 0 END),0)
@@ -89,7 +94,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE fa.organisation_id=$1 AND fa.account_type IN('asset','liability','equity')
         GROUP BY fa.id ORDER BY fa.account_type,fa.code
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,
           COALESCE(sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)),0) outstanding
         FROM students s
@@ -99,26 +104,26 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         GROUP BY s.id HAVING COALESCE(sum((sf.amount_due-sf.discount)-COALESCE(p.paid,0)),0)>0
         ORDER BY outstanding DESC
       `,[organisationId]),
-      client.query(`
+      ()=>client.query(`
         SELECT p.payment_method,count(*)::int transactions,COALESCE(sum(p.amount),0) amount
         FROM payments p
         WHERE p.organisation_id=$1 AND p.voided_at IS NULL AND p.paid_at::date=$2
         GROUP BY p.payment_method ORDER BY amount DESC
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT fa.code,fa.name,COALESCE(sum(e.amount+e.tax_amount),0) amount,count(e.id)::int transactions
         FROM finance_accounts fa
         LEFT JOIN finance_expenses e ON e.expense_account_id=fa.id AND e.status='posted' AND e.expense_date=$2
         WHERE fa.organisation_id=$1 AND fa.account_type='expense'
         GROUP BY fa.id HAVING count(e.id)>0 ORDER BY amount DESC
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT t.code,t.name,t.authority,COALESCE(sum(o.amount_due),0) amount_due,COALESCE(sum(o.amount_paid),0) amount_paid,
           COALESCE(sum(o.amount_due-o.amount_paid),0) outstanding
         FROM finance_tax_types t LEFT JOIN finance_tax_obligations o ON o.tax_type_id=t.id AND o.status<>'cancelled'
         WHERE t.organisation_id=$1 GROUP BY t.id ORDER BY t.code
       `,[organisationId]),
-      client.query(`
+      ()=>client.query(`
         SELECT b.id,fa.code,fa.name,fa.account_type,b.period_start,b.period_end,b.amount budget_amount,
           CASE WHEN fa.account_type='income'
             THEN COALESCE(sum(CASE WHEN je.id IS NOT NULL THEN jl.credit-jl.debit ELSE 0 END),0)
@@ -130,7 +135,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE b.organisation_id=$1 AND b.period_start<=$2::date AND b.period_end>=$2::date
         GROUP BY b.id,fa.id ORDER BY fa.code
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT je.entry_date,je.entry_no,je.description,je.reference,fa.code account_code,fa.name account_name,
           jl.description line_description,jl.debit,jl.credit
         FROM finance_journal_entries je
@@ -139,7 +144,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         WHERE je.organisation_id=$1 AND je.status='posted' AND je.entry_date=$2
         ORDER BY je.entry_no,fa.code
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         WITH student_base AS (
           SELECT s.id,s.admission_no,s.first_name,s.last_name,
             COALESCE((SELECT sum(sf.amount_due-sf.discount) FROM student_fees sf
@@ -160,7 +165,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
         FROM student_base
         ORDER BY admission_no
       `,[organisationId,businessDate]),
-      client.query(`
+      ()=>client.query(`
         SELECT
           (SELECT count(*) FROM (
             SELECT je.id FROM finance_journal_entries je
