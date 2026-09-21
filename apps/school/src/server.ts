@@ -141,7 +141,7 @@ async function activeTerm(org:string){
 
 async function ensureTeachingRole(a:any){
   const profile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
-  if(!profile?.can_teach)throw fail(403,'Teacher workspace access is not enabled for this school role');
+  if(!profile||profile.is_active===false||profile.portal_mode!=='teacher')throw fail(403,'Teacher workspace access is not enabled for this school role');
   return profile;
 }
 
@@ -1087,16 +1087,16 @@ async function handleSchoolStaffLogin(request:any,reply:any){
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
 
-  const redirectTo=membership.role==='teacher'?'/teacher':
-    membership.role==='headteacher'?'/headteacher':
-    membership.role==='bursar'?'/bursar':
-    membership.role==='registrar'?'/registrar':'/';
-  await audit(coreContext.organisation_id,coreContext.id,'school.authenticated','school_session',null,{role:membership.role});
+  const roleProfile=await schoolRoleProfile(db,coreContext.organisation_id,membership.role);
+  if(!roleProfile||roleProfile.is_active===false)throw fail(403,'This School role is inactive');
+  const redirectTo=roleProfile.portal_mode==='teacher'?'/teacher':'/';
+  await audit(coreContext.organisation_id,coreContext.id,'school.authenticated','school_session',null,{role:membership.role,portalMode:roleProfile.portal_mode});
 
   return reply.send({
     accessToken:session.localToken,
     expiresIn:8*60*60,
     schoolRole:membership.role,
+    roleProfile,
     user:{
       id:coreContext.id,
       email:coreContext.email,
@@ -5085,35 +5085,38 @@ app.post('/api/test-access/student-login',async request=>{
     VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
   return{token,expiresIn:28800,testAccess:true};
 });
-async function testStaffDirectory(roles:string[]){
+async function testStaffDirectory(portalMode?:'teacher'|'admin'){
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
-  const memberships=(await db.query(`SELECT os_user_id,role FROM school_memberships
-    WHERE organisation_id=$1 AND status='active' AND role=ANY($2::text[])
-    ORDER BY CASE role WHEN 'school_admin' THEN 1 WHEN 'headteacher' THEN 2 WHEN 'teacher' THEN 3 WHEN 'registrar' THEN 4 ELSE 5 END,created_at`,
-    [school.organisation_id,roles])).rows;
+  const memberships=(await db.query(`SELECT sm.os_user_id,sm.role,sr.name role_name,sr.portal_mode,sr.can_teach
+    FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.status='active' AND sr.is_active=true
+      AND ($2::text IS NULL OR sr.portal_mode=$2)
+    ORDER BY CASE sm.role WHEN 'school_admin' THEN 1 WHEN 'headteacher' THEN 2 WHEN 'teacher' THEN 3 ELSE 4 END,sr.name,sm.created_at`,
+    [school.organisation_id,portalMode??null])).rows;
   const users=await fetchCoreUsers(school.organisation_id);
   return memberships.map((m:any)=>{
     const u=users.find((x:any)=>x.id===m.os_user_id)||{};
     return{
-      id:m.os_user_id,role:m.role,email:u.email||'',
+      id:m.os_user_id,role:m.role,role_name:m.role_name,portal_mode:m.portal_mode,can_teach:m.can_teach,email:u.email||'',
       first_name:u.first_name||(m.role==='headteacher'?'Headteacher':m.role==='school_admin'?'Administrator':'Demo'),
-      last_name:u.last_name||'User',job_title:u.job_title||m.role.replace('_',' ')
+      last_name:u.last_name||'User',job_title:u.job_title||m.role_name||m.role.replace('_',' ')
     };
   });
 }
-function testStaffRedirect(role:string){
-  return role==='teacher'?'/teacher':
-    role==='headteacher'?'/headteacher':
-    role==='bursar'?'/bursar':
-    role==='registrar'?'/registrar':'/';
+function roleWorkspace(profile:any){
+  return profile?.portal_mode==='teacher'?'/teacher':'/';
 }
-async function createTestStaffLogin(request:any,reply:any,allowedRoles:string[]){
+async function createTestStaffLogin(request:any,reply:any,requiredPortalMode?:'teacher'|'admin'){
   requireTestAccess(request);
   const b=z.object({osUserId:z.string().uuid()}).parse(request.body);
   const school=await one<any>(db,'SELECT organisation_id,school_name FROM school_profiles ORDER BY created_at LIMIT 1');
-  const membership=await one<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active' AND role=ANY($3::text[])`,
-    [school.organisation_id,b.osUserId,allowedRoles]);
+  const membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
+    FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true
+      AND ($3::text IS NULL OR sr.portal_mode=$3)`,
+    [school.organisation_id,b.osUserId,requiredPortalMode??null]);
   const users=await fetchCoreUsers(school.organisation_id);
   const u=users.find((x:any)=>x.id===b.osUserId)||{};
   const coreContext={
@@ -5134,26 +5137,27 @@ async function createTestStaffLogin(request:any,reply:any,allowedRoles:string[])
   const session=await createSchoolStaffSession(coreContext,'preview');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  await audit(school.organisation_id,b.osUserId,'staff.test_authenticated','school_session',null,{role:membership.role});
+  await audit(school.organisation_id,b.osUserId,'staff.test_authenticated','school_session',null,{role:membership.role,portalMode:membership.portal_mode});
   return reply.send({
     accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,
-    redirectTo:testStaffRedirect(membership.role),testAccess:true,
+    roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
+    redirectTo:roleWorkspace(membership),testAccess:true,
     user:{id:b.osUserId,firstName:coreContext.first_name,lastName:coreContext.last_name,email:coreContext.email}
   });
 }
 app.get('/api/test-access/teachers',async request=>{
   requireTestAccess(request);
-  return testStaffDirectory(['teacher','headteacher','school_admin']);
+  return testStaffDirectory('teacher');
 });
 app.post('/api/test-access/teacher-login',async(request,reply)=>{
-  return createTestStaffLogin(request,reply,['teacher','headteacher','school_admin']);
+  return createTestStaffLogin(request,reply,'teacher');
 });
 app.get('/api/test-access/staff',async request=>{
   requireTestAccess(request);
-  return testStaffDirectory(['school_admin','headteacher','teacher','registrar','bursar']);
+  return testStaffDirectory();
 });
 app.post('/api/test-access/staff-login',async(request,reply)=>{
-  return createTestStaffLogin(request,reply,['school_admin','headteacher','teacher','registrar','bursar']);
+  return createTestStaffLogin(request,reply);
 });
 
 app.post('/api/students/:id/portal-reset',async request=>{
