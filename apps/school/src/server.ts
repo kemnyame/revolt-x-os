@@ -2024,6 +2024,53 @@ app.delete('/api/class-subjects/:id',async(request,reply)=>{
   return reply.code(204).send();
 });
 
+app.get('/api/students/directory',async request=>{
+  const a=await authorize(request,db,config,'screen.students.view');
+  const q=z.object({
+    q:z.string().trim().max(100).optional(),
+    status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional(),
+    classroomId:z.string().uuid().optional(),
+    page:z.coerce.number().int().min(1).max(100000).default(1),
+    pageSize:z.coerce.number().int().min(20).max(200).default(100)
+  }).parse(request.query);
+  const search=q.q?('%'+q.q+'%'):null;
+  const where=`s.organisation_id=$1
+    AND ($2::text IS NULL OR concat_ws(' ',s.admission_no,s.first_name,s.middle_name,s.last_name) ILIKE $2)
+    AND ($3::text IS NULL OR s.status=$3)
+    AND ($4::uuid IS NULL OR ae.classroom_id=$4)`;
+  const params=[a.core.organisation_id,search,q.status??null,q.classroomId??null];
+  const total=Number((await one<any>(db,`
+    SELECT count(*)::int total
+    FROM students s
+    LEFT JOIN LATERAL (
+      SELECT e.classroom_id,e.academic_year_id
+      FROM enrolments e
+      WHERE e.student_id=s.id AND e.status='active'
+      ORDER BY e.enrolled_at DESC LIMIT 1
+    ) ae ON true
+    WHERE ${where}
+  `,params)).total||0);
+  const pages=Math.max(1,Math.ceil(total/q.pageSize));
+  const page=Math.min(q.page,pages);
+  const offset=(page-1)*q.pageSize;
+  const rows=(await db.query(`
+    SELECT s.*,ae.classroom_id,c.name classroom_name,g.name grade_name,ae.academic_year_id
+    FROM students s
+    LEFT JOIN LATERAL (
+      SELECT e.classroom_id,e.academic_year_id
+      FROM enrolments e
+      WHERE e.student_id=s.id AND e.status='active'
+      ORDER BY e.enrolled_at DESC LIMIT 1
+    ) ae ON true
+    LEFT JOIN classrooms c ON c.id=ae.classroom_id
+    LEFT JOIN grade_levels g ON g.id=c.grade_level_id
+    WHERE ${where}
+    ORDER BY s.last_name,s.first_name,s.id
+    LIMIT $5 OFFSET $6
+  `,[...params,q.pageSize,offset])).rows;
+  return{rows,total,page,pageSize:q.pageSize,pages};
+});
+
 app.get('/api/students',async request=>{
   const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
   return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
