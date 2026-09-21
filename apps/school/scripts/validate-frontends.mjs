@@ -4,6 +4,7 @@ import { parentFrontend } from '../dist/parent-ui.js';
 import { studentFrontend } from '../dist/student-ui.js';
 import { admissionsFrontend } from '../dist/admissions-ui.js';
 import { loginFrontend } from '../dist/login-ui.js';
+import { schoolDesignScript } from '../dist/school-design.js';
 
 function validateScript(name,source){
   try{
@@ -23,6 +24,7 @@ function inlineScripts(name,html){
 }
 
 validateScript('School',schoolAppScript);
+validateScript('Shared school design',schoolDesignScript);
 
 for(const [name,html] of [
   ['Teacher',teacherFrontend],

@@ -1,4 +1,6 @@
-export const loginFrontend=`<!doctype html>
+import { applySchoolDesign } from './school-design.js';
+
+export const loginFrontend=applySchoolDesign(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -11,19 +13,19 @@ body{margin:0;min-height:100vh;background:
 radial-gradient(circle at 15% 10%,#123240 0,transparent 34%),
 radial-gradient(circle at 90% 88%,#123027 0,transparent 32%),var(--bg);
 color:var(--text);font:14px/1.5 Arial,sans-serif;display:grid;place-items:center;padding:24px}
-.shell{width:min(980px,96vw);display:grid;grid-template-columns:1.05fr .95fr;background:#081721;border:1px solid var(--line);border-radius:24px;overflow:hidden;box-shadow:0 28px 90px #0008}
+.shell{width:min(980px,96vw);display:grid;grid-template-columns:1.05fr .95fr;background:#f7f9fb;border:1px solid var(--line);border-radius:24px;overflow:hidden;box-shadow:0 28px 90px #0008}
 .hero{padding:48px;background:linear-gradient(145deg,#0b202b,#0c2825);display:flex;flex-direction:column;justify-content:space-between;min-height:590px}
 .brand{font-weight:900;letter-spacing:.08em;font-size:18px}.brand span{color:var(--green)}
-.hero h1{font-size:46px;line-height:1.02;margin:24px 0 14px;max-width:520px}.hero p{color:#b7c9d2;max-width:500px;font-size:16px}
-.role-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:28px}.role{border:1px solid #28505d;background:#0a1b24;border-radius:12px;padding:12px}.role b{display:block}.role small{color:var(--muted)}
+.hero h1{font-size:46px;line-height:1.02;margin:24px 0 14px;max-width:520px}.hero p{color:#35658d;max-width:500px;font-size:16px}
+.role-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:28px}.role{border:1px solid #28505d;background:#f7f9fb;border-radius:12px;padding:12px}.role b{display:block}.role small{color:var(--muted)}
 .form-side{padding:48px;display:flex;align-items:center}.card{width:100%;max-width:420px;margin:auto}.eyebrow{color:var(--green);font-weight:800;text-transform:uppercase;letter-spacing:.08em;font-size:11px}.card h2{font-size:30px;margin:6px 0}.muted{color:var(--muted)}
-label{display:block;margin-top:16px;font-size:12px;color:#bad0db;font-weight:700}
-input,select{width:100%;margin-top:7px;padding:13px 14px;background:#06131b;border:1px solid var(--line);border-radius:10px;color:white;outline:none}
+label{display:block;margin-top:16px;font-size:12px;color:#35658d;font-weight:700}
+input,select{width:100%;margin-top:7px;padding:13px 14px;background:#f7f9fb;border:1px solid var(--line);border-radius:10px;color:var(--text);outline:none}
 input:focus{border-color:#4ca5b9;box-shadow:0 0 0 3px #48a9ff1a}
 button{width:100%;border:0;border-radius:10px;padding:13px;margin-top:18px;background:linear-gradient(90deg,var(--green),var(--blue));color:#041018;font-weight:900;cursor:pointer}
-button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px;border-radius:10px;margin-top:14px}.error{background:#2b161a;border:1px solid #6d3038;color:#ffc1c8}.success{background:#112a24;border:1px solid #2c6d5c;color:#8af0d3}.status{background:#0b1720;border:1px solid var(--line);color:var(--muted)}
-.links{display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:12px}.links a{color:#91cfff;text-decoration:none}
-.password-rule{color:var(--muted);font-size:11px;margin-top:6px}.demo-box{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.demo-box h3{margin:0 0 4px}.demo-box button.secondary{background:#102833;color:#dff8ff;border:1px solid #315466}.demo-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.demo-row button{width:auto;min-width:120px}.hide{display:none!important}
+button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px;border-radius:10px;margin-top:14px}.error{background:#fff0f2;border:1px solid #6d3038;color:#a63b4e}.success{background:#edf4ef;border:1px solid #2c6d5c;color:#2a6d48}.status{background:#f7f9fb;border:1px solid var(--line);color:var(--muted)}
+.links{display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:12px}.links a{color:#35658d;text-decoration:none}
+.password-rule{color:var(--muted);font-size:11px;margin-top:6px}.demo-box{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.demo-box h3{margin:0 0 4px}.demo-box button.secondary{background:#f7f9fb;color:#35658d;border:1px solid #315466}.demo-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.demo-row button{width:auto;min-width:120px}.hide{display:none!important}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.hero{min-height:auto;padding:28px}.hero h1{font-size:34px}.role-grid{display:none}.form-side{padding:28px}}
 </style>
 </head>
@@ -31,9 +33,9 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
 <div class="shell">
   <section class="hero">
     <div>
-      <div class="brand"><span>REVOLT-X</span> SCHOOL</div>
-      <h1>One secure sign-in for every School staff user.</h1>
-      <p>Your School role decides what opens after sign-in. Every active School role uses this same account screen. The role profile and privileges decide which workspace and functions open after sign-in.</p>
+      <div class="brand"><span>RX</span><div class="rx-brand-copy">Revolt-X School<small>Your connected school</small></div></div>
+      <h1>A great school day<br>starts here.</h1>
+      <p>The people, learning and everyday work of your school, thoughtfully connected in one place.</p>
       <div class="role-grid">
         <div class="role"><b>Teachers</b><small>Classes, scores, attendance, lesson notes and reports</small></div>
         <div class="role"><b>Headteachers</b><small>Academic oversight, approvals and teaching access</small></div>
@@ -47,8 +49,8 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
     <div class="card">
       <div id="signinView">
         <div class="eyebrow">Staff access</div>
-        <h2>Sign in</h2>
-        <p class="muted">Use the email address and password assigned to your Revolt-X School account.</p>
+        <h2>Welcome back.</h2>
+        <p class="muted">Sign in with your school account to open your workspace.</p>
         <div id="message"></div>
         <label>Email address</label>
         <input id="email" type="email" autocomplete="username" placeholder="name@school.edu">
@@ -72,7 +74,7 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
           </div>
           <div id="demoStatus" class="muted" style="margin-top:8px"></div>
         </div>
-        <div class="links"><a href="/admissions">Public admissions</a><a href="/parent">Parent portal</a></div>
+        <div class="links"><a href="/admissions">Public admissions</a><a href="/parent">Parent portal</a><a href="/student">Student portal</a></div>
       </div>
       <div id="setupView" style="display:none">
         <div class="eyebrow">Account activation</div>
@@ -185,4 +187,4 @@ async function boot(){
 boot()
 })();
 </script>
-</body></html>`;
+</body></html>`,'login');

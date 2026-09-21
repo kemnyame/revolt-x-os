@@ -15,6 +15,7 @@ import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend } from './login-ui.js';
+import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
@@ -80,8 +81,8 @@ async function requestActor(request:any){
 }
 app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
 app.addHook('onResponse',async(request,reply)=>{
-  if(!request.url.startsWith('/api/'))return;
   const started=requestStartedAt.get(String(request.id))??Date.now();requestStartedAt.delete(String(request.id));
+  if(!request.url.startsWith('/api/'))return;
   try{
     const actor=await requestActor(request);
     const status=reply.statusCode;
@@ -961,6 +962,9 @@ app.get('/students/:id',async(request,p)=>{
   return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
 });
 app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
+// Versioned presentation assets are shared by every School portal.
+app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
+app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
