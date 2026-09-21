@@ -37,15 +37,47 @@ new Script(schoolAppScript,{filename:'school-app.js'});
 const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
 app.log.info({emailProvider:config.EMAIL_PROVIDER,brevoApiKeyPresent:Boolean(config.BREVO_API_KEY),brevoFromEmailPresent:Boolean(config.BREVO_FROM_EMAIL),brevoFromNamePresent:Boolean(config.BREVO_FROM_NAME)},'Email provider startup status');
 if(config.BREVO_API_KEY){void validateBrevoConnection(config).then(result=>app.log.info({provider:'brevo',authenticated:result.authenticated,senderReady:result.senderReady,senderSource:result.senderSource},'Brevo connection verified')).catch(error=>app.log.warn({provider:'brevo',error:String(error?.message||error)},'Brevo connection verification failed'));}
-await app.register(helmet,{contentSecurityPolicy:false});
+await app.register(helmet,{
+  contentSecurityPolicy:{
+    directives:{
+      defaultSrc:["'self'"],
+      baseUri:["'self'"],
+      objectSrc:["'none'"],
+      frameAncestors:["'none'"],
+      imgSrc:["'self'","data:","https:"],
+      scriptSrc:["'self'","'unsafe-inline'"],
+      styleSrc:["'self'","'unsafe-inline'"],
+      connectSrc:["'self'"],
+      fontSrc:["'self'","data:"],
+      formAction:["'self'"]
+    }
+  }
+});
 await app.register(cors,{origin:config.CORS_ORIGINS==='*'?true:config.CORS_ORIGINS.split(',').map(x=>x.trim()),credentials:true});
 
 const requestStartedAt=new Map<string,number>();
+function requestCookie(request:any,name:string){
+  const prefix=name+'=';
+  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith(prefix));
+  return cookie?decodeURIComponent(cookie.slice(prefix.length)):'';
+}
 function requestSessionToken(request:any){
   const auth=String(request.headers?.authorization||'');
   if(/^Bearer\s+rxs_/i.test(auth))return auth.replace(/^Bearer\s+/i,'').trim();
-  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_school_session='));
-  return cookie?decodeURIComponent(cookie.slice('rx_school_session='.length)):'';
+  return requestCookie(request,'rx_school_session');
+}
+function portalSessionToken(request:any,cookieName:string){
+  const auth=String(request.headers?.authorization||'');
+  const bearer=/^Bearer\s+/i.test(auth)?auth.replace(/^Bearer\s+/i,'').trim():'';
+  return bearer||requestCookie(request,cookieName);
+}
+function setPortalSessionCookie(reply:any,name:string,token:string,maxAgeSeconds=28800){
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie',name+'='+encodeURIComponent(token)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+maxAgeSeconds+secure);
+}
+function clearPortalSessionCookie(reply:any,name:string){
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie',name+'=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
 }
 async function requestActor(request:any){
   const auth=String(request.headers?.authorization||'');
