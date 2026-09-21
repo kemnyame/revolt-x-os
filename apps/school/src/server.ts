@@ -6188,26 +6188,42 @@ app.setErrorHandler(async(error:any,request,reply)=>{
   if(error.code==='23505')status=409;
   if(error.code==='23503')status=409;
   if(error.code==='42P08')status=500;
+
+  const validationMessage=error?.name==='ZodError'&&Array.isArray(error?.issues)
+    ?error.issues.slice(0,6).map((issue:any)=>{
+      const field=Array.isArray(issue.path)&&issue.path.length?issue.path.join('.'):'input';
+      return field+': '+String(issue.message||'Invalid value');
+    }).join('; ')
+    :null;
+
   const message=error.code==='23505'
     ?'A record with the same unique value already exists'
     :error.code==='23503'
       ?'This record is still in use and cannot be deleted'
       :error.code==='42P08'
         ?'The database could not safely process this action. The error has been logged for review.'
-        :(error.message||'Unexpected school service error');
+        :validationMessage
+          ?validationMessage
+          :(error.message||'Unexpected school service error');
+
+  const shouldPersist=status>=500||status===429;
   let errorId:string|undefined;
-  try{
-    const actor=await requestActor(request);
-    const row=await one<any>(db,`INSERT INTO system_errors(
-      organisation_id,actor_os_user_id,request_id,method,path,status_code,error_code,message,details
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,[
-      actor.organisationId,actor.userId,String(request.id),request.method,String(request.url).split('?')[0],status,
-      error.code??error.name??null,String(error.message||message).slice(0,8000),
-      JSON.stringify({validation:error.validation??null,stack:config.NODE_ENV==='production'?null:String(error.stack||'').slice(0,12000)})
-    ]);
-    errorId=row.id;
-  }catch(logError){request.log.error({logError},'Could not persist application error')}
-  request.log.error({err:error,errorId,status},'School request failed');
+  if(shouldPersist){
+    try{
+      const actor=await requestActor(request);
+      const row=await one<any>(db,`INSERT INTO system_errors(
+        organisation_id,actor_os_user_id,request_id,method,path,status_code,error_code,message,details
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,[
+        actor.organisationId,actor.userId,String(request.id),request.method,String(request.url).split('?')[0],status,
+        error.code??error.name??null,String(error.message||message).slice(0,8000),
+        JSON.stringify({validation:error.validation??error.issues??null,stack:config.NODE_ENV==='production'?null:String(error.stack||'').slice(0,12000)})
+      ]);
+      errorId=row.id;
+    }catch(logError){request.log.error({logError},'Could not persist application error')}
+    request.log.error({err:error,errorId,status},'School request failed');
+  }else{
+    request.log.warn({status,code:error.code??error.name??null,path:String(request.url).split('?')[0]},'School request rejected');
+  }
   reply.code(status>=400&&status<600?status:500).send({error:{message,errorId}});
 });
 

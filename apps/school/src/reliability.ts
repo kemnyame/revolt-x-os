@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
 import { maybeOne, tx } from './db.js';
-import { providerStatus, sendMessage, type MessageChannel } from './providers.js';
+import { providerStatus, sendMessage, validateBrevoConnection, type MessageChannel } from './providers.js';
 
 export function throttleFingerprint(value:string){
   return createHash('sha256').update(String(value||'').trim().toLowerCase()).digest('hex');
@@ -108,9 +108,32 @@ export async function retryCommunicationOutbox(
   `,[Math.max(1,Math.min(100,limit))])).rows;
 
   const result={scanned:candidates.length,attempted:0,sent:0,failed:0,pendingConfiguration:0};
+  const providers=providerStatus(config);
+  let emailProviderError:string|null=null;
+  if(providers.email.provider==='brevo'&&providers.email.configured){
+    try{
+      const verification=await validateBrevoConnection(config);
+      if(!verification.authenticated||!verification.senderReady){
+        emailProviderError='Brevo authentication or sender verification is not ready';
+      }
+    }catch(error:any){
+      emailProviderError=String(error?.message||error);
+    }
+  }
 
   for(const candidate of candidates){
     const channel=candidate.channel as MessageChannel;
+    if(channel==='email'&&emailProviderError){
+      result.pendingConfiguration++;
+      await db.query(`
+        UPDATE communication_outbox
+        SET status='pending_configuration',
+            next_attempt_at=now()+interval '15 minutes',
+            last_error=$1
+        WHERE id=$2 AND status IN('queued','failed','pending_configuration')
+      `,['Email provider unavailable: '+emailProviderError,candidate.id]);
+      continue;
+    }
     if(!channelConfigured(config,channel)){
       result.pendingConfiguration++;
       await db.query(`
