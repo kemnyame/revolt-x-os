@@ -21,7 +21,8 @@
     "zod": "^4.1.11",
     "typescript": "^5.9.2",
     "@types/node": "^24.5.2",
-    "@types/pg": "^8.15.5"
+    "@types/pg": "^8.15.5",
+    "pdfkit": "^0.17.2"
   },
   "devDependencies": {
     "tsx": "^4.20.6"
