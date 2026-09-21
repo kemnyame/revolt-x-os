@@ -1,0 +1,28 @@
+name: Wake Render Services Now
+on:
+  push:
+    branches:
+      - ops/wake-render-services-20260921
+permissions:
+  contents: read
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake Core OS and School
+        shell: bash
+        run: |
+          for url in \
+            "https://revolt-x-os.onrender.com/health/live" \
+            "https://revolt-x-school.onrender.com/health/live"
+          do
+            echo "Waking $url"
+            for n in 1 2 3 4 5 6; do
+              if curl --fail --show-error --silent --max-time 60 "$url"; then
+                echo
+                break
+              fi
+              sleep 10
+            done
+          done
