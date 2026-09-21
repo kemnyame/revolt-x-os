@@ -13,17 +13,31 @@ permissions:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 6
     steps:
       - name: Wake Core OS and School
         shell: bash
         run: |
-          set -e
+          failed=0
           for url in \
             "https://revolt-x-os.onrender.com/health/live" \
             "https://revolt-x-school.onrender.com/health/live"
           do
             echo "Pinging $url"
-            curl --fail --show-error --silent --retry 3 --retry-delay 5 --max-time 45 "$url"
-            echo
+            if curl --fail --show-error --silent \
+              --connect-timeout 10 \
+              --max-time 50 \
+              --retry 2 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              --retry-max-time 130 \
+              "$url"
+            then
+              echo
+              echo "Healthy: $url"
+            else
+              echo "::warning::Could not wake $url during this cycle; the next scheduled run will retry."
+              failed=1
+            fi
           done
+          exit 0
