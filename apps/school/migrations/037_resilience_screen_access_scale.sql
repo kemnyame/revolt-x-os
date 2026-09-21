@@ -78,7 +78,7 @@ WITH access_map(source_key,target_key) AS (
   ('students.view','students.360.view')
 )
 INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed)
-SELECT src.organisation_id,src.role,m.target_key,true
+SELECT DISTINCT src.organisation_id,src.role,m.target_key,true
 FROM school_role_capabilities src
 JOIN access_map m ON m.source_key=src.capability_key
 WHERE src.allowed=true
