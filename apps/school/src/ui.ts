@@ -316,8 +316,8 @@ async function page(p){
    E('content').onclick=function(e){var id=e.target.dataset.openAdmission;if(id)openAdmission(id)}
  }
  else if(p==='students'){
-   var sr=await Promise.all([raw('/api/students'),raw('/api/classes'),raw('/api/academic-years')]),students=sr[0],studentClasses=sr[1],studentYears=sr[2];
-   var studentPage=1,studentPageSize=100;
+   var sr=await Promise.all([raw('/api/classes'),raw('/api/academic-years')]),studentClasses=sr[0],studentYears=sr[1];
+   var studentPage=1,studentPageSize=100,studentDirectory={rows:[],total:0,page:1,pages:1},studentLoadSeq=0;
    function studentActions(r){
      var out='';
      if(can('students.360.view'))out+='<button class="mini" data-student-360="'+r.id+'">360° View</button>';
@@ -331,17 +331,22 @@ async function page(p){
      {key:'grade_name',label:'Grade',render:function(r){return esc(r.grade_name||'—')}},
      {key:'status',render:function(r){return badge(r.status)}}
    ],studentActions)}
-   function filteredStudents(){var q=(E('studentSearch')?E('studentSearch').value:'').toLowerCase(),st=E('studentStatus')?E('studentStatus').value:'';return students.filter(function(r){return(!st||r.status===st)&&((r.admission_no||'')+' '+r.first_name+' '+(r.middle_name||'')+' '+r.last_name).toLowerCase().includes(q)})}
    function renderStudentDirectory(){
-     var rows=filteredStudents(),pages=Math.max(1,Math.ceil(rows.length/studentPageSize));if(studentPage>pages)studentPage=pages;
-     var start=(studentPage-1)*studentPageSize,shown=rows.slice(start,start+studentPageSize);
-     E('studentTable').innerHTML=studentRows(shown)+'<div class="section compact"><span class="muted">Showing '+(rows.length?start+1:0)+'–'+Math.min(start+studentPageSize,rows.length)+' of '+rows.length+' students</span><div class="actions"><button id="studentPrev" class="ghost"'+(studentPage<=1?' disabled':'')+'>Previous</button><span class="badge">Page '+studentPage+' / '+pages+'</span><button id="studentNext" class="ghost"'+(studentPage>=pages?' disabled':'')+'>Next</button></div></div>';
-     var prev=E('studentPrev'),next=E('studentNext');if(prev)prev.onclick=function(){if(studentPage>1){studentPage--;renderStudentDirectory()}};if(next)next.onclick=function(){if(studentPage<pages){studentPage++;renderStudentDirectory()}}
+     var d=studentDirectory,rows=d.rows||[],start=d.total?((d.page-1)*d.pageSize)+1:0,end=Math.min(d.page*d.pageSize,d.total);
+     E('studentTable').innerHTML=studentRows(rows)+'<div class="section compact"><span class="muted">Showing '+start+'–'+end+' of '+d.total+' students</span><div class="actions"><button id="studentPrev" class="ghost"'+(d.page<=1?' disabled':'')+'>Previous</button><span class="badge">Page '+d.page+' / '+d.pages+'</span><button id="studentNext" class="ghost"'+(d.page>=d.pages?' disabled':'')+'>Next</button></div></div>';
+     var prev=E('studentPrev'),next=E('studentNext');if(prev)prev.onclick=function(){if(studentDirectory.page>1){studentPage=studentDirectory.page-1;loadStudentDirectory()}};if(next)next.onclick=function(){if(studentDirectory.page<studentDirectory.pages){studentPage=studentDirectory.page+1;loadStudentDirectory()}}
+   }
+   async function loadStudentDirectory(){
+     var seq=++studentLoadSeq,q=E('studentSearch')?E('studentSearch').value.trim():'',st=E('studentStatus')?E('studentStatus').value:'';
+     E('studentTable').innerHTML='<div class="empty">Loading students...</div>';
+     var url='/api/students/directory?page='+studentPage+'&pageSize='+studentPageSize+(q?'&q='+encodeURIComponent(q):'')+(st?'&status='+encodeURIComponent(st):'');
+     try{var d=await raw(url);if(seq!==studentLoadSeq)return;studentDirectory=d;studentPage=d.page;renderStudentDirectory()}
+     catch(err){if(seq!==studentLoadSeq)return;E('studentTable').innerHTML='<div class="empty">Could not load students. '+esc(err.message)+'</div>'}
    }
    E('content').innerHTML='<div class="section"><div><h1>Student Management</h1><p class="muted">Open and edit students, manage active or inactive status without deleting history, maintain guardians, classes, finance and academic records.</p></div>'+(can('students.create')?'<button id="newStudent" class="primary">Onboard Student</button>':'')+'</div>'+
      '<div class="panel"><div class="toolbar"><input id="studentSearch" placeholder="Student ID or name"><select id="studentStatus"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="suspended">Suspended</option><option value="withdrawn">Withdrawn</option><option value="transferred">Transferred</option><option value="graduated">Graduated</option></select></div><div id="studentTable"></div></div>';
-   function filterStudents(){studentPage=1;renderStudentDirectory()}
-   E('studentSearch').oninput=filterStudents;E('studentStatus').onchange=filterStudents;renderStudentDirectory();
+   function filterStudents(){studentPage=1;loadStudentDirectory()}
+   E('studentSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(filterStudents,250)};E('studentStatus').onchange=filterStudents;await loadStudentDirectory();
    function classOptions(){return studentClasses.filter(function(c){return c.is_active}).map(function(c){var y=studentYears.find(function(x){return x.id===c.academic_year_id});return{value:c.id,label:c.name+(y?' • '+y.name:'')}})}
    var add=E('newStudent');if(add)add.onclick=function(){form('Onboard Student',[
      {key:'admissionNo',label:'Student ID / Admission No.'},{key:'firstName',label:'First name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},
