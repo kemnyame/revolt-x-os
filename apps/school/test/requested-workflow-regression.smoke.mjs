@@ -24,8 +24,8 @@ test('screen access is separated from data dependencies and Student 360 is restr
   assert.match(ui,/screen\.students\.view/);
   assert.match(ui,/students\.360\.view/);
   assert.match(ui,/students\.profile\.view/);
-  assert.match(server,/authorize\(request,db,config,'students\.360\.view'\)/);
-  assert.match(server,/authorize\(request,db,config,'students\.profile\.view'\)/);
+  assert.match(server,/authorize\(request,\s*db,\s*config,\s*'students\.360\.view'\)/);
+  assert.match(server,/authorize\(request,\s*db,\s*config,\s*'students\.profile\.view'\)/);
   assert.match(server,/screenDependencies/);
 });
 
