@@ -3206,8 +3206,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     email:z.string().email(),
     firstName:z.string().min(1).max(100),
     lastName:z.string().min(1).max(100),
-    jobTitle:z.string().min(2).max(160).default('Teacher'),
-    employeeNumber:z.string().max(80).optional()
+    jobTitle:z.string().min(2).max(160).default('Teacher')
   }).parse(request.body);
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const created=await fetch(base+'/v1/internal/school/users',{
