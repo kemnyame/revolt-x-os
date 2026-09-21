@@ -54,13 +54,16 @@ function cookieValue(cookieHeader:string|undefined,name:string){
   return'';
 }
 function requestSchoolToken(request:FastifyRequest){
+  // Prefer the HttpOnly School cookie because it is the server-issued source of truth.
+  // A stale sessionStorage Authorization header must never override a newer valid cookie.
+  const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
+  if(cookieToken.startsWith('rxs_'))return cookieToken;
   const auth=request.headers.authorization;
   if(auth){
     const token=bearerToken(auth);
     if(token.startsWith('rxs_'))return token;
   }
-  const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
-  return cookieToken.startsWith('rxs_')?cookieToken:'';
+  return'';
 }
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
@@ -77,7 +80,12 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
        RETURNING core_context`,
     [schoolSessionHash(token)]
   );
-  return row?.core_context??null;
+  if(row?.core_context)return row.core_context;
+
+  // If the request presented a School-local token, its failure means the School
+  // session is expired/revoked. Do not forward that local token to Core OS.
+  // That would turn a simple sign-in refresh into a false "Core is starting" error.
+  throw Object.assign(new Error('School session expired. Please sign in again.'),{statusCode:401});
 }
 
 const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
@@ -131,7 +139,9 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
 }
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
-  const core=(await fetchSchoolSessionContext(request,db))??await fetchCoreContext(request,config);
+  // Established School sessions are fully local and must not require Core availability.
+  const schoolContext=await fetchSchoolSessionContext(request,db);
+  const core=schoolContext??await fetchCoreContext(request,config);
   let membership=await maybeOne<{role:SchoolRole;status:string}>(
     db,
     'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
