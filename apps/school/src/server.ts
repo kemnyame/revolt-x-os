@@ -5416,14 +5416,14 @@ app.get('/api/approvals/summary',async request=>{
   const [admissions,leave,reports]=await Promise.all([
     db.query(`SELECT id,application_no,first_name,last_name,requested_grade_code,status,submitted_at
       FROM admission_applications WHERE organisation_id=$1 AND status IN('submitted','under_review')
-      ORDER BY submitted_at LIMIT 100`,[a.core.organisation_id]),
+      ORDER BY submitted_at`,[a.core.organisation_id]),
     db.query(`SELECT lr.id,lr.applicant_os_user_id,lr.leave_type,lr.start_date,lr.end_date,lr.reason,lr.status,lr.created_at
       FROM staff_leave_requests lr WHERE lr.organisation_id=$1 AND lr.status='submitted'
-      ORDER BY lr.created_at LIMIT 100`,[a.core.organisation_id]),
+      ORDER BY lr.created_at`,[a.core.organisation_id]),
     db.query(`SELECT rc.student_id,rc.term_id,rc.workflow_status,rc.submitted_at,s.admission_no,s.first_name,s.last_name,t.name term_name,c.name classroom_name
       FROM report_comments rc JOIN students s ON s.id=rc.student_id JOIN terms t ON t.id=rc.term_id
       LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id
-      WHERE rc.organisation_id=$1 AND rc.workflow_status='submitted' ORDER BY rc.submitted_at LIMIT 100`,[a.core.organisation_id])
+      WHERE rc.organisation_id=$1 AND rc.workflow_status='submitted' ORDER BY rc.submitted_at`,[a.core.organisation_id])
   ]);
   const users=await fetchCoreUsers(a.core.organisation_id);
   const userName=(id:string)=>{const u=users.find((x:any)=>x.id===id);return u?(u.first_name+' '+u.last_name):id};
