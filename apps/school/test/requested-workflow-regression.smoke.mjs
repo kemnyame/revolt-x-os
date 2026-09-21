@@ -23,7 +23,7 @@ test('guardian email is optional in admissions and student onboarding',async()=>
   assert.match(ui,/Guardian email \(optional/);
   assert.match(ui,/guardianEmail:v\.guardianEmail\|\|undefined/);
   assert.match(admissions,/Email <span class="muted">\(optional\)<\/span>/);
-  assert.match(server,/guardianEmail:z\.string\(\)\.email\(\)\.optional\(\)/);
+  assert.match(server,/guardianEmail:\s*z\.string\(\)\.email\(\)\.optional\(\)/);
 });
 
 test('parent portal supports linked children, alerts, visual timetable and official report PDF',async()=>{
