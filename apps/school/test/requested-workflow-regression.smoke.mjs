@@ -6,10 +6,12 @@ async function read(name){
   return readFile(new URL('../dist/'+name,import.meta.url),'utf8');
 }
 
-test('student management exposes 360 and keeps list page open when opening a student',async()=>{
+test('student management exposes 360 and opens the full student page inside the School workspace',async()=>{
   const ui=await read('ui.js');
   assert.match(ui,/data-student-360/);
-  assert.match(ui,/window\.open\('\/students\/[^]*'_blank','noopener'\)/);
+  assert.match(ui,/function openStudentPage\(id\)/);
+  assert.match(ui,/data-open-student/);
+  assert.doesNotMatch(ui,/window\.open\('\/students\/[^]*'_blank','noopener'\)/);
   assert.match(ui,/Fee Account/);
   assert.match(ui,/Report Card History/);
   assert.match(ui,/Academic Statement Requests/);
