@@ -53,38 +53,39 @@ function cookieValue(cookieHeader:string|undefined,name:string){
   }
   return'';
 }
-function requestSchoolToken(request:FastifyRequest){
-  // Prefer the HttpOnly School cookie because it is the server-issued source of truth.
-  // A stale sessionStorage Authorization header must never override a newer valid cookie.
+function requestSchoolTokens(request:FastifyRequest){
+  const tokens:string[]=[];
   const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
-  if(cookieToken.startsWith('rxs_'))return cookieToken;
+  if(cookieToken.startsWith('rxs_'))tokens.push(cookieToken);
   const auth=request.headers.authorization;
   if(auth){
     const token=bearerToken(auth);
-    if(token.startsWith('rxs_'))return token;
+    if(token.startsWith('rxs_')&&!tokens.includes(token))tokens.push(token);
   }
-  return'';
+  return tokens;
 }
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
 async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
-  const token=requestSchoolToken(request);
-  if(!token)return null;
-  const row=await maybeOne<{core_context:CoreContext}>(
-    db,
-    `UPDATE school_sessions
-       SET last_used_at=now()
-       WHERE token_hash=$1
-         AND revoked_at IS NULL
-         AND expires_at>now()
-       RETURNING core_context`,
-    [schoolSessionHash(token)]
-  );
-  if(row?.core_context)return row.core_context;
+  const tokens=requestSchoolTokens(request);
+  if(!tokens.length)return null;
 
-  // If the request presented a School-local token, its failure means the School
-  // session is expired/revoked. Do not forward that local token to Core OS.
-  // That would turn a simple sign-in refresh into a false "Core is starting" error.
+  // Prefer the HttpOnly cookie but tolerate a stale cookie/header pair by checking every
+  // School-local token presented. No School token is ever forwarded to Core OS.
+  for(const token of tokens){
+    const row=await maybeOne<{core_context:CoreContext}>(
+      db,
+      `UPDATE school_sessions
+         SET last_used_at=now()
+         WHERE token_hash=$1
+           AND revoked_at IS NULL
+           AND expires_at>now()
+         RETURNING core_context`,
+      [schoolSessionHash(token)]
+    );
+    if(row?.core_context)return row.core_context;
+  }
+
   throw Object.assign(new Error('School session expired. Please sign in again.'),{statusCode:401});
 }
 
