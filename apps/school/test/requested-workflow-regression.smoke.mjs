@@ -29,12 +29,22 @@ test('screen access is separated from data dependencies and Student 360 is restr
   assert.match(server,/screenDependencies/);
 });
 
-test('staff directory survives Core OS sleep through the persistent School cache',async()=>{
+test('staff directory survives Core OS sleep and partial Core directories',async()=>{
   const server=await read('server.js');
   assert.match(server,/school_user_directory/);
   assert.match(server,/readPersistentCoreUsers/);
   assert.match(server,/persistCoreUsers/);
   assert.match(server,/Serve the last complete staff directory immediately/);
+  assert.match(server,/const merged = new Map/);
+  assert.match(server,/partial Core directory can never make assigned School users disappear/);
+});
+
+test('ordinary teachers do not receive Student 360 or full-profile access by default',async()=>{
+  const migration=await readFile(new URL('../migrations/038_sensitive_access_staff_directory.sql',import.meta.url),'utf8');
+  assert.match(migration,/WHERE sr\.key IN\('teacher','accountant','bursar'\)/);
+  assert.match(migration,/students\.360\.view/);
+  assert.match(migration,/students\.profile\.view/);
+  assert.match(migration,/DO UPDATE SET allowed=false/);
 });
 
 test('student management paginates large directories in the browser',async()=>{

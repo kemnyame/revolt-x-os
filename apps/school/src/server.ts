@@ -208,8 +208,17 @@ async function fetchCoreUsers(organisationId:string){
         const value=Array.isArray(payload)?payload:[];
         if(value.length){
           await persistCoreUsers(organisationId,value);
-          coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
-          return value;
+          // Core is authoritative for identities it knows, but School may still have valid
+          // memberships created by an older Core environment. Merge instead of replacing
+          // so a partial Core directory can never make assigned School users disappear.
+          const merged=new Map<string,any>();
+          for(const user of persistent)if(user?.id)merged.set(user.id,user);
+          for(const user of value)if(user?.id)merged.set(user.id,{...(merged.get(user.id)||{}),...user});
+          const complete=[...merged.values()].sort((a:any,b:any)=>
+            String(a.first_name||'').localeCompare(String(b.first_name||''))||
+            String(a.last_name||'').localeCompare(String(b.last_name||'')));
+          coreUsersCache.set(organisationId,{value:complete,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+          return complete;
         }
         if(persistent.length){
           coreUsersCache.set(organisationId,{value:persistent,expiresAt:Date.now()+60_000});
