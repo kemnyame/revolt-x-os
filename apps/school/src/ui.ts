@@ -78,7 +78,7 @@ var requestCache=new Map(),REQUEST_CACHE_MS=20000;
 async function raw(path,opt){
   opt=opt||{};var method=String(opt.method||'GET').toUpperCase(),cacheable=method==='GET'&&path.indexOf('/api/system/')!==0&&path.indexOf('/api/search')!==0;
   var cached=cacheable?requestCache.get(path):null;if(cached&&cached.expires>Date.now())return cached.value;
-  opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{},token?{authorization:'Bearer '+token}:{});
+  var baseHeaders=opt.body==null?{}:{'content-type':'application/json'};opt.headers=Object.assign(baseHeaders,opt.headers||{},token?{authorization:'Bearer '+token}:{});
   var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},12000);if(!opt.signal)opt.signal=controller.signal;
   var r,j=null;
   try{r=await fetch(path,opt)}catch(e){clearTimeout(timer);if(cached)return cached.value;var timeoutErr=Error(e&&e.name==='AbortError'?'This page request took too long. Please retry.':(e.message||'Network request failed'));timeoutErr.status=0;throw timeoutErr}
