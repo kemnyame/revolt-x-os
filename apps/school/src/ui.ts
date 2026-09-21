@@ -78,15 +78,31 @@ var requestCache=new Map(),REQUEST_CACHE_MS=20000;
 async function raw(path,opt){
   opt=opt||{};var method=String(opt.method||'GET').toUpperCase(),cacheable=method==='GET'&&path.indexOf('/api/system/')!==0&&path.indexOf('/api/search')!==0;
   var cached=cacheable?requestCache.get(path):null;if(cached&&cached.expires>Date.now())return cached.value;
-  var baseHeaders=opt.body==null?{}:{'content-type':'application/json'};opt.headers=Object.assign(baseHeaders,opt.headers||{},token?{authorization:'Bearer '+token}:{});
-  var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},12000);if(!opt.signal)opt.signal=controller.signal;
-  var r,j=null;
-  try{r=await fetch(path,opt)}catch(e){clearTimeout(timer);if(cached)return cached.value;var timeoutErr=Error(e&&e.name==='AbortError'?'This page request took too long. Please retry.':(e.message||'Network request failed'));timeoutErr.status=0;throw timeoutErr}
-  clearTimeout(timer);try{j=await r.json()}catch(e){}
-  if(!r.ok){var msg=j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')';if(j&&j.error&&j.error.errorId)msg+=' • Error ref: '+j.error.errorId;toast(msg,true);var err=Error(msg);err.status=r.status;err.errorId=j&&j.error&&j.error.errorId;throw err}
-  if(cacheable)requestCache.set(path,{value:j,expires:Date.now()+REQUEST_CACHE_MS});else if(method!=='GET'&&method!=='HEAD')requestCache.clear();
-  if(method!=='GET'&&method!=='HEAD'&&!opt.silent){var ok=path.indexOf('/submit')>=0?'Submitted successfully':path.indexOf('/publish')>=0?'Published successfully':path.indexOf('/review')>=0?'Review saved successfully':path.indexOf('/void')>=0?'Action completed successfully':'Saved successfully';toast(ok,false)}
-  return j
+  var timeoutMs=Number(opt.timeoutMs||(path==='/api/context'?25000:18000)),maxAttempts=method==='GET'?2:1,lastError=null;
+  for(var attempt=0;attempt<maxAttempts;attempt++){
+    var baseHeaders=opt.body==null?{}:{'content-type':'application/json'},headers=Object.assign(baseHeaders,opt.headers||{},token?{authorization:'Bearer '+token}:{});
+    var controller=new AbortController(),timer=setTimeout(function(){controller.abort()},timeoutMs),fetchOpt=Object.assign({},opt,{headers:headers,signal:opt.signal||controller.signal});
+    delete fetchOpt.timeoutMs;
+    var r,j=null;
+    try{r=await fetch(path,fetchOpt)}catch(e){
+      clearTimeout(timer);
+      if(cached)return cached.value;
+      lastError=Error(e&&e.name==='AbortError'?'The School service is waking up. Retrying automatically...':(e.message||'Network request failed'));lastError.status=0;
+      if(attempt+1<maxAttempts){await wait(900);continue}
+      var timeoutErr=Error(e&&e.name==='AbortError'?'The School service did not respond in time. Please retry.':(e.message||'Network request failed'));timeoutErr.status=0;throw timeoutErr
+    }
+    clearTimeout(timer);try{j=await r.json()}catch(e){}
+    if(!r.ok){
+      var msg=j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')';
+      if(j&&j.error&&j.error.errorId)msg+=' • Error ref: '+j.error.errorId;
+      if(method==='GET'&&attempt+1<maxAttempts&&[429,502,503,504].indexOf(r.status)>=0){await wait(1000);continue}
+      toast(msg,true);var err=Error(msg);err.status=r.status;err.errorId=j&&j.error&&j.error.errorId;throw err
+    }
+    if(cacheable)requestCache.set(path,{value:j,expires:Date.now()+REQUEST_CACHE_MS});else if(method!=='GET'&&method!=='HEAD')requestCache.clear();
+    if(method!=='GET'&&method!=='HEAD'&&!opt.silent){var ok=path.indexOf('/submit')>=0?'Submitted successfully':path.indexOf('/publish')>=0?'Published successfully':path.indexOf('/review')>=0?'Review saved successfully':path.indexOf('/void')>=0?'Action completed successfully':'Saved successfully';toast(ok,false)}
+    return j
+  }
+  throw lastError||Error('Request failed')
 }
 function modal(html){E('modalBody').innerHTML=html;E('modal').classList.remove('hide')}function close(){E('modal').classList.add('hide');E('modalBody').innerHTML=''}E('closeModal').onclick=close;
 function successDialog(title,message){modal('<div style="text-align:center;padding:8px 4px"><div style="font-size:42px;margin-bottom:8px">✓</div><h2>'+esc(title||'Saved successfully')+'</h2><p class="muted">'+esc(message||'The record has been saved successfully.')+'</p><button id="successDialogOk" class="primary" style="min-width:140px">Continue</button></div>');E('successDialogOk').onclick=close}
@@ -257,8 +273,8 @@ async function page(p){
      {key:'sex',label:'Sex',type:'select',options:[{value:'',label:'Not specified'},{value:'male',label:'Male'},{value:'female',label:'Female'}]},
      {key:'dateOfBirth',label:'Date of birth',type:'date'},{key:'requestedGradeCode',label:'Requested grade',type:'select',options:grades.filter(function(g){return g.is_active}).map(function(g){return{value:g.code,label:g.name}})},
      {key:'guardianFirstName',label:'Guardian first name'},{key:'guardianLastName',label:'Guardian last name'},{key:'guardianPhone',label:'Guardian phone'},
-     {key:'guardianEmail',label:'Guardian email (required)',type:'email'},{key:'guardianRelationship',label:'Relationship'},{key:'address',label:'Address',type:'textarea'},{key:'notes',label:'Notes',type:'textarea'}
-   ],{},function(v){return raw('/api/admissions/internal',{method:'POST',body:JSON.stringify({firstName:v.firstName,middleName:v.middleName||undefined,lastName:v.lastName,sex:v.sex||undefined,dateOfBirth:v.dateOfBirth||undefined,requestedGradeCode:v.requestedGradeCode,guardianFirstName:v.guardianFirstName,guardianLastName:v.guardianLastName,guardianPhone:v.guardianPhone,guardianEmail:v.guardianEmail,guardianRelationship:v.guardianRelationship,address:v.address||undefined,notes:v.notes||undefined})})})};
+     {key:'guardianEmail',label:'Guardian email (optional — used for report cards, fee notices and school alerts)',type:'email'},{key:'guardianRelationship',label:'Relationship'},{key:'address',label:'Address',type:'textarea'},{key:'notes',label:'Notes',type:'textarea'}
+   ],{},function(v){return raw('/api/admissions/internal',{method:'POST',body:JSON.stringify({firstName:v.firstName,middleName:v.middleName||undefined,lastName:v.lastName,sex:v.sex||undefined,dateOfBirth:v.dateOfBirth||undefined,requestedGradeCode:v.requestedGradeCode,guardianFirstName:v.guardianFirstName,guardianLastName:v.guardianLastName,guardianPhone:v.guardianPhone,guardianEmail:v.guardianEmail||undefined,guardianRelationship:v.guardianRelationship,address:v.address||undefined,notes:v.notes||undefined})})})};
    async function openAdmission(id){
      var x=await raw('/api/admissions/'+id),a=x.application;
      modal('<div class="section compact"><div><h2>'+esc(a.first_name+' '+a.last_name)+'</h2><p class="muted">'+esc(a.application_no)+' • '+badge(a.status)+'</p></div></div>'+
@@ -280,7 +296,7 @@ async function page(p){
      {key:'classroom_name',label:'Active Class',render:function(r){return esc(r.classroom_name||'—')}},
      {key:'grade_name',label:'Grade',render:function(r){return esc(r.grade_name||'—')}},
      {key:'status',render:function(r){return badge(r.status)}}
-   ],function(r){return'<button class="mini primary-lite" data-open-student="'+r.id+'">Open Student</button>'})}
+   ],function(r){return'<button class="mini" data-student-360="'+r.id+'">360° View</button><button class="mini primary-lite" data-open-student="'+r.id+'">Open Student</button>'})}
    E('content').innerHTML='<div class="section"><div><h1>Student Management</h1><p class="muted">Open and edit students, manage active or inactive status without deleting history, maintain guardians, classes, finance and academic records.</p></div>'+(can('students.create')?'<button id="newStudent" class="primary">Onboard Student</button>':'')+'</div>'+
      '<div class="panel"><div class="toolbar"><input id="studentSearch" placeholder="Student ID or name"><select id="studentStatus"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="suspended">Suspended</option><option value="withdrawn">Withdrawn</option><option value="transferred">Transferred</option><option value="graduated">Graduated</option></select></div><div id="studentTable">'+studentRows(students)+'</div></div>';
    function filterStudents(){var q=E('studentSearch').value.toLowerCase(),st=E('studentStatus').value;E('studentTable').innerHTML=studentRows(students.filter(function(r){return(!st||r.status===st)&&((r.admission_no||'')+' '+r.first_name+' '+(r.middle_name||'')+' '+r.last_name).toLowerCase().includes(q)}))}
@@ -292,10 +308,9 @@ async function page(p){
      {key:'dateOfBirth',label:'Date of birth',type:'date'},{key:'admissionDate',label:'Admission date',type:'date'},
      {key:'classroomId',label:'Class',type:'select',options:classOptions()},
      {key:'guardianFirstName',label:'Guardian first name'},{key:'guardianLastName',label:'Guardian last name'},
-     {key:'guardianPhone',label:'Guardian phone'},{key:'guardianEmail',label:'Guardian email (required)',type:'email'},
+     {key:'guardianPhone',label:'Guardian phone'},{key:'guardianEmail',label:'Guardian email (optional — used for report cards, fee notices and alerts)',type:'email'},
      {key:'guardianRelationship',label:'Relationship'},{key:'notes',label:'Notes',type:'textarea'}
    ],{},async function(v){
-     if(!v.guardianEmail)throw Error('Guardian email is required for report cards and fee notifications');
      if(!v.classroomId)throw Error('Choose the student class');
      var created=await raw('/api/students',{method:'POST',body:JSON.stringify({
        admissionNo:v.admissionNo,firstName:v.firstName,middleName:v.middleName||undefined,lastName:v.lastName,
@@ -308,30 +323,29 @@ async function page(p){
      return created
    })};
    async function openStudent360(id){
-     E('student360Out').innerHTML='<div class="panel"><p class="muted">Loading Student 360...</p></div>';
-     var x=await raw('/api/students/'+id+'/360'),st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[];
-     E('student360Out').innerHTML='<div class="panel"><div class="section compact"><div><h2>'+esc(st.first_name+' '+(st.middle_name||'')+' '+st.last_name)+'</h2><p class="muted">'+esc(st.admission_no)+(st.classroom_name?' • '+esc(st.classroom_name):' • No active class')+' • '+badge(st.status)+'</p></div><div class="actions">'+
-       (can('students.edit')?'<button id="editStudent360" class="ghost">Edit Student</button><button id="addStudentGuardian" class="ghost">Add Guardian</button>':'')+
-       (can('students.status')?'<button id="manageStudentStatus" class="ghost">Manage Status</button>':'')+
-       '<button id="openStudentFinance" class="primary">Open Account</button></div></div>'+
-       '<div class="grid"><div class="panel stat"><span class="muted">Attendance</span><b>'+esc(x.attendance.rate||0)+'%</b></div><div class="panel stat"><span class="muted">Fees Billed</span><b>GHS '+Number(x.fees.billed||0).toFixed(2)+'</b></div><div class="panel stat"><span class="muted">Paid</span><b>GHS '+Number(x.fees.paid||0).toFixed(2)+'</b></div><div class="panel stat"><span class="muted">Outstanding</span><b>GHS '+Number(x.fees.outstanding||0).toFixed(2)+'</b></div></div></div>'+
-       '<div class="two" style="margin-top:12px"><div class="panel"><h3>Guardians</h3>'+table(g,[{key:'first_name',label:'Guardian',render:function(r){return'<b>'+esc(r.first_name+' '+r.last_name)+'</b>'}},{key:'relationship'},{key:'phone'},{key:'email',render:function(r){return esc(r.email||'Missing email')}}])+'</div><div class="panel"><h3>Enrolment History</h3>'+table(en,[{key:'academic_year',label:'Academic Year'},{key:'classroom_name',label:'Class'},{key:'status',render:function(r){return badge(r.status)}}])+'</div></div>'+
-       '<div class="panel" style="margin-top:12px"><h3>Student Status History</h3>'+table(history,[{key:'changed_at',label:'Changed',render:function(r){return esc(new Date(r.changed_at).toLocaleString())}},{key:'old_status',label:'From',render:function(r){return esc(r.old_status||'—')}},{key:'new_status',label:'To',render:function(r){return badge(r.new_status)}},{key:'reason',render:function(r){return esc(r.reason||'—')}}])+'</div>'+
-       '<div class="panel" style="margin-top:12px"><h3>Recent Payments</h3>'+table(x.payments||[],[{key:'paid_at',label:'Date',render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:'fee_name',label:'Fee'},{key:'amount',render:function(r){return 'GHS '+Number(r.amount).toFixed(2)}},{key:'payment_method',label:'Method'},{key:'reference'}])+'</div>';
-     if(E('editStudent360'))E('editStudent360').onclick=function(){form('Edit Student',[
-       {key:'firstName',label:'First name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},
-       {key:'sex',label:'Sex',type:'select',options:[{value:'',label:'Not specified'},{value:'male',label:'Male'},{value:'female',label:'Female'}]},
-       {key:'dateOfBirth',label:'Date of birth',type:'date'},{key:'admissionDate',label:'Admission date',type:'date'},{key:'notes',label:'Notes',type:'textarea'}
-     ],{firstName:st.first_name,middleName:st.middle_name||'',lastName:st.last_name,sex:st.sex||'',dateOfBirth:st.date_of_birth?String(st.date_of_birth).slice(0,10):'',admissionDate:st.admission_date?String(st.admission_date).slice(0,10):'',notes:st.notes||''},function(v){return raw('/api/students/'+id,{method:'PATCH',body:JSON.stringify({firstName:v.firstName,middleName:v.middleName||null,lastName:v.lastName,sex:v.sex||null,dateOfBirth:v.dateOfBirth||null,admissionDate:v.admissionDate||undefined,notes:v.notes||null})})})};
-     if(E('manageStudentStatus'))E('manageStudentStatus').onclick=function(){form('Manage Student Status',[
-       {key:'status',label:'Student status',type:'select',options:[{value:'active',label:'Active / Enable'},{value:'inactive',label:'Inactive / Disable'},{value:'suspended',label:'Suspended'},{value:'withdrawn',label:'Withdrawn'},{value:'transferred',label:'Transferred'},{value:'graduated',label:'Graduated'}]},
-       {key:'classroomId',label:'Class when activating',type:'select',options:[{value:'',label:'Use current / previous class'}].concat(classOptions())},
-       {key:'reason',label:'Reason for status change',type:'textarea'}
-     ],{status:st.status,classroomId:st.classroom_id||'',reason:''},function(v){return raw('/api/students/'+id+'/status',{method:'POST',body:JSON.stringify({status:v.status,classroomId:v.classroomId||undefined,reason:v.reason||undefined})})})};
-     if(E('addStudentGuardian'))E('addStudentGuardian').onclick=function(){form('Add Guardian',[{key:'firstName',label:'First name'},{key:'lastName',label:'Last name'},{key:'phone',label:'Phone'},{key:'email',label:'Email (required for reports and fee notices)',type:'email'},{key:'relationship',label:'Relationship'},{key:'isPrimary',label:'Primary guardian?',type:'select',options:[{value:'false',label:'No'},{value:'true',label:'Yes'}]}],{isPrimary:'false'},function(v){if(!v.email)throw Error('Guardian email is required');return raw('/api/students/'+id+'/guardians',{method:'POST',body:JSON.stringify({firstName:v.firstName,lastName:v.lastName,phone:v.phone,email:v.email,relationship:v.relationship,isPrimary:v.isPrimary==='true'})})})};
-     E('openStudentFinance').onclick=function(){sessionStorage.setItem('rx_finance_student',id);page('finance')}
+     modal('<div class="panel"><p class="muted">Loading Student 360°...</p></div>');
+     try{
+       var x=await raw('/api/students/'+id+'/360'),st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[],perf=x.performance||{},att=x.attendance||{};
+       var subjectRows=(x.subjects||[]),hw=x.homework||[],prom=x.promotions||[],activity=x.activity||[];
+       E('modalBody').innerHTML='<div class="student360-head"><div class="student360-identity"><div class="student-avatar">'+esc((st.first_name||'?').charAt(0)+(st.last_name||'?').charAt(0))+'</div><div><span class="eyebrow">Student 360°</span><h1>'+esc(st.first_name+' '+(st.middle_name||'')+' '+st.last_name)+'</h1><p class="muted">'+esc(st.admission_no)+' • '+esc(st.classroom_name||'No active class')+' • '+badge(st.status)+'</p></div></div><div class="actions"><button id="openStudentFullPage" class="primary">Open Full Student Page</button></div></div>'+
+       '<div class="grid student360-stats"><div class="panel stat"><span class="muted">Academic average</span><b>'+(perf.overallAverage==null?'—':esc(perf.overallAverage)+'%')+'</b><small>'+(perf.classPosition?'Position '+esc(perf.classPosition)+' / '+esc(perf.classSize):'Current term')+'</small></div><div class="panel stat"><span class="muted">Attendance</span><b>'+esc(att.rate||0)+'%</b><small>'+esc(att.present||0)+' present • '+esc(att.absent||0)+' absent</small></div><div class="panel stat"><span class="muted">Outstanding</span><b>GHS '+Number(x.fees.outstanding||0).toFixed(2)+'</b><small>Paid GHS '+Number(x.fees.paid||0).toFixed(2)+'</small></div><div class="panel stat"><span class="muted">Portal</span><b>'+(x.portal&&x.portal.is_active?'Active':'Not active')+'</b><small>'+esc(x.portal&&x.portal.active_sessions||0)+' active session(s)</small></div></div>'+
+       '<div class="two student360-columns"><div>'+
+         '<div class="panel"><h3>Student Information</h3><div class="info-grid"><div><span>Student ID</span><b>'+esc(st.admission_no)+'</b></div><div><span>Status</span><b>'+esc(st.status)+'</b></div><div><span>Class</span><b>'+esc(st.classroom_name||'—')+'</b></div><div><span>Grade</span><b>'+esc(st.grade_name||'—')+'</b></div><div><span>Academic year</span><b>'+esc(st.academic_year||'—')+'</b></div><div><span>Sex</span><b>'+esc(st.sex||'—')+'</b></div><div><span>Date of birth</span><b>'+esc(st.date_of_birth?String(st.date_of_birth).slice(0,10):'—')+'</b></div><div><span>Admission date</span><b>'+esc(st.admission_date?String(st.admission_date).slice(0,10):'—')+'</b></div></div><h4>Notes</h4><p class="muted">'+esc(st.notes||'No notes recorded.')+'</p></div>'+
+         '<div class="panel"><h3>Guardians</h3>'+table(g,[{key:'first_name',label:'Guardian',render:function(r){return'<b>'+esc(r.first_name+' '+r.last_name)+'</b>'+(r.is_primary?'<br><span class="badge">Primary</span>':'')}},{key:'relationship'},{key:'phone'},{key:'email',render:function(r){return esc(r.email||'Not provided')}}])+'</div>'+
+         '<div class="panel"><h3>Academic Performance</h3>'+table(subjectRows,[{key:'subject_name',label:'Subject'},{key:'class_assessment_score',label:'CA'},{key:'exam_score',label:'Exam'},{key:'total',label:'Total',render:function(r){return r.total==null?'—':esc(r.total)+'%'}},{key:'grade'}])+'</div>'+
+         '<div class="panel"><h3>Homework</h3>'+table(hw,[{key:'subject_name',label:'Subject'},{key:'title'},{key:'status',render:function(r){return badge(r.status)}},{key:'submission_status',label:'Submission',render:function(r){return badge(r.submission_status)}}])+'</div>'+
+       '</div><div>'+
+         '<div class="panel"><h3>Enrolment History</h3>'+table(en,[{key:'academic_year',label:'Academic Year'},{key:'classroom_name',label:'Class'},{key:'grade_name',label:'Grade'},{key:'status',render:function(r){return badge(r.status)}}])+'</div>'+
+         '<div class="panel"><h3>Recent Attendance</h3>'+table(x.recentAttendance||[],[{key:'attendance_date',label:'Date',render:function(r){return esc(String(r.attendance_date).slice(0,10))}},{key:'status',render:function(r){return badge(r.status)}},{key:'note'}])+'</div>'+
+         '<div class="panel"><h3>Payments</h3>'+table(x.payments||[],[{key:'paid_at',label:'Date',render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:'fee_name',label:'Fee'},{key:'amount',render:function(r){return 'GHS '+Number(r.amount).toFixed(2)}},{key:'payment_method',label:'Method'},{key:'reference'}])+'</div>'+
+         '<div class="panel"><h3>Promotion History</h3>'+table(prom,[{key:'from_year',label:'From'},{key:'to_year',label:'To'},{key:'outcome',render:function(r){return badge(r.outcome)}}])+'</div>'+
+         '<div class="panel"><h3>Status History</h3>'+table(history,[{key:'changed_at',label:'Changed',render:function(r){return esc(new Date(r.changed_at).toLocaleString())}},{key:'old_status',label:'From'},{key:'new_status',label:'To',render:function(r){return badge(r.new_status)}},{key:'reason'}])+'</div>'+
+         '<div class="panel"><h3>Recent Activity</h3>'+table(activity,[{key:'created_at',label:'When',render:function(r){return esc(new Date(r.created_at).toLocaleString())}},{key:'action'},{key:'resource_type',label:'Area'}])+'</div>'+
+       '</div></div>';
+       E('openStudentFullPage').onclick=function(){window.open('/students/'+encodeURIComponent(id),'_blank','noopener')}
+     }catch(err){E('modalBody').innerHTML='<div class="notice warn"><b>Student 360° could not load.</b><br>'+esc(err.message)+'</div>'}
    }
-   E('content').onclick=function(e){var id=e.target.dataset.openStudent;if(id)location.assign('/students/'+encodeURIComponent(id))};
+   E('content').onclick=function(e){var id=e.target.dataset.student360;if(id){openStudent360(id);return}id=e.target.dataset.openStudent;if(id){window.open('/students/'+encodeURIComponent(id),'_blank','noopener');return}};
  }
  else if(p==='studentdetail'){
    var studentMatch=location.pathname.match(/^\\/students\\/([^/?#]+)/),studentId=studentMatch&&studentMatch[1]?decodeURIComponent(studentMatch[1]):'';
@@ -1177,7 +1191,15 @@ else if(p==='attendance'){
  else if(p==='studentstatements'){
    var ss=await raw('/api/students'),selectedStatementStudent=sessionStorage.getItem('rx_statement_student')||'';sessionStorage.removeItem('rx_statement_student');
    E('content').innerHTML='<div class="section"><div><h1>Student Statements</h1><p class="muted">A dedicated financial statement workspace for student charges, payments, advance credits, references and running balances.</p></div></div>'+
-     '<div class="panel"><div class="row"><div><label>Student</label><select id="statementStudentStandalone"><option value="">Select student</option>'+ss.map(function(s){return'<option value="'+s.id+'"'+(s.id===selectedStatementStudent?' selected':'')+'>'+esc(s.first_name+' '+s.last_name+' ('+s.admission_no+')')+'</option>'}).join('')+'</select></div><button id="generateStandaloneStatement" class="primary">Generate Statement</button></div></div><div id="standaloneStatementOut" style="margin-top:12px"></div>';
+     '<div class="panel"><label>Find student</label><input id="statementStudentSearch" placeholder="Search by Student ID, first name, surname or class"><input id="statementStudentStandalone" type="hidden" value="'+esc(selectedStatementStudent)+'"><div id="statementStudentResults" class="subject-assignment-list" style="margin-top:10px"></div><div id="statementStudentChosen" class="notice" style="margin-top:10px">'+(selectedStatementStudent?'Student selected. You can generate the statement.':'Search and select a student.')+'</div><button id="generateStandaloneStatement" class="primary" style="margin-top:12px">Generate Statement</button></div><div id="standaloneStatementOut" style="margin-top:12px"></div>';
+   function drawStatementStudentResults(){
+     var input=E('statementStudentSearch'),box=E('statementStudentResults'),q=(input&&input.value||'').trim().toLowerCase();
+     if(q.length<1){box.innerHTML='';return}
+     var rows=ss.filter(function(s){return ((s.admission_no||'')+' '+s.first_name+' '+(s.middle_name||'')+' '+s.last_name+' '+(s.classroom_name||'')).toLowerCase().includes(q)}).slice(0,12);
+     box.innerHTML=rows.length?rows.map(function(s){return'<button class="ghost" data-statement-student="'+s.id+'" style="text-align:left"><b>'+esc(s.first_name+' '+s.last_name)+'</b><br><small class="muted">'+esc(s.admission_no)+' • '+esc(s.classroom_name||'No active class')+'</small></button>'}).join(''):'<div class="empty">No matching students.</div>';
+   }
+   E('statementStudentSearch').oninput=function(){clearTimeout(this._t);this._t=setTimeout(drawStatementStudentResults,120)};
+   E('statementStudentResults').onclick=function(e){var b=e.target.closest('[data-statement-student]');if(!b)return;var s=ss.find(function(x){return x.id===b.dataset.statementStudent});E('statementStudentStandalone').value=b.dataset.statementStudent;E('statementStudentChosen').innerHTML='<b>'+esc(s.first_name+' '+s.last_name)+'</b><br><span class="muted">'+esc(s.admission_no)+' • '+esc(s.classroom_name||'No active class')+'</span>';E('statementStudentResults').innerHTML='';E('statementStudentSearch').value=''};
    async function generateStandaloneStatement(){
      var sid=E('statementStudentStandalone').value;if(!sid)return toast('Select a student',true);
      E('standaloneStatementOut').innerHTML='<div class="panel"><p class="muted">Generating statement...</p></div>';
