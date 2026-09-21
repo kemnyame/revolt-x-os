@@ -3279,7 +3279,7 @@ If you did not expect this invitation, contact your school administrator.`,
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.created',
     resourceType:'teacher',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:b.employeeNumber??null,schoolRole:'teacher',status:'active'},
+    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:payload.employee_number??null,schoolRole:'teacher',status:'active'},
     metadata:{invitationStatus:invitation.status}
   });
   return reply.code(201).send({
