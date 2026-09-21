@@ -18,6 +18,33 @@ test('student management exposes 360 and opens the full student page inside the 
   assert.match(ui,/Application reference/);
 });
 
+test('screen access is separated from data dependencies and Student 360 is restricted',async()=>{
+  const ui=await read('ui.js');
+  const server=await read('server.js');
+  assert.match(ui,/screen\.students\.view/);
+  assert.match(ui,/students\.360\.view/);
+  assert.match(ui,/students\.profile\.view/);
+  assert.match(server,/authorize\(request,\s*db,\s*config,\s*'students\.360\.view'\)/);
+  assert.match(server,/authorize\(request,\s*db,\s*config,\s*'students\.profile\.view'\)/);
+  assert.match(server,/screenDependencies/);
+});
+
+test('staff directory survives Core OS sleep through the persistent School cache',async()=>{
+  const server=await read('server.js');
+  assert.match(server,/school_user_directory/);
+  assert.match(server,/readPersistentCoreUsers/);
+  assert.match(server,/persistCoreUsers/);
+  assert.match(server,/Serve the last complete staff directory immediately/);
+});
+
+test('student management paginates large directories in the browser',async()=>{
+  const ui=await read('ui.js');
+  assert.match(ui,/studentPageSize=100/);
+  assert.match(ui,/Showing /);
+  assert.match(ui,/studentPrev/);
+  assert.match(ui,/studentNext/);
+});
+
 test('guardian email is optional in admissions and student onboarding',async()=>{
   const ui=await read('ui.js');
   const admissions=await read('admissions-ui.js');

@@ -1,0 +1,27 @@
+name: Keep Revolt-X Services Awake
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Wake Core OS and School
+        shell: bash
+        run: |
+          set -e
+          for url in \
+            "https://revolt-x-os.onrender.com/health/live" \
+            "https://revolt-x-school.onrender.com/health/live"
+          do
+            echo "Pinging $url"
+            curl --fail --show-error --silent --retry 3 --retry-delay 5 --max-time 45 "$url"
+            echo
+          done

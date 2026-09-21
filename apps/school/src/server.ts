@@ -155,30 +155,79 @@ const coreUsersCache=new Map<string,{value:any[];expiresAt:number}>();
 const CORE_USERS_CACHE_MS=300_000;
 const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
 
+async function readPersistentCoreUsers(organisationId:string){
+  return (await db.query(`
+    SELECT os_user_id id,email,first_name,last_name,user_status status,
+           core_membership_id membership_id,job_title,employee_number,
+           membership_status,roles,synced_at
+    FROM school_user_directory
+    WHERE organisation_id=$1
+    ORDER BY first_name,last_name
+  `,[organisationId])).rows.map((u:any)=>({...u,roles:Array.isArray(u.roles)?u.roles:[]}));
+}
+
+async function persistCoreUsers(organisationId:string,users:any[]){
+  await tx(db,async client=>{
+    for(const u of users){
+      if(!u?.id)continue;
+      await client.query(`
+        INSERT INTO school_user_directory(
+          organisation_id,os_user_id,core_membership_id,first_name,last_name,email,
+          job_title,employee_number,user_status,membership_status,roles,synced_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now())
+        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
+          core_membership_id=EXCLUDED.core_membership_id,
+          first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=EXCLUDED.email,
+          job_title=EXCLUDED.job_title,employee_number=EXCLUDED.employee_number,
+          user_status=EXCLUDED.user_status,membership_status=EXCLUDED.membership_status,
+          roles=EXCLUDED.roles,synced_at=now()
+      `,[
+        organisationId,u.id,u.membership_id??null,u.first_name??'',u.last_name??'',u.email??null,
+        u.job_title??null,u.employee_number??null,u.status??null,u.membership_status??null,
+        JSON.stringify(Array.isArray(u.roles)?u.roles:[])
+      ]);
+    }
+  });
+}
+
 async function fetchCoreUsers(organisationId:string){
   const cached=coreUsersCache.get(organisationId);
   if(cached&&cached.expiresAt>Date.now())return cached.value;
 
-  const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
-  let lastError='Core OS staff directory is temporarily unavailable';
+  const persistent=await readPersistentCoreUsers(organisationId).catch(()=>[] as any[]);
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const url=base+'/v1/internal/school/users?organisationId='+encodeURIComponent(organisationId);
+  const maxAttempts=persistent.length?1:4;
+  const timeoutMs=persistent.length?2500:12000;
 
-  for(let attempt=0;attempt<3;attempt++){
+  for(let attempt=0;attempt<maxAttempts;attempt++){
     try{
-      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(6000)});
+      const res=await fetch(url,{headers:coreServiceHeaders(),signal:AbortSignal.timeout(timeoutMs)});
       const payload=await res.json().catch(()=>null) as any;
       if(res.ok){
         const value=Array.isArray(payload)?payload:[];
-        coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+        if(value.length){
+          await persistCoreUsers(organisationId,value);
+          coreUsersCache.set(organisationId,{value,expiresAt:Date.now()+CORE_USERS_CACHE_MS});
+          return value;
+        }
+        if(persistent.length){
+          coreUsersCache.set(organisationId,{value:persistent,expiresAt:Date.now()+60_000});
+          return persistent;
+        }
         return value;
       }
-      lastError=payload?.error?.message||lastError;
       if(!CORE_SERVICE_TRANSIENT_STATUSES.has(res.status))break;
-    }catch(error:any){
-      lastError=String(error?.message||lastError);
-    }
-    if(attempt<2)await new Promise(resolve=>setTimeout(resolve,[500,1000][attempt]||1000));
+    }catch{}
+    if(attempt+1<maxAttempts)await new Promise(resolve=>setTimeout(resolve,[700,1400,2500][attempt]||2500));
   }
 
+  if(persistent.length){
+    // Serve the last complete staff directory immediately and wake Core in parallel.
+    void fetch(base+'/health/live',{signal:AbortSignal.timeout(20_000)}).catch(()=>null);
+    coreUsersCache.set(organisationId,{value:persistent,expiresAt:Date.now()+60_000});
+    return persistent;
+  }
   if(cached)return cached.value;
   return[] as any[];
 }
@@ -2021,10 +2070,10 @@ app.post('/api/students',async(request,reply)=>{
   });
   return reply.code(201).send(result);
 });
-app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
+app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.profile.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
 
 app.get('/api/students/:id/360',async request=>{
-  const a=await authorize(request,db,config,'students.view');
+  const a=await authorize(request,db,config,'students.360.view');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,`SELECT s.*,e.id enrolment_id,e.academic_year_id,c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,
       g.id grade_level_id,g.code grade_code,g.name grade_name,y.name academic_year
@@ -3149,6 +3198,11 @@ app.post('/api/staff/users',async(request,reply)=>{
     VALUES($1,$2,$3,'active')
     ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()
     RETURNING *`,[a.core.organisation_id,payload.user_id,b.schoolRole]);
+  await persistCoreUsers(a.core.organisation_id,[{
+    id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
+    email:b.email??null,job_title:b.jobTitle||role.name,employee_number:payload.employee_number??null,
+    status:'active',membership_status:'active',roles:['member']
+  }]);
 
   let invitation:any={status:b.email?'not_started':'email_not_set'};
   if(b.email){
@@ -3236,6 +3290,11 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     VALUES($1,$2,'teacher','active')
     ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()
     RETURNING *`,[a.core.organisation_id,payload.user_id]);
+  await persistCoreUsers(a.core.organisation_id,[{
+    id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
+    email:b.email,job_title:b.jobTitle,employee_number:payload.employee_number??null,
+    status:'active',membership_status:'active',roles:['member']
+  }]);
 
   let invitation:any={status:'not_created'};
   const setupRes=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-setup',{
@@ -5511,6 +5570,41 @@ app.put('/api/roles/:role/capabilities',async request=>{
     'finance.eod.view','finance.reports.view'
   ]);
   const financeWorkspaceEnabled=b.permissions.some(p=>financeWorkspaceKeys.has(p.capabilityKey)&&p.allowed);
+  const screenDependencies:Record<string,string[]>={
+    'screen.dashboard.view':['reports.view'],
+    'screen.setup.view':['academic.view'],
+    'screen.admissions.view':['admissions.view'],
+    'screen.students.view':['students.view'],
+    'screen.approvals.view':['approvals.view'],
+    'screen.academic_manager.view':['academic.view','teaching_assignments.view'],
+    'screen.promotions.view':['promotion.manage'],
+    'screen.attendance.view':['attendance.view'],
+    'screen.assessments.view':['assessment.view'],
+    'screen.homework.view':['homework.view'],
+    'screen.lesson_notes.view':['lesson_notes.view'],
+    'screen.report_cards.view':['reports.view'],
+    'screen.student_statements.view':['finance.view'],
+    'screen.grading.view':['assessment.view'],
+    'screen.finance.view':['finance.view'],
+    'screen.leave.view':['leave.view'],
+    'screen.timetable.view':['timetable.view'],
+    'screen.teacher_schedule.view':['teaching_assignments.view','timetable.view'],
+    'screen.communications.view':['communications.view'],
+    'screen.access_management.view':['staff.view','roles.view'],
+    'screen.system.view':['system.logs.view'],
+    'screen.portals.view':['portals.manage'],
+    'students.profile.view':['students.view'],
+    'students.360.view':['students.view']
+  };
+  const requiredDependencies=new Set<string>();
+  for(const permission of b.permissions){
+    if(!permission.allowed)continue;
+    for(const dependency of screenDependencies[permission.capabilityKey]??[])requiredDependencies.add(dependency);
+  }
+  if(financeWorkspaceEnabled){
+    requiredDependencies.add('screen.finance.view');
+    for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view'])requiredDependencies.add(dependency);
+  }
   await tx(db,async client=>{
     for(const p of b.permissions){
       await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
@@ -5518,21 +5612,17 @@ app.put('/api/roles/:role/capabilities',async request=>{
         ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
         [a.core.organisation_id,role,p.capabilityKey,p.allowed]);
     }
-    if(financeWorkspaceEnabled){
-      // Finance screens rely on student, academic, fee and report reference data. Keep those
-      // read dependencies in sync so assigning a Finance tab never produces a hidden 403.
-      for(const dependency of ['finance.view','students.view','reports.view','academic.view','fees.view','tax.view']){
-        await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
-          VALUES($1,$2,$3,true,now())
-          ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
-          [a.core.organisation_id,role,dependency]);
-      }
+    for(const dependency of requiredDependencies){
+      await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed,updated_at)
+        VALUES($1,$2,$3,true,now())
+        ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=true,updated_at=now()`,
+        [a.core.organisation_id,role,dependency]);
     }
   });
   await audit(a.core.organisation_id,a.core.id,'role_capabilities.updated','school_role',role,{
-    count:b.permissions.length,financeWorkspaceEnabled
+    count:b.permissions.length,financeWorkspaceEnabled,dependencyCount:requiredDependencies.size
   });
-  return{role,updated:b.permissions.length,financeWorkspaceEnabled};
+  return{role,updated:b.permissions.length,financeWorkspaceEnabled,dependencyCount:requiredDependencies.size};
 });
 
 app.get('/api/teacher/timetable',async request=>{
@@ -5914,26 +6004,26 @@ app.get('/api/search',async request=>{
       SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',14
       FROM communication_outbox co WHERE co.organisation_id=$1 AND (COALESCE(co.subject,'') ILIKE $2 OR co.recipient_address ILIKE $2 OR COALESCE(co.recipient_name,'') ILIKE $2)
     ) x ORDER BY rank,title LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
-  let staff:any[]=[];
-  {
-    const users=await fetchCoreUsers(a.core.organisation_id);
-    const needle=q.q.toLowerCase();
-    staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
-      type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
-    }));
-  }
   const caps=await effectiveCapabilities(db,a.core.organisation_id,a.role);
   const allowed=(section:string)=>a.role==='school_admin'||(
-    section==='students'?caps.includes('students.view'):
-    section==='admissions'?caps.includes('admissions.view'):
-    section==='assignments'?(caps.includes('teaching_assignments.view')||caps.includes('academic.view')):
-    section==='lessonnotes'?caps.includes('lesson_notes.view'):
-    section==='fees'?caps.includes('fees.view'):
-    section==='finance'?caps.includes('finance.view'):
-    section==='leave'?caps.includes('leave.view'):
-    section==='announcements'?caps.includes('communications.view'):
-    section==='staff'?caps.includes('staff.view'):false
+    section==='students'?caps.includes('screen.students.view'):
+    section==='admissions'?caps.includes('screen.admissions.view'):
+    section==='assignments'?caps.includes('screen.academic_manager.view'):
+    section==='lessonnotes'?caps.includes('screen.lesson_notes.view'):
+    section==='fees'?caps.includes('screen.finance.view'):
+    section==='finance'?caps.includes('screen.finance.view'):
+    section==='leave'?caps.includes('screen.leave.view'):
+    section==='announcements'?caps.includes('screen.communications.view'):
+    section==='staff'?caps.includes('screen.access_management.view'):false
   );
+  let staff:any[]=[];
+  if(allowed('staff')){
+    const users=await fetchCoreUsers(a.core.organisation_id);
+    const needle=q.q.toLowerCase();
+    staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
+      type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+(u.email?' • '+u.email:''),section:'staff'
+    }));
+  }
   return[...rows,...staff].filter((x:any)=>allowed(x.section)).slice(0,q.limit);
 });
 

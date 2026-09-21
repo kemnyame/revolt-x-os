@@ -45,30 +45,30 @@ input,select,textarea{width:100%;padding:10px;background:#f7f9fb;border:1px soli
 var token='',ctx=null,current='dashboard',selectedStudentId='';
 var nav=[
 ['core','School'],
-['dashboard','Dashboard','⌂','reports.view'],
-['setup','School Setup','⚙','school.manage|academic.view'],
-['admissions','Admissions','✚','admissions.view'],
-['students','Students','S','students.view'],
-['approvals','Approvals','✓','approvals.view'],
-['assignments','Academic Manager','C','teaching_assignments.view|academic.view'],
-['promotions','Academic Promotion & Rollover','⇧','promotion.manage'],
-['attendance','Attendance','✓','attendance.view'],
-['assessments','Assessments & Scores','A','assessment.view'],
-['homework','Homework','H','homework.view'],
-['lessonnotes','Lesson Notes','L','lesson_notes.view'],
-['reports','Report Cards','R','reports.view'],
-['studentstatements','Student Statements','S','finance.view'],
-['grading','Grading Setup','G','assessment.view'],
-['finance','Finance & Accounts','₵','finance.overview.view|finance.student_payments.view|finance.parent_payment_requests.view|finance.setup.view|finance.expenses.view|finance.journals.view|finance.taxes.view|finance.budgets.view|finance.accounts.view|finance.vendors.view|finance.reversals.view|finance.eod.view|finance.reports.view'],
+['dashboard','Dashboard','⌂','screen.dashboard.view'],
+['setup','School Setup','⚙','screen.setup.view'],
+['admissions','Admissions','✚','screen.admissions.view'],
+['students','Students','S','screen.students.view'],
+['approvals','Approvals','✓','screen.approvals.view'],
+['assignments','Academic Manager','C','screen.academic_manager.view'],
+['promotions','Academic Promotion & Rollover','⇧','screen.promotions.view'],
+['attendance','Attendance','✓','screen.attendance.view'],
+['assessments','Assessments & Scores','A','screen.assessments.view'],
+['homework','Homework','H','screen.homework.view'],
+['lessonnotes','Lesson Notes','L','screen.lesson_notes.view'],
+['reports','Report Cards','R','screen.report_cards.view'],
+['studentstatements','Student Statements','S','screen.student_statements.view'],
+['grading','Grading Setup','G','screen.grading.view'],
+['finance','Finance & Accounts','₵','screen.finance.view'],
 ['hr','HR','H',''],
 ['payroll','Payroll','₵',''],
-['leave','Leave & Relief','L','leave.view'],
-['timetable','Timetable & Scheduling','T','timetable.view'],
-['teacherschedule','Teacher Scheduling','↔','teaching_assignments.view|timetable.view'],
-['announcements','Communication Centre','N','communications.view'],
-['staff','Access Management','P','staff.view|roles.view'],
-['systemcheck','System & Audit Logs','✓','system.logs.view|school.manage'],
-['portals','Portals & Interfaces','◫','portals.manage']
+['leave','Leave & Relief','L','screen.leave.view'],
+['timetable','Timetable & Scheduling','T','screen.timetable.view'],
+['teacherschedule','Teacher Scheduling','↔','screen.teacher_schedule.view'],
+['announcements','Communication Centre','N','screen.communications.view'],
+['staff','Access Management','P','screen.access_management.view'],
+['systemcheck','System & Audit Logs','✓','screen.system.view'],
+['portals','Portals & Interfaces','◫','screen.portals.view']
 ];
 function E(id){return document.getElementById(id)}
 function can(key){return !!(ctx&&ctx.capabilities&&ctx.capabilities.indexOf(key)>=0)}
@@ -80,7 +80,7 @@ var financeTabCaps={
   reversals:'finance.reversals.view',eod:'finance.eod.view',reports:'finance.reports.view'
 };
 function financeCanTab(name){return !!financeTabCaps[name]&&can(financeTabCaps[name])}
-function openStudentPage(id){selectedStudentId=id;try{close()}catch(e){}page('studentdetail')}
+function openStudentPage(id){if(!can('students.profile.view'))return toast('Your role cannot open full student profiles.',true);selectedStudentId=id;try{close()}catch(e){}page('studentdetail')}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function toast(m,bad){var t=E('toast');t.textContent=m;t.style.borderColor=bad?'#71323a':'#2c6d5c';t.classList.remove('hide');setTimeout(function(){t.classList.add('hide')},2500)}
 function badge(v){var s=String(v||''),n=s.toLowerCase().replace(/\s+/g,'_'),c='',icon='';if(/published|approved|graded|paid|active|present|success|taught|enrolled|complete/.test(n)){c='';icon='✓ '}else if(/submitted|under_review|processing|in_progress/.test(n)){c=' info';icon='● '}else if(/draft|planned|late|part_paid|unmarked|returned|pending|requested|waitlisted|overdue|grading_pending|pending_submissions|pending_publish/.test(n)){c=' warn';icon='● '}else if(/declined|absent|withdrawn|suspended|unpaid|failed|voided|server_error/.test(n)){c=' red';icon='! '}else if(/closed|archived|inactive|cancelled|not_submitted/.test(n)){c=' gray'}else if(/client_error/.test(n)){c=' purple';icon='! '}return '<span class="badge'+c+'">'+icon+esc((s||'—').replace(/_/g,' '))+'</span>'}
@@ -230,18 +230,25 @@ async function boot(){try{
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var initialPath=location.pathname.match(/^\\/students\\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1]){selectedStudentId=decodeURIComponent(initialPath[1]);await page('studentdetail');}else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage}))await page(requestedPage);else await page('dashboard')
 }catch(e){
-  E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app now retries transient wake-up/network delays automatically. Core OS being offline does not by itself block an already-valid School session.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="checkSchoolCore" class="primary">Check system status</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button><button id="retrySchool" class="ghost">Retry</button></div></div>';
+  E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app retries transient network delays automatically and can explicitly wake Core OS.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="wakeSchoolCore" class="primary">Wake Core OS</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Retry</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button></div></div>';
   E('retrySchool').onclick=function(){location.reload()};
   E('returnSchoolLogin').onclick=function(){location.replace('/login')};
+  E('wakeSchoolCore').onclick=async function(){
+    var btn=E('wakeSchoolCore');btn.disabled=true;btn.textContent='Waking Core OS...';E('schoolConnectionStatus').textContent='Sending the Core OS wake sequence...';
+    try{var r=await fetch('/api/system/core-wake',{method:'POST'}),j=await r.json();E('schoolConnectionStatus').textContent=j.message+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'');if(r.ok)setTimeout(function(){location.reload()},700)}
+    catch(err){E('schoolConnectionStatus').textContent=err.message}
+    finally{btn.disabled=false;btn.textContent='Wake Core OS'}
+  };
   E('checkSchoolCore').onclick=async function(){
     var btn=E('checkSchoolCore');btn.disabled=true;E('schoolConnectionStatus').textContent='Checking School, database and Core OS...';
-    try{var r=await fetch('/api/system/core-status'),j=await r.json(),coreOnline=!!(j.core&&j.core.reachable);E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(coreOnline?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')+(j.school==='ready'&&j.database==='ready'&&!coreOnline?' • School is available; Core-dependent sign-in/sync functions may be temporarily limited.':'')}
+    try{var r=await fetch('/api/system/core-status'),j=await r.json(),coreOnline=!!(j.core&&j.core.reachable);E('schoolConnectionStatus').textContent='School: '+j.school+' • Database: '+j.database+' • Core OS: '+(coreOnline?'online':'offline')+(j.core&&j.core.responseMs!=null?' • '+j.core.responseMs+' ms':'')+(j.school==='ready'&&j.database==='ready'&&!coreOnline?' • Use Wake Core OS to start the Core service now.':'')}
     catch(err){E('schoolConnectionStatus').textContent=err.message}
     finally{btn.disabled=false}
   }
 }}
 async function page(p){
- var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!canAny(navItem[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role does not have permission to open this module.</p></div>';return}
+ var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!canAny(navItem[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role does not have permission to open this screen.</p></div>';return}
+ if(p==='studentdetail'&&!can('students.profile.view')){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role cannot open full student profiles.</p></div>';return}
  current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('pageTitle').textContent=(navItem||['',p])[1];E('content').innerHTML='<p class="muted">Loading...</p>';
  try{
  if(p==='dashboard'){
@@ -310,17 +317,31 @@ async function page(p){
  }
  else if(p==='students'){
    var sr=await Promise.all([raw('/api/students'),raw('/api/classes'),raw('/api/academic-years')]),students=sr[0],studentClasses=sr[1],studentYears=sr[2];
+   var studentPage=1,studentPageSize=100;
+   function studentActions(r){
+     var out='';
+     if(can('students.360.view'))out+='<button class="mini" data-student-360="'+r.id+'">360° View</button>';
+     if(can('students.profile.view'))out+='<button class="mini primary-lite" data-open-student="'+r.id+'">Open Student</button>';
+     return out||'<span class="muted">View restricted</span>'
+   }
    function studentRows(rows){return table(rows,[
      {key:'admission_no',label:'Student ID'},
      {key:'first_name',label:'Student',render:function(r){return'<b>'+esc(r.first_name+' '+(r.middle_name||'')+' '+r.last_name)+'</b>'}},
      {key:'classroom_name',label:'Active Class',render:function(r){return esc(r.classroom_name||'—')}},
      {key:'grade_name',label:'Grade',render:function(r){return esc(r.grade_name||'—')}},
      {key:'status',render:function(r){return badge(r.status)}}
-   ],function(r){return'<button class="mini" data-student-360="'+r.id+'">360° View</button><button class="mini primary-lite" data-open-student="'+r.id+'">Open Student</button>'})}
+   ],studentActions)}
+   function filteredStudents(){var q=(E('studentSearch')?E('studentSearch').value:'').toLowerCase(),st=E('studentStatus')?E('studentStatus').value:'';return students.filter(function(r){return(!st||r.status===st)&&((r.admission_no||'')+' '+r.first_name+' '+(r.middle_name||'')+' '+r.last_name).toLowerCase().includes(q)})}
+   function renderStudentDirectory(){
+     var rows=filteredStudents(),pages=Math.max(1,Math.ceil(rows.length/studentPageSize));if(studentPage>pages)studentPage=pages;
+     var start=(studentPage-1)*studentPageSize,shown=rows.slice(start,start+studentPageSize);
+     E('studentTable').innerHTML=studentRows(shown)+'<div class="section compact"><span class="muted">Showing '+(rows.length?start+1:0)+'–'+Math.min(start+studentPageSize,rows.length)+' of '+rows.length+' students</span><div class="actions"><button id="studentPrev" class="ghost"'+(studentPage<=1?' disabled':'')+'>Previous</button><span class="badge">Page '+studentPage+' / '+pages+'</span><button id="studentNext" class="ghost"'+(studentPage>=pages?' disabled':'')+'>Next</button></div></div>';
+     var prev=E('studentPrev'),next=E('studentNext');if(prev)prev.onclick=function(){if(studentPage>1){studentPage--;renderStudentDirectory()}};if(next)next.onclick=function(){if(studentPage<pages){studentPage++;renderStudentDirectory()}}
+   }
    E('content').innerHTML='<div class="section"><div><h1>Student Management</h1><p class="muted">Open and edit students, manage active or inactive status without deleting history, maintain guardians, classes, finance and academic records.</p></div>'+(can('students.create')?'<button id="newStudent" class="primary">Onboard Student</button>':'')+'</div>'+
-     '<div class="panel"><div class="toolbar"><input id="studentSearch" placeholder="Student ID or name"><select id="studentStatus"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="suspended">Suspended</option><option value="withdrawn">Withdrawn</option><option value="transferred">Transferred</option><option value="graduated">Graduated</option></select></div><div id="studentTable">'+studentRows(students)+'</div></div>';
-   function filterStudents(){var q=E('studentSearch').value.toLowerCase(),st=E('studentStatus').value;E('studentTable').innerHTML=studentRows(students.filter(function(r){return(!st||r.status===st)&&((r.admission_no||'')+' '+r.first_name+' '+(r.middle_name||'')+' '+r.last_name).toLowerCase().includes(q)}))}
-   E('studentSearch').oninput=filterStudents;E('studentStatus').onchange=filterStudents;
+     '<div class="panel"><div class="toolbar"><input id="studentSearch" placeholder="Student ID or name"><select id="studentStatus"><option value="">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="suspended">Suspended</option><option value="withdrawn">Withdrawn</option><option value="transferred">Transferred</option><option value="graduated">Graduated</option></select></div><div id="studentTable"></div></div>';
+   function filterStudents(){studentPage=1;renderStudentDirectory()}
+   E('studentSearch').oninput=filterStudents;E('studentStatus').onchange=filterStudents;renderStudentDirectory();
    function classOptions(){return studentClasses.filter(function(c){return c.is_active}).map(function(c){var y=studentYears.find(function(x){return x.id===c.academic_year_id});return{value:c.id,label:c.name+(y?' • '+y.name:'')}})}
    var add=E('newStudent');if(add)add.onclick=function(){form('Onboard Student',[
      {key:'admissionNo',label:'Student ID / Admission No.'},{key:'firstName',label:'First name'},{key:'middleName',label:'Middle name'},{key:'lastName',label:'Last name'},
@@ -343,6 +364,7 @@ async function page(p){
      return created
    })};
    async function openStudent360(id){
+     if(!can('students.360.view'))return toast('Your role cannot open Student 360.',true);
      modal('<div class="panel"><p class="muted">Loading Student 360°...</p></div>');
      try{
        var x=await raw('/api/students/'+id+'/360'),st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[],perf=x.performance||{},att=x.attendance||{};
@@ -366,7 +388,7 @@ async function page(p){
          '<div class="panel"><h3>Status History</h3>'+table(history,[{key:'changed_at',label:'Changed',render:function(r){return esc(new Date(r.changed_at).toLocaleString())}},{key:'old_status',label:'From'},{key:'new_status',label:'To',render:function(r){return badge(r.new_status)}},{key:'reason'}])+'</div>'+
          '<div class="panel"><h3>Recent Activity</h3>'+table(activity,[{key:'created_at',label:'When',render:function(r){return esc(new Date(r.created_at).toLocaleString())}},{key:'action'},{key:'resource_type',label:'Area'}])+'</div>'+
        '</div></div>';
-       E('openStudentFullPage').onclick=function(){openStudentPage(id)}
+       var openStudentFullPage=E('openStudentFullPage');if(openStudentFullPage)openStudentFullPage.onclick=function(){openStudentPage(id)}
      }catch(err){E('modalBody').innerHTML='<div class="notice warn"><b>Student 360° could not load.</b><br>'+esc(err.message)+'</div>'}
    }
    E('content').onclick=function(e){var trigger=e.target.closest('[data-student-360],[data-open-student]');if(!trigger)return;var id=trigger.getAttribute('data-student-360');if(id){openStudent360(id);return}id=trigger.dataset.openStudent;if(id){openStudentPage(id);return}};
@@ -1547,12 +1569,11 @@ else if(p==='attendance'){
        var u=users.find(function(x){return x.id===uid});if(!u||!u.membership_id)return;
        return form('Edit User',[
          {key:'firstName',label:'First name'},{key:'lastName',label:'Last name'},{key:'email',label:'Email address',type:'email'},
-         {key:'jobTitle',label:'Job title'},{key:'employeeNumber',label:'Staff number'},
+         {key:'jobTitle',label:'Job title'},
          {key:'schoolRole',label:'School role',type:'select',options:roleOptions(u.school_role||schoolRole(u.id))}
-       ],{firstName:u.first_name,lastName:u.last_name,email:u.email||'',jobTitle:u.job_title||'',employeeNumber:u.employee_number||'',schoolRole:u.school_role||schoolRole(u.id)},function(v){
+       ],{firstName:u.first_name,lastName:u.last_name,email:u.email||'',jobTitle:u.job_title||'',schoolRole:u.school_role||schoolRole(u.id)},function(v){
          return raw('/api/staff/users/'+u.membership_id,{method:'PATCH',body:JSON.stringify({
-           firstName:v.firstName,lastName:v.lastName,email:v.email||null,jobTitle:v.jobTitle||null,
-           employeeNumber:v.employeeNumber||null,schoolRole:v.schoolRole
+           firstName:v.firstName,lastName:v.lastName,email:v.email||null,jobTitle:v.jobTitle||null,schoolRole:v.schoolRole
          })})
        })
      }
@@ -1597,5 +1618,5 @@ if(schoolScriptStart<0||schoolScriptEnd<=schoolScriptStart)throw new Error('Scho
 export const schoolAppScript=schoolFrontendDocument.slice(schoolScriptStart+schoolScriptOpen.length,schoolScriptEnd);
 export const schoolFrontend=applySchoolDesign(
   schoolFrontendDocument.slice(0,schoolScriptStart)+
-  '<script src="/school-app.js?v=20260921-design-1" defer></script>'+
+  '<script src="/school-app.js?v=20260921-access-scale-1" defer></script>'+
   schoolFrontendDocument.slice(schoolScriptEnd+schoolScriptClose.length),'admin');
