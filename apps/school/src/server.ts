@@ -37,19 +37,49 @@ new Script(schoolAppScript,{filename:'school-app.js'});
 const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
 app.log.info({emailProvider:config.EMAIL_PROVIDER,brevoApiKeyPresent:Boolean(config.BREVO_API_KEY),brevoFromEmailPresent:Boolean(config.BREVO_FROM_EMAIL),brevoFromNamePresent:Boolean(config.BREVO_FROM_NAME)},'Email provider startup status');
 if(config.BREVO_API_KEY){void validateBrevoConnection(config).then(result=>app.log.info({provider:'brevo',authenticated:result.authenticated,senderReady:result.senderReady,senderSource:result.senderSource},'Brevo connection verified')).catch(error=>app.log.warn({provider:'brevo',error:String(error?.message||error)},'Brevo connection verification failed'));}
-await app.register(helmet,{contentSecurityPolicy:false});
+await app.register(helmet,{
+  contentSecurityPolicy:{
+    directives:{
+      defaultSrc:["'self'"],
+      baseUri:["'self'"],
+      objectSrc:["'none'"],
+      frameAncestors:["'none'"],
+      imgSrc:["'self'","data:","https:"],
+      scriptSrc:["'self'","'unsafe-inline'"],
+      styleSrc:["'self'","'unsafe-inline'"],
+      connectSrc:["'self'"],
+      fontSrc:["'self'","data:"],
+      formAction:["'self'"]
+    }
+  }
+});
 await app.register(cors,{origin:config.CORS_ORIGINS==='*'?true:config.CORS_ORIGINS.split(',').map(x=>x.trim()),credentials:true});
 
 const requestStartedAt=new Map<string,number>();
+function requestCookie(request:any,name:string){
+  const prefix=name+'=';
+  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith(prefix));
+  return cookie?decodeURIComponent(cookie.slice(prefix.length)):'';
+}
 function requestSessionToken(request:any){
   const auth=String(request.headers?.authorization||'');
   if(/^Bearer\s+rxs_/i.test(auth))return auth.replace(/^Bearer\s+/i,'').trim();
-  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_school_session='));
-  return cookie?decodeURIComponent(cookie.slice('rx_school_session='.length)):'';
+  return requestCookie(request,'rx_school_session');
 }
-async function requestActor(request:any){
+function portalSessionToken(request:any,cookieName:string){
   const auth=String(request.headers?.authorization||'');
   const bearer=/^Bearer\s+/i.test(auth)?auth.replace(/^Bearer\s+/i,'').trim():'';
+  return bearer||requestCookie(request,cookieName);
+}
+function setPortalSessionCookie(reply:any,name:string,token:string,maxAgeSeconds=28800){
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie',name+'='+encodeURIComponent(token)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+maxAgeSeconds+secure);
+}
+function clearPortalSessionCookie(reply:any,name:string){
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie',name+'=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+}
+async function requestActor(request:any){
   const schoolToken=requestSessionToken(request);
 
   if(schoolToken&&schoolToken.startsWith('rxs_')){
@@ -58,13 +88,18 @@ async function requestActor(request:any){
     if(row)return{organisationId:row.organisation_id,userId:row.os_user_id,actorType:'staff'};
   }
 
-  if(bearer){
-    const hash=createHash('sha256').update(bearer).digest('hex');
+  const parentToken=portalSessionToken(request,'rx_parent_session');
+  if(parentToken){
+    const hash=createHash('sha256').update(parentToken).digest('hex');
     const guardian=await maybeOne<any>(db,`SELECT g.organisation_id,g.id guardian_id
       FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
       WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hash]);
     if(guardian)return{organisationId:guardian.organisation_id,userId:null,actorType:'guardian',portalActorId:guardian.guardian_id};
+  }
 
+  const studentToken=portalSessionToken(request,'rx_student_session');
+  if(studentToken&&studentToken!==parentToken){
+    const hash=createHash('sha256').update(studentToken).digest('hex');
     const student=await maybeOne<any>(db,`SELECT s.organisation_id,s.id student_id
       FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
       WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hash]);
@@ -534,9 +569,8 @@ function verifyPortalPin(pin:string,stored:string){
 const hashPortalToken=(token:string)=>createHash('sha256').update(token).digest('hex');
 
 async function guardianAuth(request:any){
-  const auth=String(request.headers.authorization||'');
-  if(!auth.startsWith('Bearer '))throw fail(401,'Parent portal sign-in required');
-  const token=auth.slice(7);
+  const token=portalSessionToken(request,'rx_parent_session');
+  if(!token)throw fail(401,'Parent portal sign-in required');
   const row=await maybeOne<any>(db,`SELECT gps.id session_id,g.id guardian_id,g.organisation_id,g.first_name,g.last_name,g.phone,g.email
     FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
     WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
@@ -550,9 +584,8 @@ async function ensureGuardianStudent(guardianId:string,studentId:string){
 }
 
 async function studentAuth(request:any){
-  const auth=String(request.headers.authorization||'');
-  if(!auth.startsWith('Bearer '))throw fail(401,'Student portal sign-in required');
-  const token=auth.slice(7);
+  const token=portalSessionToken(request,'rx_student_session');
+  if(!token)throw fail(401,'Student portal sign-in required');
   const row=await maybeOne<any>(db,`SELECT sps.id session_id,s.id student_id,s.organisation_id,s.admission_no,s.first_name,s.last_name,s.status
     FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
     WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
@@ -4510,7 +4543,7 @@ app.post('/api/promotions/batch',async request=>{
 });
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
 
-app.post('/api/parent/login',async request=>{
+app.post('/api/parent/login',async(request,reply)=>{
   const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
   const normalizedPhone=b.phone.replace(/\\D/g,'');
   const identityKey=throttleFingerprint(normalizedPhone+'|'+b.admissionNo.toLowerCase());
@@ -4544,9 +4577,15 @@ app.post('/api/parent/login',async request=>{
   const token=randomBytes(48).toString('base64url');
   await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800};
+  setPortalSessionCookie(reply,'rx_parent_session',token,28800);
+  return{ok:true,expiresIn:28800};
 });
-app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request);await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE id=$1',[g.session_id]);return{ok:true}});
+app.post('/api/parent/logout',async(request,reply)=>{
+  const token=portalSessionToken(request,'rx_parent_session');
+  if(token)await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hashPortalToken(token)]);
+  clearPortalSessionCookie(reply,'rx_parent_session');
+  return{ok:true};
+});
 app.get('/api/parent/me',async request=>{
   const g=await guardianAuth(request);
   const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.name classroom_name FROM student_guardians sg JOIN students s ON s.id=sg.student_id LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id WHERE sg.guardian_id=$1 ORDER BY s.first_name,s.last_name`,[g.guardian_id])).rows;
@@ -4806,14 +4845,16 @@ app.get('/api/test-access/students',async request=>{
     WHERE s.organisation_id=$1 AND s.status='active'
     ORDER BY c.name NULLS LAST,s.last_name,s.first_name`,[school.organisation_id])).rows;
 });
-app.post('/api/test-access/student-login',async request=>{
+app.post('/api/test-access/student-login',async(request,reply)=>{
   requireTestAccess(request);
   const b=z.object({studentId:z.string().uuid()}).parse(request.body);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND status=\'active\'',[b.studentId]);
   const token=randomBytes(48).toString('base64url');
+  await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE student_id=$1 AND revoked_at IS NULL',[student.id]);
   await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at)
     VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800,testAccess:true};
+  setPortalSessionCookie(reply,'rx_student_session',token,28800);
+  return{ok:true,expiresIn:28800,testAccess:true};
 });
 async function testStaffDirectory(roles:string[]){
   const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
@@ -4896,16 +4937,40 @@ app.post('/api/students/:id/portal-reset',async request=>{
   await audit(a.core.organisation_id,a.core.id,'student.portal_pin_reset','student',id);
   return{studentId:id,pin};
 });
-app.post('/api/student/login',async request=>{
-  const b=z.object({admissionNo:z.string().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
-  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active FROM students s JOIN student_portal_access spa ON spa.student_id=s.id WHERE s.admission_no=$1 AND s.status='active' LIMIT 1`,[b.admissionNo]);
-  if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash))throw fail(401,'Invalid student portal credentials');
+app.post('/api/student/login',async(request,reply)=>{
+  const b=z.object({admissionNo:z.string().trim().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
+  const identityKey=throttleFingerprint(b.admissionNo.toLowerCase());
+  const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
+  await assertPortalLoginAllowed(db,'student_identity',identityKey);
+  await assertPortalLoginAllowed(db,'student_ip',ipKey);
+
+  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active FROM students s JOIN student_portal_access spa ON spa.student_id=s.id WHERE lower(s.admission_no)=lower($1) AND s.status='active' LIMIT 1`,[b.admissionNo]);
+  if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash)){
+    await Promise.all([
+      recordPortalLoginFailure(db,'student_identity',identityKey,config.STUDENT_LOGIN_FAILURE_LIMIT,config.STUDENT_LOGIN_BLOCK_MINUTES),
+      recordPortalLoginFailure(db,'student_ip',ipKey,config.STUDENT_LOGIN_FAILURE_LIMIT*3,config.STUDENT_LOGIN_BLOCK_MINUTES)
+    ]);
+    throw fail(401,'Invalid student portal credentials');
+  }
+
+  await Promise.all([
+    clearPortalLoginThrottle(db,'student_identity',identityKey),
+    clearPortalLoginThrottle(db,'student_ip',ipKey)
+  ]);
+
   const token=randomBytes(48).toString('base64url');
+  await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE student_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
   await db.query('UPDATE student_portal_access SET last_login_at=now() WHERE student_id=$1',[row.id]);
-  return{token,expiresIn:28800};
+  setPortalSessionCookie(reply,'rx_student_session',token,28800);
+  return{ok:true,expiresIn:28800};
 });
-app.post('/api/student/logout',async request=>{const s=await studentAuth(request);await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE id=$1',[s.session_id]);return{ok:true}});
+app.post('/api/student/logout',async(request,reply)=>{
+  const token=portalSessionToken(request,'rx_student_session');
+  if(token)await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hashPortalToken(token)]);
+  clearPortalSessionCookie(reply,'rx_student_session');
+  return{ok:true};
+});
 app.get('/api/student/me',async request=>{
   const s=await studentAuth(request);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[s.student_id]);
