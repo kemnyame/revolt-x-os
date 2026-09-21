@@ -1041,7 +1041,7 @@ async function probeCoreOS(){
   try{
     // Probe a lightweight health route, never the public application shell. A 4xx
     // still proves the process is awake; only 5xx/network failure means unavailable.
-    const res=await fetch(base+'/health/live',{method:'GET',signal:AbortSignal.timeout(12000)});
+    const res=await fetch(base+'/health/live',{method:'GET',signal:AbortSignal.timeout(4500)});
     return{reachable:res.status<500,healthy:res.ok,status:res.status,responseMs:Date.now()-started,url:base};
   }catch(error:any){
     return{reachable:false,healthy:false,status:0,responseMs:Date.now()-started,url:base,error:String(error?.message||error)};
@@ -1068,10 +1068,20 @@ app.get('/api/system/core-status',async()=>{
   return{school:'ready',database,core,checkedAt:new Date().toISOString()};
 });
 app.post('/api/system/core-wake',async(_request,reply)=>{
-  const core=await wakeCoreOS();
-  return reply.code(core.reachable?200:503).send({
-    core,
-    message:core.reachable?'Core Revolt-X OS is awake and responding.':'Core Revolt-X OS is still unavailable. Retry in a few seconds.'
+  const core=await probeCoreOS();
+  if(core.reachable){
+    return reply.code(200).send({
+      accepted:false,core,
+      message:'Core Revolt-X OS is already awake and responding.'
+    });
+  }
+
+  // Do not keep the browser request open for the whole Render cold start.
+  // Start one shared wake sequence and let the client poll the lightweight status route.
+  void wakeCoreOS().catch(error=>app.log.warn({error},'Background Core OS wake failed'));
+  return reply.code(202).send({
+    accepted:true,core,
+    message:'Core OS wake started. School will reconnect automatically when Core is ready.'
   });
 });
 
