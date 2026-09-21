@@ -14,12 +14,20 @@ jobs:
       - name: Checkout current main
         uses: actions/checkout@v4
 
-      - name: Create source ZIP
+      - name: Build Core OS
         run: |
-          mkdir -p export/source
+          npm ci
+          npm run build
+
+      - name: Create source and runtime ZIPs
+        run: |
+          mkdir -p export/source export/runtime/revolt-x-os
           rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='.env' ./ export/source/revolt-x-os/
+          rsync -a dist migrations package.json package-lock.json Dockerfile README.md .env.example export/runtime/revolt-x-os/
           cd export/source
           zip -r ../revolt-x-os-source.zip revolt-x-os
+          cd ../runtime
+          zip -r ../revolt-x-os-runtime-build.zip revolt-x-os
           cd ..
           printf "Repository: kemnyame/revolt-x-os\nBranch: main\nCommit: %s\nGenerated: %s\n" "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > BUILD_INFO.txt
 
@@ -29,6 +37,7 @@ jobs:
           name: revolt-x-os-source
           path: |
             export/revolt-x-os-source.zip
+            export/revolt-x-os-runtime-build.zip
             export/BUILD_INFO.txt
           if-no-files-found: error
           retention-days: 7
