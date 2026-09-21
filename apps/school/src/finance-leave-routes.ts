@@ -45,7 +45,6 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
       lastName:z.string().trim().min(1).max(100).optional(),
       email:z.string().trim().toLowerCase().email().nullable().optional(),
       jobTitle:z.string().trim().max(160).nullable().optional(),
-      employeeNumber:z.string().trim().max(80).nullable().optional(),
       schoolRole:z.string().min(1).max(40).optional()
     }).refine(v=>Object.keys(v).length>0).parse(request.body);
     const base=config.CORE_OS_URL.replace(/\/$/,'');
@@ -55,8 +54,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
         ...(Object.hasOwn(b,'firstName')?{firstName:b.firstName}:{}),
         ...(Object.hasOwn(b,'lastName')?{lastName:b.lastName}:{}),
         ...(Object.hasOwn(b,'email')?{email:b.email}:{}),
-        ...(Object.hasOwn(b,'jobTitle')?{jobTitle:b.jobTitle}:{}),
-        ...(Object.hasOwn(b,'employeeNumber')?{employeeNumber:b.employeeNumber}:{})}),
+        ...(Object.hasOwn(b,'jobTitle')?{jobTitle:b.jobTitle}:{})}),
       signal:AbortSignal.timeout(15000)
     }).catch(()=>null);
     if(!res)throw fail(503,'Core OS could not be reached');
