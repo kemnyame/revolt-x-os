@@ -80,8 +80,6 @@ function clearPortalSessionCookie(reply:any,name:string){
   reply.header('set-cookie',name+'=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
 }
 async function requestActor(request:any){
-  const auth=String(request.headers?.authorization||'');
-  const bearer=/^Bearer\s+/i.test(auth)?auth.replace(/^Bearer\s+/i,'').trim():'';
   const schoolToken=requestSessionToken(request);
 
   if(schoolToken&&schoolToken.startsWith('rxs_')){
@@ -90,13 +88,18 @@ async function requestActor(request:any){
     if(row)return{organisationId:row.organisation_id,userId:row.os_user_id,actorType:'staff'};
   }
 
-  if(bearer){
-    const hash=createHash('sha256').update(bearer).digest('hex');
+  const parentToken=portalSessionToken(request,'rx_parent_session');
+  if(parentToken){
+    const hash=createHash('sha256').update(parentToken).digest('hex');
     const guardian=await maybeOne<any>(db,`SELECT g.organisation_id,g.id guardian_id
       FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
       WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hash]);
     if(guardian)return{organisationId:guardian.organisation_id,userId:null,actorType:'guardian',portalActorId:guardian.guardian_id};
+  }
 
+  const studentToken=portalSessionToken(request,'rx_student_session');
+  if(studentToken&&studentToken!==parentToken){
+    const hash=createHash('sha256').update(studentToken).digest('hex');
     const student=await maybeOne<any>(db,`SELECT s.organisation_id,s.id student_id
       FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
       WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hash]);
@@ -566,9 +569,8 @@ function verifyPortalPin(pin:string,stored:string){
 const hashPortalToken=(token:string)=>createHash('sha256').update(token).digest('hex');
 
 async function guardianAuth(request:any){
-  const auth=String(request.headers.authorization||'');
-  if(!auth.startsWith('Bearer '))throw fail(401,'Parent portal sign-in required');
-  const token=auth.slice(7);
+  const token=portalSessionToken(request,'rx_parent_session');
+  if(!token)throw fail(401,'Parent portal sign-in required');
   const row=await maybeOne<any>(db,`SELECT gps.id session_id,g.id guardian_id,g.organisation_id,g.first_name,g.last_name,g.phone,g.email
     FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
     WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
@@ -582,9 +584,8 @@ async function ensureGuardianStudent(guardianId:string,studentId:string){
 }
 
 async function studentAuth(request:any){
-  const auth=String(request.headers.authorization||'');
-  if(!auth.startsWith('Bearer '))throw fail(401,'Student portal sign-in required');
-  const token=auth.slice(7);
+  const token=portalSessionToken(request,'rx_student_session');
+  if(!token)throw fail(401,'Student portal sign-in required');
   const row=await maybeOne<any>(db,`SELECT sps.id session_id,s.id student_id,s.organisation_id,s.admission_no,s.first_name,s.last_name,s.status
     FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
     WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
