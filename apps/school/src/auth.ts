@@ -53,31 +53,40 @@ function cookieValue(cookieHeader:string|undefined,name:string){
   }
   return'';
 }
-function requestSchoolToken(request:FastifyRequest){
+function requestSchoolTokens(request:FastifyRequest){
+  const tokens:string[]=[];
+  const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
+  if(cookieToken.startsWith('rxs_'))tokens.push(cookieToken);
   const auth=request.headers.authorization;
   if(auth){
     const token=bearerToken(auth);
-    if(token.startsWith('rxs_'))return token;
+    if(token.startsWith('rxs_')&&!tokens.includes(token))tokens.push(token);
   }
-  const cookieToken=cookieValue(request.headers.cookie,'rx_school_session');
-  return cookieToken.startsWith('rxs_')?cookieToken:'';
+  return tokens;
 }
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
 async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
-  const token=requestSchoolToken(request);
-  if(!token)return null;
-  const row=await maybeOne<{core_context:CoreContext}>(
-    db,
-    `UPDATE school_sessions
-       SET last_used_at=now()
-       WHERE token_hash=$1
-         AND revoked_at IS NULL
-         AND expires_at>now()
-       RETURNING core_context`,
-    [schoolSessionHash(token)]
-  );
-  return row?.core_context??null;
+  const tokens=requestSchoolTokens(request);
+  if(!tokens.length)return null;
+
+  // Prefer the HttpOnly cookie but tolerate a stale cookie/header pair by checking every
+  // School-local token presented. No School token is ever forwarded to Core OS.
+  for(const token of tokens){
+    const row=await maybeOne<{core_context:CoreContext}>(
+      db,
+      `UPDATE school_sessions
+         SET last_used_at=now()
+         WHERE token_hash=$1
+           AND revoked_at IS NULL
+           AND expires_at>now()
+         RETURNING core_context`,
+      [schoolSessionHash(token)]
+    );
+    if(row?.core_context)return row.core_context;
+  }
+
+  throw Object.assign(new Error('School session expired. Please sign in again.'),{statusCode:401});
 }
 
 const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
@@ -131,7 +140,9 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
 }
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
-  const core=(await fetchSchoolSessionContext(request,db))??await fetchCoreContext(request,config);
+  // Established School sessions are fully local and must not require Core availability.
+  const schoolContext=await fetchSchoolSessionContext(request,db);
+  const core=schoolContext??await fetchCoreContext(request,config);
   let membership=await maybeOne<{role:SchoolRole;status:string}>(
     db,
     'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',

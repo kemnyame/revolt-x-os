@@ -1039,10 +1039,12 @@ async function probeCoreOS(){
   const base=config.CORE_OS_URL.replace(/\/$/,'');
   const started=Date.now();
   try{
-    const res=await fetch(base+'/',{method:'GET',signal:AbortSignal.timeout(15000)});
-    return{reachable:res.ok,status:res.status,responseMs:Date.now()-started,url:base};
+    // Probe a lightweight health route, never the public application shell. A 4xx
+    // still proves the process is awake; only 5xx/network failure means unavailable.
+    const res=await fetch(base+'/health/live',{method:'GET',signal:AbortSignal.timeout(12000)});
+    return{reachable:res.status<500,healthy:res.ok,status:res.status,responseMs:Date.now()-started,url:base};
   }catch(error:any){
-    return{reachable:false,status:0,responseMs:Date.now()-started,url:base,error:String(error?.message||error)};
+    return{reachable:false,healthy:false,status:0,responseMs:Date.now()-started,url:base,error:String(error?.message||error)};
   }
 }
 async function wakeCoreOS(){
