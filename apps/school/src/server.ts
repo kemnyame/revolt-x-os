@@ -6004,26 +6004,26 @@ app.get('/api/search',async request=>{
       SELECT 'communication',co.id::text,COALESCE(co.subject,'Message'),(co.channel||' • '||co.recipient_address||' • '||co.status),'announcements',14
       FROM communication_outbox co WHERE co.organisation_id=$1 AND (COALESCE(co.subject,'') ILIKE $2 OR co.recipient_address ILIKE $2 OR COALESCE(co.recipient_name,'') ILIKE $2)
     ) x ORDER BY rank,title LIMIT $3`,[a.core.organisation_id,like,q.limit])).rows;
-  let staff:any[]=[];
-  {
-    const users=await fetchCoreUsers(a.core.organisation_id);
-    const needle=q.q.toLowerCase();
-    staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+u.email+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
-      type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+' • '+u.email,section:'staff'
-    }));
-  }
   const caps=await effectiveCapabilities(db,a.core.organisation_id,a.role);
   const allowed=(section:string)=>a.role==='school_admin'||(
-    section==='students'?caps.includes('students.view'):
-    section==='admissions'?caps.includes('admissions.view'):
-    section==='assignments'?(caps.includes('teaching_assignments.view')||caps.includes('academic.view')):
-    section==='lessonnotes'?caps.includes('lesson_notes.view'):
-    section==='fees'?caps.includes('fees.view'):
-    section==='finance'?caps.includes('finance.view'):
-    section==='leave'?caps.includes('leave.view'):
-    section==='announcements'?caps.includes('communications.view'):
-    section==='staff'?caps.includes('staff.view'):false
+    section==='students'?caps.includes('screen.students.view'):
+    section==='admissions'?caps.includes('screen.admissions.view'):
+    section==='assignments'?caps.includes('screen.academic_manager.view'):
+    section==='lessonnotes'?caps.includes('screen.lesson_notes.view'):
+    section==='fees'?caps.includes('screen.finance.view'):
+    section==='finance'?caps.includes('screen.finance.view'):
+    section==='leave'?caps.includes('screen.leave.view'):
+    section==='announcements'?caps.includes('screen.communications.view'):
+    section==='staff'?caps.includes('screen.access_management.view'):false
   );
+  let staff:any[]=[];
+  if(allowed('staff')){
+    const users=await fetchCoreUsers(a.core.organisation_id);
+    const needle=q.q.toLowerCase();
+    staff=users.filter((u:any)=>(u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.job_title||'')).toLowerCase().includes(needle)).slice(0,8).map((u:any)=>({
+      type:'staff',id:u.id,title:u.first_name+' '+u.last_name,subtitle:(u.job_title||'Staff')+(u.email?' • '+u.email:''),section:'staff'
+    }));
+  }
   return[...rows,...staff].filter((x:any)=>allowed(x.section)).slice(0,q.limit);
 });
 
