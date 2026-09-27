@@ -6,9 +6,9 @@ import { ZodError, z } from 'zod';
 import { loadConfig } from './config.js';
 import { createDb } from './db.js';
 import { ensureShopSchema } from './schema.js';
-import { clearAuthCookies, loginToCore, setAuthCookies } from './auth.js';
+import { clearAuthCookies, loginToCore, setAuthCookies, resetCorePasswordAsSystem } from './auth.js';
 import { registerShopApi } from './routes.js';
-import { appHtml, loginHtml, storefrontHtml } from './ui.js';
+import { appHtml, loginHtml, resetHtml, storefrontHtml } from './ui.js';
 
 const config=loadConfig();
 const db=createDb(config);
@@ -38,6 +38,7 @@ app.get('/health/ready',async(_req,reply)=>{
 });
 
 app.get('/login',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(loginHtml()));
+app.get('/reset-password',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(resetHtml()));
 app.post('/auth/login',async(req,reply)=>{
   const b=z.object({email:z.string().email(),password:z.string().min(1),organisationId:z.string().uuid().optional()}).parse(req.body);
   const tokens=await loginToCore(config,b.email,b.password,b.organisationId);
@@ -62,8 +63,32 @@ app.get('/payments/callback',async(req,reply)=>{
 await registerShopApi(app,{db,config});
 await ensureShopSchema(db);
 
+async function applyBootstrapCredentials(){
+  const key='credentials:'+config.BOOTSTRAP_CREDENTIALS_VERSION;
+  const done=await db.query('SELECT 1 FROM shop_bootstrap_state WHERE key=$1',[key]);
+  if(done.rowCount)return;
+  const pairs=[
+    [config.SHOP_BOOTSTRAP_EMAIL,config.SHOP_BOOTSTRAP_PASSWORD],
+    [config.OS_BOOTSTRAP_EMAIL,config.OS_BOOTSTRAP_PASSWORD]
+  ].filter((x):x is [string,string]=>Boolean(x[0]&&x[1]));
+  if(!pairs.length)return;
+  for(let attempt=1;attempt<=8;attempt++){
+    try{
+      for(const [email,password] of pairs)await resetCorePasswordAsSystem(config,email,password);
+      await db.query('INSERT INTO shop_bootstrap_state(key) VALUES($1) ON CONFLICT DO NOTHING',[key]);
+      app.log.info({accounts:pairs.map(x=>x[0]),version:config.BOOTSTRAP_CREDENTIALS_VERSION},'Bootstrap credentials applied');
+      return;
+    }catch(error){
+      app.log.warn({attempt,error},'Bootstrap credential reset waiting for Core OS');
+      await new Promise(resolve=>setTimeout(resolve,Math.min(15000,attempt*2000)));
+    }
+  }
+  app.log.error('Bootstrap credentials could not be applied after retries');
+}
+
 const close=async()=>{await app.close();await db.end();process.exit(0)};
 process.on('SIGTERM',close);
 process.on('SIGINT',close);
 
 await app.listen({host:config.HOST,port:config.PORT});
+void applyBootstrapCredentials();
