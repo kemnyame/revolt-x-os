@@ -96,6 +96,10 @@ function installEnterprisePanels(){
   if(inventory&&!document.getElementById('inventoryAlertPanel')){
     inventory.insertAdjacentHTML('beforeend','<div class="card" id="inventoryAlertPanel" style="margin-top:16px"><div class="card-head"><div><h3>Reorder alerts</h3><small>Automatic low-stock monitoring</small></div><button class="btn sm" onclick="loadInventoryAlerts()">Refresh</button></div><div id="inventoryAlertTable"></div></div>');
   }
+  const payments=document.getElementById('payments');
+  if(payments&&!document.getElementById('paymentOperationsPanel')){
+    payments.insertAdjacentHTML('beforeend',`<div class="card" id="paymentOperationsPanel" style="margin-top:16px"><div class="card-head"><div><h3>Payment Operations & Reconciliation</h3><small>Payment intents, settlement control, review exceptions and POS readiness</small></div><button class="btn sm" onclick="loadPaymentOperations()">Refresh</button></div><div id="paymentOperationsBody"><div class="empty">Open Payments to load payment operations.</div></div></div>`);
+  }
   const finance=document.getElementById('finance');
   if(finance&&!document.getElementById('enterpriseFinancePanel')){
     finance.insertAdjacentHTML('beforeend',`<div class="card" id="enterpriseFinancePanel" style="margin-top:16px"><div class="card-head"><div><h3>Finance & Accounts</h3><small>Chart of accounts, journals, vendors, budgets and taxes</small></div><button class="btn sm" onclick="loadEnterpriseFinance()">Refresh</button></div><div class="enterprise-tabs" id="financeTabs"><button class="enterprise-tab active" data-fin="overview">Overview</button><button class="enterprise-tab" data-fin="journals">Journals</button><button class="enterprise-tab" data-fin="accounts">Chart of Accounts</button><button class="enterprise-tab" data-fin="vendors">Vendors</button><button class="enterprise-tab" data-fin="budgets">Budgets</button><button class="enterprise-tab" data-fin="taxes">Taxes</button></div><div id="enterpriseFinanceBody"><div class="empty">Open Finance to load accounts.</div></div></div>`);
@@ -134,13 +138,14 @@ window.loadEnterprisePage=async function(page){
   if(page==='tickets')return loadTickets();
   if(page==='posdevices')return loadPosDevices();
   if(page==='approvals')return loadApprovals();
+  if(page==='payments')return loadPaymentOperations();
   if(page==='finance')return loadEnterpriseFinance();
   if(page==='access')return loadRoleCapabilities();
   if(page==='settings'){await loadAutomationSettings();return}
   if(page==='inventory')return loadInventoryAlerts();
 };
 document.querySelectorAll('.navbtn').forEach(btn=>{
-  if(['finance','access','settings','inventory'].includes(btn.dataset.page)){
+  if(['finance','access','settings','inventory','payments','audit'].includes(btn.dataset.page)){
     btn.addEventListener('click',()=>setTimeout(()=>loadEnterprisePage(btn.dataset.page),0));
   }
 });
@@ -313,6 +318,15 @@ function renderRoleCapabilities(){
 }
 roleForm.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(roleForm));try{await api('/api/access/roles',{method:'POST',body:JSON.stringify(f)});roleForm.reset();closeModal('roleModal');showToast('Custom role created');selectedRoleKey=f.key;await loadRoleCapabilities()}catch(err){showToast(err.message)}};
 
+window.loadPaymentOperations=async function(){
+  if(!selectedShopId||!document.getElementById('paymentOperationsBody'))return;
+  try{
+    const d=await api('/api/payments/operations?shopId='+encodeURIComponent(selectedShopId)),s=d.summary||{};
+    paymentOperationsBody.innerHTML='<div class="enterprise-kpis"><div class="enterprise-kpi"><small>Successful</small><b>'+Number(s.successful||0)+'</b></div><div class="enterprise-kpi"><small>Pending</small><b>'+Number(s.pending||0)+'</b></div><div class="enterprise-kpi"><small>Review required</small><b>'+Number(s.review_required||0)+'</b></div><div class="enterprise-kpi"><small>Unreconciled</small><b>'+money(s.unreconciled_amount||0)+'</b></div></div><div class="enterprise-grid"><div><h4>Unreconciled payments</h4>'+table([['Reference',x=>'<b>'+esc(x.reference)+'</b><br><small>'+esc(x.provider)+'</small>'],['Invoice',x=>esc(x.order_no||'—')],['Method',x=>esc(x.method)],['Amount',x=>money(x.amount)],['Action',x=>['shop_admin','finance'].includes(base.role)?'<button class="btn sm primary" onclick="reconcilePayment(\''+x.id+'\')">Reconcile</button>':'']],d.unreconciled||[])+'</div><div><h4>POS payment intents</h4>'+table([['Invoice',x=>esc(x.order_no||'—')],['Device',x=>esc(x.device_name||'—')],['Method',x=>esc(x.method)],['Amount',x=>money(x.amount)],['Status',x=>tag(x.status)]],d.intents||[])+'</div></div>';
+  }catch(e){paymentOperationsBody.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
+};
+window.reconcilePayment=async function(id){try{await api('/api/payments/'+id+'/reconcile',{method:'PATCH',body:JSON.stringify({note:'Reconciled from Shop payment operations'})});showToast('Payment reconciled');await Promise.all([reloadAll(),loadPaymentOperations()])}catch(e){showToast(e.message)}};
+
 window.loadTickets=async function(){
   try{const rows=await api('/api/tickets?shopId='+encodeURIComponent(selectedShopId));ticketTable.innerHTML=table([
     ['Ticket',x=>'<b>'+esc(x.ticket_no)+'</b><br><small class="muted">'+esc(x.source)+'</small>'],['Customer',x=>esc(x.customer_name||'Internal')],['Subject',x=>esc(x.subject)],['Priority',x=>tag(x.priority)],['Status',x=>tag(x.status)],['Action',x=>['resolved','closed','cancelled'].includes(x.status)?'':'<button class="btn sm primary" onclick="advanceTicket(\''+x.id+'\')">Advance</button>']
@@ -337,7 +351,7 @@ window.loadAutomationSettings=async function(){
     const sh=shop();if(sh){portalLinks.innerHTML='<div class="link-card"><div><b>Public booking page</b><small class="muted" style="display:block">'+location.origin+'/store/'+esc(sh.public_slug||sh.slug)+'</small></div><a class="btn soft" target="_blank" href="/store/'+encodeURIComponent(sh.public_slug||sh.slug)+'">Open</a></div><div class="link-card" style="margin-top:8px"><div><b>Customer dashboard</b><small class="muted" style="display:block">'+location.origin+'/customer/'+esc(sh.public_slug||sh.slug)+'</small></div><a class="btn primary" target="_blank" href="/customer/'+encodeURIComponent(sh.public_slug||sh.slug)+'">Open portal</a></div>'}
   }catch(e){showToast(e.message)}
 };
-async function saveAutomationSettings(e){e.preventDefault();const f=Object.fromEntries(new FormData(automationForm));try{await api('/api/automation/settings/'+selectedShopId,{method:'PUT',body:JSON.stringify({branchId:selectedBranchId||null,inactivityDays:Number(f.inactivityDays),welcomeDiscountPercent:Number(f.welcomeDiscountPercent),autoEodEnabled:f.autoEodEnabled==='true',autoEodTime:f.autoEodTime,reorderAlertsEnabled:f.reorderAlertsEnabled==='true'})});showToast('Automation settings saved');await loadAutomationSettings()}catch(err){showToast(err.message)}}
+async function saveAutomationSettings(e){e.preventDefault();const f=Object.fromEntries(new FormData(automationForm));try{await api('/api/automation/settings/'+selectedShopId,{method:'PUT',body:JSON.stringify({branchId:selectedBranchId||null,inactivityDays:Number(f.inactivityDays),welcomeDiscountPercent:Number(f.welcomeDiscountPercent),autoEodEnabled:f.autoEodEnabled==='true',autoEodTime:f.autoEodTime,reorderAlertsEnabled:f.reorderAlertsEnabled==='true'})});showToast('Automation settings submitted for approval');await loadApprovals()}catch(err){showToast(err.message)}}
 
 const oldShowPage=showPage;
 showPage=function(id){
