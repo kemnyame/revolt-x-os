@@ -4,6 +4,7 @@ import type { Db } from './db.js';
 import { tx, maybeOne } from './db.js';
 import type { ShopConfig } from './config.js';
 import { authorize } from './auth.js';
+import { createApprovalRequest } from './enterprise.js';
 
 const money=z.coerce.number().finite().min(0);
 
@@ -200,14 +201,34 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
   app.patch('/api/services/:id',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'services.manage');
     const id=z.string().uuid().parse((req.params as any).id);
-    const b=z.object({name:z.string().trim().min(2).max(160).optional(),category:z.string().max(100).optional(),description:z.string().max(2000).optional(),price:money.optional(),durationMinutes:z.coerce.number().int().min(5).max(480).optional(),depositPercent:z.coerce.number().min(0).max(100).optional(),active:z.boolean().optional()}).parse(req.body);
-    const r=await db.query(
-      `UPDATE shop_services SET name=coalesce($1,name),category=coalesce($2,category),description=coalesce($3,description),price=coalesce($4,price),duration_minutes=coalesce($5,duration_minutes),deposit_percent=coalesce($6,deposit_percent),active=coalesce($7,active)
-       WHERE id=$8 AND organisation_id=$9 RETURNING *`,
-      [b.name??null,b.category??null,b.description??null,b.price??null,b.durationMinutes??null,b.depositPercent??null,b.active??null,id,a.core.organisation_id]
-    );
-    if(!r.rowCount)return reply.code(404).send({error:{message:'Service not found'}});
-    return r.rows[0];
+    const b=z.object({
+      name:z.string().trim().min(2).max(160).optional(),category:z.string().max(100).optional(),
+      description:z.string().max(2000).optional(),price:money.optional(),
+      durationMinutes:z.coerce.number().int().min(5).max(480).optional(),
+      depositPercent:z.coerce.number().min(0).max(100).optional(),active:z.boolean().optional(),
+      reason:z.string().trim().min(3).max(1000)
+    }).parse(req.body);
+    const service=await maybeOne<any>(db,'SELECT * FROM shop_services WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!service)return reply.code(404).send({error:{message:'Service not found'}});
+    const payload={...b};delete (payload as any).reason;
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId:service.shop_id,actionKey:'service.update',
+      targetType:'service',targetId:id,title:'Update service: '+service.name,reason:b.reason,payload,requestedBy:a.core.id
+    });
+    return reply.code(202).send({approvalRequired:true,request});
+  });
+
+  app.delete('/api/services/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'services.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({reason:z.string().trim().min(3).max(1000)}).parse(req.body||{});
+    const service=await maybeOne<any>(db,'SELECT * FROM shop_services WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!service)return reply.code(404).send({error:{message:'Service not found'}});
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId:service.shop_id,actionKey:'service.delete',
+      targetType:'service',targetId:id,title:'Deactivate service: '+service.name,reason:b.reason,payload:{active:false},requestedBy:a.core.id
+    });
+    return reply.code(202).send({approvalRequired:true,request});
   });
 
   app.patch('/api/products/:id',async(req,reply)=>{
@@ -334,20 +355,20 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
   });
 
   app.put('/api/access/users/:userId',async(req,reply)=>{
-    const a=await authorize(db,config,req,reply);
-    if(a.role!=='shop_admin')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
+    const a=await authorize(db,config,req,reply,'access.manage');
     const userId=z.string().uuid().parse((req.params as any).userId);
-    const b=z.object({role:z.enum(['shop_admin','manager','cashier','finance','service','inventory','auditor']),status:z.enum(['active','inactive']).default('active')}).parse(req.body);
+    const b=z.object({role:z.string().min(2).max(60),status:z.enum(['active','inactive']).default('active'),reason:z.string().trim().min(3).max(1000).default('Access management change')}).parse(req.body);
     const member=await maybeOne<any>(db,'SELECT user_id FROM revolt_x_os.organisation_memberships WHERE organisation_id=$1 AND user_id=$2',[a.core.organisation_id,userId]);
     if(!member)return reply.code(404).send({error:{message:'User is not a member of this Revolt-X organisation'}});
-    const r=await db.query(
-      `INSERT INTO shop_memberships(organisation_id,os_user_id,role,status)
-       VALUES($1,$2,$3,$4)
-       ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status
-       RETURNING *`,
-      [a.core.organisation_id,userId,b.role,b.status]
-    );
-    return r.rows[0];
+    const role=await maybeOne<any>(db,'SELECT key FROM shop_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,b.role]);
+    if(!role&&!['shop_admin','manager','cashier','finance','service','inventory','auditor'].includes(b.role))return reply.code(400).send({error:{message:'Unknown Shop role'}});
+    const shop=await maybeOne<any>(db,'SELECT id FROM shops WHERE organisation_id=$1 ORDER BY created_at LIMIT 1',[a.core.organisation_id]);
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId:shop?.id||null,actionKey:'access.role_change',
+      targetType:'shop_membership',targetId:userId,title:'Change Shop access for organisation user',
+      reason:b.reason,payload:{role:b.role,status:b.status},requestedBy:a.core.id
+    });
+    return reply.code(202).send({approvalRequired:true,request});
   });
 
 }
