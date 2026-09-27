@@ -790,7 +790,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     );
     const chairs=Math.max(0,Number(capacityRow?.chairs||0));
     const barbers=Math.max(0,Number(capacityRow?.barbers||0));
-    const capacity=chairs>0&&barbers>0?Math.min(chairs,barbers):Math.max(chairs,barbers,1);
+    const capacity=Math.min(chairs,barbers);
     const duration=Math.max(5,Number(service.duration_minutes||30));
     const interval=Math.max(5,Number(shop.booking_interval_minutes||15));
 
