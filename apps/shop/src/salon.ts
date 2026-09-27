@@ -250,22 +250,35 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     const params:any[]=[a.core.organisation_id];
     let f='';
     if(shopId){params.push(shopId);f=' AND shop_id=$2';}
-    const [staff,chairs,appointments,commissions,eod,stats]=await Promise.all([
+    const empty=()=>Promise.resolve({rows:[]} as any);
+    const canAppointments=['shop_admin','manager','cashier','service'].includes(a.role);
+    const canFinance=['shop_admin','finance','auditor'].includes(a.role);
+    const canFinancialStats=['shop_admin','manager','cashier','finance','auditor'].includes(a.role);
+
+    const [staff,chairs,appointments,commissions,eod,rawStats]=await Promise.all([
       db.query('SELECT * FROM salon_staff WHERE organisation_id=$1'+f+' ORDER BY role,full_name',params),
       db.query('SELECT * FROM salon_chairs WHERE organisation_id=$1'+f+' ORDER BY name',params),
-      db.query(`SELECT b.*,s.name service_name,st.full_name barber_name,c.name chair_name
+      canAppointments?db.query(`SELECT b.*,s.name service_name,st.full_name barber_name,c.name chair_name
                 FROM shop_bookings b
                 LEFT JOIN shop_services s ON s.id=b.service_id
                 LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
                 LEFT JOIN salon_chairs c ON c.id=b.salon_chair_id
                 WHERE b.organisation_id=$1${f} AND b.booked_for::date BETWEEN CURRENT_DATE-7 AND CURRENT_DATE+30
-                ORDER BY b.booked_for`,params),
-      db.query(`SELECT ce.*,st.full_name barber_name FROM salon_commission_entries ce
+                ORDER BY b.booked_for`,params):empty(),
+      canFinance?db.query(`SELECT ce.*,st.full_name barber_name FROM salon_commission_entries ce
                 JOIN salon_staff st ON st.id=ce.staff_id
-                WHERE ce.organisation_id=$1${f} ORDER BY ce.earned_at DESC LIMIT 250`,params),
-      db.query('SELECT * FROM salon_eod_closures WHERE organisation_id=$1'+f+' ORDER BY business_date DESC LIMIT 45',params),
+                WHERE ce.organisation_id=$1${f} ORDER BY ce.earned_at DESC LIMIT 250`,params):empty(),
+      canFinance?db.query('SELECT * FROM salon_eod_closures WHERE organisation_id=$1'+f+' ORDER BY business_date DESC LIMIT 45',params):empty(),
       salonDashboard(db,a.core.organisation_id,shopId)
     ]);
+
+    const stats={...rawStats};
+    if(!canFinancialStats){
+      stats.revenue_today=null;
+      stats.commissions_today=null;
+    }
+    if(!canFinance)stats.commissions_today=null;
+
     return{staff:staff.rows,chairs:chairs.rows,appointments:appointments.rows,commissions:commissions.rows,eod:eod.rows,stats};
   });
 
