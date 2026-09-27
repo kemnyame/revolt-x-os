@@ -140,8 +140,11 @@ async function ensureFinanceDefaults(db:Db,orgId:string,shopId:string){
 async function ensureAutomationSetting(db:Db,orgId:string,shopId:string,branchId:string|null){
   await db.query(
     `INSERT INTO shop_automation_settings(organisation_id,shop_id,branch_id)
-     VALUES($1,$2,$3)
-     ON CONFLICT(shop_id,branch_id) DO NOTHING`,
+     SELECT $1,$2,$3::uuid
+     WHERE NOT EXISTS(
+       SELECT 1 FROM shop_automation_settings
+       WHERE shop_id=$2 AND branch_id IS NOT DISTINCT FROM $3::uuid
+     )`,
     [orgId,shopId,branchId]
   );
 }
