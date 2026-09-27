@@ -93,6 +93,29 @@ async function refreshCore(config:ShopConfig,refreshToken:string){
   }) as Promise<CoreTokens>;
 }
 
+export async function requestCorePasswordReset(config:ShopConfig,email:string){
+  const body=await coreJson(config,'/v1/auth/password-reset/request',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({email})
+  }) as any;
+  return body as {accepted:boolean;resetToken?:string;expiresInMinutes?:number};
+}
+
+export async function confirmCorePasswordReset(config:ShopConfig,token:string,password:string){
+  return coreJson(config,'/v1/auth/password-reset/confirm',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({token,password})
+  }) as Promise<{reset:boolean}>;
+}
+
+export async function resetCorePasswordAsSystem(config:ShopConfig,email:string,password:string){
+  const req=await requestCorePasswordReset(config,email);
+  if(!req.resetToken)throw new Error('Core OS did not return a reset token for this active account');
+  return confirmCorePasswordReset(config,req.resetToken,password);
+}
+
 export async function resolveCoreContext(request:FastifyRequest,reply:FastifyReply,config:ShopConfig){
   const bearer=request.headers.authorization?.replace(/^Bearer\s+/i,'').trim();
   let access=bearer||cookieValue(request.headers.cookie,'rx_shop_access');
