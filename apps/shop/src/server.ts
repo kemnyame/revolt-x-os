@@ -7,13 +7,14 @@ import { readFileSync } from 'node:fs';
 import { loadConfig } from './config.js';
 import { createDb, ensureShopNamespace } from './db.js';
 import { ensureShopSchema } from './schema.js';
-import { clearAuthCookies, loginToCore, setAuthCookies } from './auth.js';
+import { clearAuthCookies, loginDemoToCore, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
-import { loginHtml, resetHtml } from './ui.js';
+import { ensureDemoWorkspace } from './demo.js';
+import { demoLoginHtml, loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
 const db=createDb(config);
@@ -56,12 +57,28 @@ app.get('/health/ready',async(_req,reply)=>{
 });
 
 app.get('/login',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(loginHtml()));
+app.get('/demo-login',async(_req,reply)=>{
+  if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).type('text/plain').send('Demo access is disabled');
+  return reply.type('text/html; charset=utf-8').send(demoLoginHtml());
+});
 app.get('/reset-password',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(resetHtml()));
 app.post('/auth/login',async(req,reply)=>{
   const b=z.object({email:z.string().email(),password:z.string().min(1),organisationId:z.string().uuid().optional()}).parse(req.body);
   const tokens=await loginToCore(config,b.email,b.password,b.organisationId);
   setAuthCookies(reply,tokens,config);
   return{ok:true};
+});
+app.post('/auth/demo',async(req,reply)=>{
+  if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).send({error:{message:'Demo access is disabled'}});
+  const b=z.object({persona:z.enum(['shop_admin','manager','cashier','service','finance','inventory','auditor'])}).parse(req.body);
+  const tokens=await loginDemoToCore(config,b.persona);
+  await ensureDemoWorkspace(db,{
+    organisationId:tokens.organisationId!,
+    userId:tokens.userId,
+    persona:b.persona
+  });
+  setAuthCookies(reply,tokens,config);
+  return{ok:true,persona:b.persona,user:{firstName:tokens.firstName,lastName:tokens.lastName,jobTitle:tokens.jobTitle}};
 });
 app.post('/auth/logout',async(_req,reply)=>{
   clearAuthCookies(reply,config);
