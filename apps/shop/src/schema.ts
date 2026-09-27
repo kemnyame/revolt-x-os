@@ -140,6 +140,7 @@ export async function ensureShopSchema(db:Db){
       branch_id uuid REFERENCES shop_branches(id) ON DELETE SET NULL,
       customer_id uuid REFERENCES shop_customers(id) ON DELETE SET NULL,
       job_id uuid REFERENCES shop_jobs(id) ON DELETE SET NULL,
+      booking_id uuid REFERENCES shop_bookings(id) ON DELETE SET NULL,
       order_no text NOT NULL,
       status text NOT NULL DEFAULT 'open',
       subtotal numeric(14,2) NOT NULL DEFAULT 0,
@@ -280,6 +281,8 @@ export async function ensureShopSchema(db:Db){
     );
 
     CREATE INDEX IF NOT EXISTS idx_shop_customers_org_shop ON shop_customers(organisation_id,shop_id);
+    ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS booking_id uuid REFERENCES shop_bookings(id) ON DELETE SET NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shop_orders_booking ON shop_orders(booking_id) WHERE booking_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_shop_orders_org_created ON shop_orders(organisation_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_shop_payments_org_created ON shop_payments(organisation_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_shop_jobs_org_status ON shop_jobs(organisation_id,status);
