@@ -68,6 +68,7 @@ document.body.insertAdjacentHTML('beforeend',`
 <div class="modal-backdrop" id="receivePoModal"><div class="modal" style="width:min(760px,97vw)"><div class="modal-head"><h3 id="receivePoTitle">Receive goods</h3><button class="xbtn" onclick="closeModal('receivePoModal')">×</button></div><form id="receivePoForm" class="form-grid"><input type="hidden" id="receivePoId"><div class="field wide"><div id="receivePoLines"></div></div><div class="field wide"><label>Receiving notes</label><textarea id="receivePoNotes"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Post goods receipt & update stock</button></div></form></div></div>
 <div class="modal-backdrop" id="ticketModal"><div class="modal"><div class="modal-head"><h3>Create ticket</h3><button class="xbtn" onclick="closeModal('ticketModal')">×</button></div><form id="ticketFormAdmin" class="form-grid"><div class="field"><label>Customer</label><select id="ticketCustomer"></select></div><div class="field"><label>Category</label><select id="ticketCategory"><option value="general">General</option><option value="appointment">Appointment</option><option value="payment">Payment</option><option value="service">Service</option><option value="complaint">Complaint</option></select></div><div class="field"><label>Priority</label><select id="ticketPriority"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></div><div class="field wide"><label>Subject</label><input id="ticketSubject" required></div><div class="field wide"><label>Description</label><textarea id="ticketDescription" required></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create ticket</button></div></form></div></div>
 <div class="modal-backdrop" id="posDeviceModal"><div class="modal"><div class="modal-head"><h3>Register POS device</h3><button class="xbtn" onclick="closeModal('posDeviceModal')">×</button></div><form id="posDeviceForm" class="form-grid"><div class="field"><label>Device name</label><input name="deviceName" required></div><div class="field"><label>Device code</label><input name="deviceCode" required placeholder="POS-FRONT-01"></div><div class="field"><label>Provider</label><input name="provider" placeholder="Optional"></div><div class="field"><label>Terminal ID</label><input name="terminalId"></div><div class="field wide"><button class="btn primary" style="width:100%">Register device</button></div></form></div></div>
+<div class="modal-backdrop" id="posTokenModal"><div class="modal"><div class="modal-head"><h3>POS device credential</h3><button class="xbtn" onclick="closeModal('posTokenModal')">×</button></div><div class="notice"><b>Copy this device token now.</b> For security, it is shown only at registration and should be stored in the POS terminal configuration, not shared with staff who do not administer devices.</div><div class="field" style="margin-top:14px"><label>Device token</label><textarea id="posDeviceToken" readonly style="min-height:110px"></textarea></div><button class="btn primary" style="width:100%" onclick="navigator.clipboard?.writeText(posDeviceToken.value);showToast('Device token copied')">Copy token</button></div></div>
 <div class="modal-backdrop" id="roleModal"><div class="modal"><div class="modal-head"><h3>Create custom Shop role</h3><button class="xbtn" onclick="closeModal('roleModal')">×</button></div><form id="roleForm" class="form-grid"><div class="field"><label>Role key</label><input name="key" required placeholder="supervisor"></div><div class="field"><label>Role name</label><input name="name" required placeholder="Salon Supervisor"></div><div class="field wide"><label>Description</label><textarea name="description"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create role</button></div></form></div></div>
 <div class="modal-backdrop" id="actionPromptModal"><div class="modal"><div class="modal-head"><h3 id="actionPromptTitle">Confirm action</h3><button class="xbtn" onclick="closeModal('actionPromptModal')">×</button></div><form id="actionPromptForm" class="form-grid"><div class="field wide"><div id="actionPromptNotice" class="notice"></div></div><div class="field wide" id="actionPromptSelectWrap" style="display:none"><label id="actionPromptSelectLabel">Select</label><select id="actionPromptSelect"></select></div><div class="field wide"><label id="actionPromptInputLabel">Comment</label><textarea id="actionPromptInput"></textarea></div><div class="field wide"><button class="btn primary" id="actionPromptSubmit" style="width:100%">Continue</button></div></form></div></div>
 <div class="modal-backdrop" id="financeEntryModal"><div class="modal" style="width:min(760px,97vw)"><div class="modal-head"><h3 id="financeEntryTitle">Finance entry</h3><button class="xbtn" onclick="closeModal('financeEntryModal')">×</button></div><div id="financeEntryBody"></div></div></div>
@@ -112,6 +113,14 @@ function installEnterprisePanels(){
   const inventory=document.getElementById('inventory');
   if(inventory&&!document.getElementById('inventoryAlertPanel')){
     inventory.insertAdjacentHTML('beforeend','<div class="card" id="inventoryAlertPanel" style="margin-top:16px"><div class="card-head"><div><h3>Reorder alerts</h3><small>Automatic low-stock monitoring</small></div><button class="btn sm" onclick="loadInventoryAlerts()">Refresh</button></div><div id="inventoryAlertTable"></div></div>');
+  }
+  const paymentModal=document.getElementById('paymentModal');
+  if(paymentModal&&document.getElementById('paymentMethod')&&!document.querySelector('#paymentMethod option[value="pos_terminal"]')){
+    paymentMethod.insertAdjacentHTML('beforeend','<option value="pos_terminal">Registered POS terminal</option>');
+    const notice=document.getElementById('paymentModeNotice')?.closest('.field');
+    if(notice){
+      notice.insertAdjacentHTML('beforebegin','<div class="field wide" id="paymentPosWrap" style="display:none"><div class="form-grid"><div class="field"><label>POS device</label><select id="paymentPosDevice"></select></div><div class="field"><label>Terminal payment type</label><select id="paymentPosMethod"><option value="card">Card</option><option value="mobile_money">Mobile Money</option></select></div></div></div>');
+    }
   }
   const payments=document.getElementById('payments');
   if(payments&&!document.getElementById('paymentOperationsPanel')){
@@ -467,12 +476,48 @@ window.loadTickets=async function(){
 ticketFormAdmin.onsubmit=async e=>{e.preventDefault();try{await api('/api/tickets',{method:'POST',body:JSON.stringify({shopId:selectedShopId,branchId:selectedBranchId||undefined,customerId:ticketCustomer.value||undefined,category:ticketCategory.value,subject:ticketSubject.value,description:ticketDescription.value,priority:ticketPriority.value})});ticketFormAdmin.reset();closeModal('ticketModal');showToast('Ticket created');await loadTickets()}catch(err){showToast(err.message)}};
 window.advanceTicket=function(id){openActionPrompt({title:'Update ticket status',notice:'Choose the next support status for this ticket.',selectLabel:'Status',options:[['in_progress','In progress'],['waiting_customer','Waiting for customer'],['resolved','Resolved'],['closed','Closed']],label:'Internal note (optional)',required:false,button:'Update ticket',onSubmit:async({text,value})=>{await api('/api/tickets/'+id,{method:'PATCH',body:JSON.stringify({status:value})});await loadTickets();showToast('Ticket updated')}})};
 
+const baseSyncPaymentMode=typeof syncPaymentMode==='function'?syncPaymentMode:null;
+syncPaymentMode=function(){
+  if(baseSyncPaymentMode)baseSyncPaymentMode();
+  const pos=paymentMethod?.value==='pos_terminal';
+  if(document.getElementById('paymentPosWrap'))paymentPosWrap.style.display=pos?'':'none';
+  if(pos){
+    paymentEmailWrap.style.display='none';paymentPhoneWrap.style.display='none';paymentReferenceWrap.style.display='none';
+    paymentSubmit.textContent='Send to POS terminal';
+    paymentModeNotice.textContent='A secure payment intent will be assigned to the selected registered POS device. The invoice is settled only after the terminal confirms success.';
+  }
+};
+const baseOpenPaymentModal=typeof openPaymentModal==='function'?openPaymentModal:null;
+openPaymentModal=function(orderId){
+  if(baseOpenPaymentModal)baseOpenPaymentModal(orderId);
+  api('/api/pos/devices?shopId='+encodeURIComponent(selectedShopId)).then(rows=>{
+    if(document.getElementById('paymentPosDevice'))paymentPosDevice.innerHTML='<option value="">Choose POS device</option>'+rows.filter(x=>x.status!=='disabled').map(x=>'<option value="'+x.id+'">'+esc(x.device_name)+' · '+esc(x.status)+'</option>').join('');
+  }).catch(()=>{});
+};
+paymentForm?.addEventListener('submit',async e=>{
+  if(paymentMethod.value!=='pos_terminal')return;
+  e.preventDefault();e.stopImmediatePropagation();
+  const amount=Number(paymentForm.amount.value||0),orderId=paymentOrderId.value,deviceId=paymentPosDevice?.value;
+  if(!deviceId){showToast('Choose a registered POS device');return}
+  if(!amount){showToast('Enter a payment amount');return}
+  paymentSubmit.disabled=true;
+  try{
+    const intent=await api('/api/pos/payment-intents',{method:'POST',body:JSON.stringify({
+      shopId:selectedShopId,branchId:selectedBranchId||undefined,orderId,posDeviceId:deviceId,
+      idempotencyKey:'web-'+(crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random()),
+      method:paymentPosMethod.value,amount,currency:'GHS',provider:'registered_pos'
+    })});
+    closeModal('paymentModal');showToast('Payment sent to POS terminal · '+intent.id.slice(0,8));await loadPaymentOperations();
+  }catch(err){showToast(err.message)}
+  finally{paymentSubmit.disabled=false;syncPaymentMode()}
+},true);
+
 window.loadPosDevices=async function(){
   try{const rows=await api('/api/pos/devices?shopId='+encodeURIComponent(selectedShopId));posDeviceTable.innerHTML=table([
     ['Device',x=>'<b>'+esc(x.device_name)+'</b><br><small class="muted">'+esc(x.device_code)+'</small>'],['Provider',x=>esc(x.provider||'—')],['Terminal',x=>esc(x.terminal_id||'—')],['Status',x=>tag(x.status)],['Last seen',x=>x.last_seen_at?new Date(x.last_seen_at).toLocaleString():'Never'],['Action',x=>'<button class="btn sm" onclick="pingPos(\''+x.id+'\')">Heartbeat</button>']
   ],rows)}catch(e){posDeviceTable.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
-posDeviceForm.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(posDeviceForm));try{await api('/api/pos/devices',{method:'POST',body:JSON.stringify({shopId:selectedShopId,branchId:selectedBranchId||undefined,deviceName:f.deviceName,deviceCode:f.deviceCode,provider:f.provider||undefined,terminalId:f.terminalId||undefined,capabilities:{checkout:true,payments:true,receipts:true}})});posDeviceForm.reset();closeModal('posDeviceModal');showToast('POS device registered');await loadPosDevices()}catch(err){showToast(err.message)}};
+posDeviceForm.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(posDeviceForm));try{const d=await api('/api/pos/devices',{method:'POST',body:JSON.stringify({shopId:selectedShopId,branchId:selectedBranchId||undefined,deviceName:f.deviceName,deviceCode:f.deviceCode,provider:f.provider||undefined,terminalId:f.terminalId||undefined,capabilities:{checkout:true,payments:true,receipts:true,paymentIntents:true}})});posDeviceForm.reset();closeModal('posDeviceModal');posDeviceToken.value=d.deviceToken||'';openModal('posTokenModal');showToast('POS device registered');await loadPosDevices()}catch(err){showToast(err.message)}};
 window.pingPos=async function(id){try{await api('/api/pos/devices/'+id+'/heartbeat',{method:'POST',body:'{}'});await loadPosDevices()}catch(e){showToast(e.message)}};
 
 window.loadAutomationSettings=async function(){
