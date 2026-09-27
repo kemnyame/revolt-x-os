@@ -26,11 +26,11 @@ export type ShopRole=string;
 
 const caps:Record<string,string[]>={
   shop_admin:['*'],
-  manager:['dashboard.read','shops.manage','customers.manage','services.manage','jobs.manage','sales.manage','payments.create','payments.read','inventory.manage','reports.read','bookings.manage'],
-  cashier:['dashboard.read','customers.manage','sales.manage','payments.create','payments.read','bookings.manage'],
-  finance:['dashboard.read','payments.create','payments.read','finance.manage','reports.read','customers.read'],
+  manager:['dashboard.read','shops.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','jobs.manage','sales.manage','payments.create','payments.read','inventory.read','inventory.manage','assets.manage','tickets.manage','reports.read','bookings.manage'],
+  cashier:['dashboard.read','customers.read','customers.manage','services.read','sales.manage','payments.create','payments.read','bookings.manage','communications.manage'],
+  finance:['dashboard.read','payments.create','payments.read','finance.read','finance.manage','reports.read','customers.read'],
   service:['dashboard.read','customers.read','services.read','jobs.manage','bookings.manage'],
-  inventory:['dashboard.read','inventory.manage','products.manage'],
+  inventory:['dashboard.read','inventory.read','inventory.manage','products.manage','assets.manage'],
   auditor:['dashboard.read','customers.read','services.read','jobs.read','payments.read','finance.read','reports.read','audit.read']
 };
 
