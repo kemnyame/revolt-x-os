@@ -368,6 +368,19 @@ async function applyApprovedRequest(db:Db,request:any){
        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status`,
       [request.organisation_id,request.target_id,p.role,p.status||'active']
     );
+  }else if(request.action_key==='settings.automation_change'){
+    await ensureAutomationSetting(db,request.organisation_id,request.shop_id,p.branchId||null);
+    await db.query(
+      `UPDATE shop_automation_settings SET
+       auto_eod_enabled=coalesce($1,auto_eod_enabled),
+       auto_eod_time=coalesce($2::time,auto_eod_time),
+       inactivity_days=coalesce($3,inactivity_days),
+       welcome_discount_percent=coalesce($4,welcome_discount_percent),
+       reorder_alerts_enabled=coalesce($5,reorder_alerts_enabled),
+       updated_at=now()
+       WHERE shop_id=$6 AND branch_id IS NOT DISTINCT FROM $7::uuid`,
+      [p.autoEodEnabled??null,p.autoEodTime??null,p.inactivityDays??null,p.welcomeDiscountPercent??null,p.reorderAlertsEnabled??null,request.shop_id,p.branchId||null]
+    );
   }
 }
 
@@ -926,21 +939,22 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
   app.put('/api/automation/settings/:shopId',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'settings.manage');
     const shopId=uuid.parse((req.params as any).shopId);
-    const b=z.object({branchId:uuid.nullable().optional(),autoEodEnabled:z.boolean().optional(),autoEodTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),inactivityDays:z.coerce.number().int().min(30).max(730).optional(),welcomeDiscountPercent:z.coerce.number().min(0).max(100).optional(),reorderAlertsEnabled:z.boolean().optional()}).parse(req.body);
-    const branchId=b.branchId||null;
-    await ensureAutomationSetting(db,a.core.organisation_id,shopId,branchId);
-    const r=await db.query(`
-      UPDATE shop_automation_settings SET
-       auto_eod_enabled=coalesce($1,auto_eod_enabled),
-       auto_eod_time=coalesce($2::time,auto_eod_time),
-       inactivity_days=coalesce($3,inactivity_days),
-       welcome_discount_percent=coalesce($4,welcome_discount_percent),
-       reorder_alerts_enabled=coalesce($5,reorder_alerts_enabled),
-       updated_at=now()
-      WHERE shop_id=$6 AND branch_id IS NOT DISTINCT FROM $7::uuid RETURNING *`,
-      [b.autoEodEnabled??null,b.autoEodTime??null,b.inactivityDays??null,b.welcomeDiscountPercent??null,b.reorderAlertsEnabled??null,shopId,branchId]
-    );
-    return r.rows[0];
+    const b=z.object({
+      branchId:uuid.nullable().optional(),autoEodEnabled:z.boolean().optional(),
+      autoEodTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+      inactivityDays:z.coerce.number().int().min(30).max(730).optional(),
+      welcomeDiscountPercent:z.coerce.number().min(0).max(100).optional(),
+      reorderAlertsEnabled:z.boolean().optional(),reason:z.string().trim().min(3).max(1000).default('Update Shop automation settings')
+    }).parse(req.body);
+    const shop=await maybeOne<any>(db,'SELECT id,name FROM shops WHERE id=$1 AND organisation_id=$2',[shopId,a.core.organisation_id]);
+    if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
+    const payload={...b};delete (payload as any).reason;
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId,branchId:b.branchId||null,actionKey:'settings.automation_change',
+      targetType:'automation_settings',targetId:null,title:'Update automation settings for '+shop.name,
+      reason:b.reason,payload,requestedBy:a.core.id
+    });
+    return reply.code(202).send({approvalRequired:true,request});
   });
 
   app.post('/api/customer-portal/:slug/register',async(req,reply)=>{
