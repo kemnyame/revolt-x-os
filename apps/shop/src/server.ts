@@ -12,6 +12,7 @@ import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
+import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
 import { loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
@@ -40,6 +41,8 @@ app.setErrorHandler((error,request,reply)=>{
 await ensureShopNamespace(db);
 await ensureShopSchema(db);
 await ensureSalonSchema(db);
+const cleanup=await purgeLegacyShopDemoData(db);
+if(cleanup.removedShops>0)app.log.info(cleanup,'Legacy demo salon data removed');
 
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-shop'}));
 app.get('/health/ready',async(_req,reply)=>{
