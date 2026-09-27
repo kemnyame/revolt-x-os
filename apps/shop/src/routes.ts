@@ -460,34 +460,95 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
 
   app.get('/api/public/store/:slug',async(req,reply)=>{
     const slug=z.string().min(2).parse((req.params as any).slug);
-    const shop=await maybeOne<any>(db,"SELECT id,name,slug,public_slug,business_type,currency,phone,email,address FROM shops WHERE public_slug=$1 AND status='active' LIMIT 1",[slug]);
+    const shop=await maybeOne<any>(db,`
+      SELECT s.id,s.name,s.slug,s.public_slug,s.business_type,s.currency,s.phone,s.email,s.address,
+             coalesce(ss.allow_online_booking,true) allow_online_booking,
+             coalesce(ss.timezone,'Africa/Accra') timezone
+      FROM shops s
+      LEFT JOIN salon_settings ss ON ss.shop_id=s.id
+      WHERE s.public_slug=$1 AND s.status='active'
+      LIMIT 1`,[slug]);
     if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
-    const [services,products,branches]=await Promise.all([
+    const [services,products,branches,barbers]=await Promise.all([
       db.query('SELECT id,name,category,description,price,duration_minutes,deposit_percent FROM shop_services WHERE shop_id=$1 AND active=true ORDER BY name',[shop.id]),
       db.query('SELECT id,name,category,selling_price,stock_quantity FROM shop_products WHERE shop_id=$1 AND active=true AND stock_quantity>0 ORDER BY name LIMIT 100',[shop.id]),
-      db.query("SELECT id,name,address,phone FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY name",[shop.id])
+      db.query("SELECT id,name,address,phone FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY name",[shop.id]),
+      db.query("SELECT id,branch_id,full_name,specialty FROM salon_staff WHERE shop_id=$1 AND role='barber' AND status='active' ORDER BY full_name",[shop.id])
     ]);
-    return{shop,services:services.rows,products:products.rows,branches:branches.rows};
+    return{shop,services:services.rows,products:products.rows,branches:branches.rows,barbers:barbers.rows};
   });
 
   app.post('/api/public/store/:slug/bookings',async(req,reply)=>{
     const slug=z.string().min(2).parse((req.params as any).slug);
-    const shop=await maybeOne<any>(db,"SELECT id,organisation_id FROM shops WHERE public_slug=$1 AND status='active' LIMIT 1",[slug]);
+    const shop=await maybeOne<any>(db,`
+      SELECT s.id,s.organisation_id,coalesce(ss.allow_online_booking,true) allow_online_booking
+      FROM shops s LEFT JOIN salon_settings ss ON ss.shop_id=s.id
+      WHERE s.public_slug=$1 AND s.status='active' LIMIT 1`,[slug]);
     if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
-    const b=z.object({branchId:uuid.optional(),serviceId:uuid.optional(),customerName:z.string().trim().min(2),phone:z.string().min(6),email:z.string().email().optional().or(z.literal('')),bookedFor:z.coerce.date(),notes:z.string().optional()}).parse(req.body);
+    if(shop.allow_online_booking===false)return reply.code(403).send({error:{message:'Online booking is currently disabled for this salon.'}});
+    const b=z.object({
+      branchId:uuid.optional(),serviceId:uuid,staffId:uuid.optional(),
+      customerName:z.string().trim().min(2),phone:z.string().trim().min(6),
+      email:z.string().email().optional().or(z.literal('')),
+      bookedFor:z.coerce.date(),notes:z.string().max(2000).optional()
+    }).parse(req.body);
+
     let branchId=b.branchId||null;
     if(!branchId){
       const primary=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY created_at LIMIT 1",[shop.id]);
       branchId=primary?.id||null;
     }
+    if(!branchId)return reply.code(409).send({error:{message:'This salon has no active branch available for booking.'}});
+
+    const validBranch=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND status='active'",[branchId,shop.id]);
+    if(!validBranch)return reply.code(400).send({error:{message:'Selected branch is not available.'}});
+    const validService=await maybeOne<any>(db,"SELECT id FROM shop_services WHERE id=$1 AND shop_id=$2 AND active=true",[b.serviceId,shop.id]);
+    if(!validService)return reply.code(400).send({error:{message:'Selected service is not available.'}});
+    if(b.staffId){
+      const validStaff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND role='barber' AND status='active' AND (branch_id=$3 OR branch_id IS NULL)",[b.staffId,shop.id,branchId]);
+      if(!validStaff)return reply.code(400).send({error:{message:'Selected barber is not available at this branch.'}});
+    }
+
     await assertSalonBookingAvailability(db,{
-      organisationId:shop.organisation_id,shopId:shop.id,branchId,bookedFor:b.bookedFor,serviceId:b.serviceId||null
+      organisationId:shop.organisation_id,shopId:shop.id,branchId,bookedFor:b.bookedFor,
+      serviceId:b.serviceId,staffId:b.staffId||null
     });
-    const r=await db.query(
-      `INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_name,phone,email,booked_for,notes,source,status)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'public','booked') RETURNING id,status,booked_for`,
-      [shop.organisation_id,shop.id,branchId,b.serviceId||null,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null]
-    );
-    return reply.code(201).send(r.rows[0]);
+
+    const booking=await tx(db,async client=>{
+      let customer=await maybeOne<any>(client,`
+        SELECT id FROM shop_customers
+        WHERE shop_id=$1 AND status='active'
+          AND ((phone IS NOT NULL AND phone=$2) OR ($3<>'' AND lower(email)=lower($3)))
+        ORDER BY created_at LIMIT 1`,
+        [shop.id,b.phone,b.email||'']
+      );
+      if(!customer){
+        const created=await client.query(
+          `INSERT INTO shop_customers(organisation_id,shop_id,branch_id,customer_no,name,phone,email,customer_type,status)
+           VALUES($1,$2,$3,$4,$5,$6,$7,'retail','active') RETURNING id`,
+          [shop.organisation_id,shop.id,branchId,code('CUS'),b.customerName,b.phone,b.email||null]
+        );
+        customer=created.rows[0];
+      }else{
+        await client.query(
+          `UPDATE shop_customers
+           SET name=$1,branch_id=coalesce(branch_id,$2),email=coalesce(nullif(email,''),$3)
+           WHERE id=$4`,
+          [b.customerName,branchId,b.email||null,customer.id]
+        );
+      }
+
+      const r=await client.query(
+        `INSERT INTO shop_bookings(
+           organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,
+           booked_for,notes,source,status,salon_staff_id,appointment_type
+         )
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'public','booked',$11,'appointment')
+         RETURNING id,status,booked_for,customer_id`,
+        [shop.organisation_id,shop.id,branchId,b.serviceId,customer.id,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null,b.staffId||null]
+      );
+      return r.rows[0];
+    });
+    return reply.code(201).send(booking);
   });
 }
