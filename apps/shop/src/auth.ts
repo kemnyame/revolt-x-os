@@ -159,6 +159,23 @@ export async function hasShopCapability(db:Db,organisationId:string,role:string,
   return allowed;
 }
 
+export async function listShopCapabilities(db:Db,organisationId:string,role:string){
+  const builtIn=caps[role]||[];
+  if(builtIn.includes('*'))return['*'];
+  try{
+    const capabilityRows=(await db.query<{key:string}>('SELECT key FROM shop_capabilities ORDER BY sort_order,key')).rows;
+    const overrides=(await db.query<{capability_key:string;allowed:boolean}>(
+      'SELECT capability_key,allowed FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2',
+      [organisationId,role]
+    )).rows;
+    const map=new Map(overrides.map(x=>[x.capability_key,x.allowed]));
+    return capabilityRows.map(x=>x.key).filter(key=>map.has(key)?map.get(key)===true:builtIn.includes(key));
+  }catch(e:any){
+    if(e?.code!=='42P01')throw e;
+    return[...builtIn];
+  }
+}
+
 export async function authorize(db:Db,config:ShopConfig,request:FastifyRequest,reply:FastifyReply,capability?:string){
   const core=await resolveCoreContext(request,reply,config);
   let membership=await maybeOne<{role:ShopRole;status:string}>(db,
