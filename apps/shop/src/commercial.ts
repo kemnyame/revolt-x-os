@@ -39,6 +39,9 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
       ownerBarberName:z.string().trim().max(160).optional(),
       ownerCommissionPercent:z.coerce.number().min(0).max(100).default(0)
     }).parse(req.body);
+    if(b.closeTime<=b.openTime){
+      return reply.code(400).send({error:{message:'Closing time must be later than opening time.'}});
+    }
 
     const already=await maybeOne<any>(db,'SELECT id FROM shops WHERE organisation_id=$1 LIMIT 1',[a.core.organisation_id]);
     if(already)return reply.code(409).send({error:{message:'This organisation is already configured.'}});
@@ -113,6 +116,16 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
         isClosed:z.boolean().default(false)
       })).max(7).optional()
     }).parse(req.body);
+    if(b.hours){
+      const days=new Set<number>();
+      for(const h of b.hours){
+        if(days.has(h.dayOfWeek))return reply.code(400).send({error:{message:'Each business day can only appear once.'}});
+        days.add(h.dayOfWeek);
+        if(!h.isClosed&&h.closeTime<=h.openTime){
+          return reply.code(400).send({error:{message:'Closing time must be later than opening time for every open day.'}});
+        }
+      }
+    }
     const owns=await maybeOne<any>(db,'SELECT id FROM shops WHERE id=$1 AND organisation_id=$2',[shopId,a.core.organisation_id]);
     if(!owns)return reply.code(404).send({error:{message:'Shop not found'}});
     await tx(db,async client=>{
