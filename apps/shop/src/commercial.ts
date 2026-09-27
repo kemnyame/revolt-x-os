@@ -236,4 +236,38 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
     return r.rows[0];
   });
 
+
+  app.get('/api/access/users',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply);
+    if(a.role!=='shop_admin'&&a.role!=='manager')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
+    const r=await db.query(
+      `SELECT u.id user_id,u.email,u.first_name,u.last_name,u.status core_status,m.status membership_status,
+              COALESCE(sm.role,'') shop_role,COALESCE(sm.status,'') shop_status
+       FROM revolt_x_os.organisation_memberships m
+       JOIN revolt_x_os.users u ON u.id=m.user_id
+       LEFT JOIN shop_memberships sm ON sm.organisation_id=m.organisation_id AND sm.os_user_id=u.id
+       WHERE m.organisation_id=$1
+       ORDER BY u.first_name,u.last_name,u.email`,
+      [a.core.organisation_id]
+    );
+    return r.rows;
+  });
+
+  app.put('/api/access/users/:userId',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply);
+    if(a.role!=='shop_admin')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
+    const userId=z.string().uuid().parse((req.params as any).userId);
+    const b=z.object({role:z.enum(['shop_admin','manager','cashier','finance','service','inventory','auditor']),status:z.enum(['active','inactive']).default('active')}).parse(req.body);
+    const member=await maybeOne<any>(db,'SELECT user_id FROM revolt_x_os.organisation_memberships WHERE organisation_id=$1 AND user_id=$2',[a.core.organisation_id,userId]);
+    if(!member)return reply.code(404).send({error:{message:'User is not a member of this Revolt-X organisation'}});
+    const r=await db.query(
+      `INSERT INTO shop_memberships(organisation_id,os_user_id,role,status)
+       VALUES($1,$2,$3,$4)
+       ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status
+       RETURNING *`,
+      [a.core.organisation_id,userId,b.role,b.status]
+    );
+    return r.rows[0];
+  });
+
 }
