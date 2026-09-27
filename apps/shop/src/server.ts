@@ -3,10 +3,11 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { ZodError, z } from 'zod';
+import bcrypt from 'bcryptjs';
 import { loadConfig } from './config.js';
 import { createDb } from './db.js';
 import { ensureShopSchema } from './schema.js';
-import { clearAuthCookies, loginToCore, setAuthCookies, resetCorePasswordAsSystem } from './auth.js';
+import { clearAuthCookies, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
 import { appHtml, loginHtml, resetHtml, storefrontHtml } from './ui.js';
 
@@ -63,27 +64,71 @@ app.get('/payments/callback',async(req,reply)=>{
 await registerShopApi(app,{db,config});
 await ensureShopSchema(db);
 
+async function ensureCoreOwnerAccount(email:string,password:string,firstName:string,lastName:string){
+  const hash=await bcrypt.hash(password,12);
+  await db.query('BEGIN');
+  try{
+    let org=await db.query("SELECT id FROM revolt_x_os.organisations WHERE slug='kem-company' LIMIT 1");
+    if(!org.rowCount){
+      org=await db.query("INSERT INTO revolt_x_os.organisations(slug,name,status) VALUES('kem-company','Kem Company','active') RETURNING id");
+    }
+    const organisationId=org.rows[0].id;
+    const user=await db.query(
+      `INSERT INTO revolt_x_os.users(email,password_hash,first_name,last_name,status,email_verified_at)
+       VALUES($1,$2,$3,$4,'active',now())
+       ON CONFLICT(email) DO UPDATE
+       SET password_hash=EXCLUDED.password_hash,
+           first_name=EXCLUDED.first_name,
+           last_name=EXCLUDED.last_name,
+           status='active',
+           email_verified_at=coalesce(revolt_x_os.users.email_verified_at,now()),
+           updated_at=now()
+       RETURNING id`,
+      [email.toLowerCase(),hash,firstName,lastName]
+    );
+    const userId=user.rows[0].id;
+    const membership=await db.query(
+      `INSERT INTO revolt_x_os.organisation_memberships(organisation_id,user_id,job_title,status)
+       VALUES($1,$2,$3,'active')
+       ON CONFLICT(organisation_id,user_id) DO UPDATE
+       SET job_title=EXCLUDED.job_title,status='active'
+       RETURNING id`,
+      [organisationId,userId,'Revolt-X Administrator']
+    );
+    const membershipId=membership.rows[0].id;
+    await db.query(
+      `INSERT INTO revolt_x_os.membership_roles(membership_id,role_id,scope_type,scope_id,granted_by)
+       SELECT $1,r.id,'organisation',$2,$3
+       FROM revolt_x_os.roles r
+       WHERE r.key='owner' AND r.organisation_id IS NULL
+       ON CONFLICT DO NOTHING`,
+      [membershipId,organisationId,userId]
+    );
+    await db.query('COMMIT');
+    return{email,organisationId};
+  }catch(error){
+    await db.query('ROLLBACK');
+    throw error;
+  }
+}
+
 async function applyBootstrapCredentials(){
   const key='credentials:'+config.BOOTSTRAP_CREDENTIALS_VERSION;
   const done=await db.query('SELECT 1 FROM shop_bootstrap_state WHERE key=$1',[key]);
   if(done.rowCount)return;
-  const pairs=[
-    [config.SHOP_BOOTSTRAP_EMAIL,config.SHOP_BOOTSTRAP_PASSWORD],
-    [config.OS_BOOTSTRAP_EMAIL,config.OS_BOOTSTRAP_PASSWORD]
-  ].filter((x):x is [string,string]=>Boolean(x[0]&&x[1]));
-  if(!pairs.length)return;
-  for(let attempt=1;attempt<=8;attempt++){
-    try{
-      for(const [email,password] of pairs)await resetCorePasswordAsSystem(config,email,password);
-      await db.query('INSERT INTO shop_bootstrap_state(key) VALUES($1) ON CONFLICT DO NOTHING',[key]);
-      app.log.info({accounts:pairs.map(x=>x[0]),version:config.BOOTSTRAP_CREDENTIALS_VERSION},'Bootstrap credentials applied');
-      return;
-    }catch(error){
-      app.log.warn({attempt,error},'Bootstrap credential reset waiting for Core OS');
-      await new Promise(resolve=>setTimeout(resolve,Math.min(15000,attempt*2000)));
-    }
+  const accounts:Array<[string,string,string,string]>=[];
+  if(config.SHOP_BOOTSTRAP_EMAIL&&config.SHOP_BOOTSTRAP_PASSWORD){
+    accounts.push([config.SHOP_BOOTSTRAP_EMAIL,config.SHOP_BOOTSTRAP_PASSWORD,'Revolt-X Shop','Admin']);
   }
-  app.log.error('Bootstrap credentials could not be applied after retries');
+  if(config.OS_BOOTSTRAP_EMAIL&&config.OS_BOOTSTRAP_PASSWORD){
+    accounts.push([config.OS_BOOTSTRAP_EMAIL,config.OS_BOOTSTRAP_PASSWORD,'Revolt-X OS','Admin']);
+  }
+  if(!accounts.length)return;
+  for(const [email,password,firstName,lastName] of accounts){
+    await ensureCoreOwnerAccount(email,password,firstName,lastName);
+  }
+  await db.query('INSERT INTO shop_bootstrap_state(key) VALUES($1) ON CONFLICT DO NOTHING',[key]);
+  app.log.info({accounts:accounts.map(x=>x[0]),version:config.BOOTSTRAP_CREDENTIALS_VERSION},'Bootstrap credentials applied');
 }
 
 const close=async()=>{await app.close();await db.end();process.exit(0)};
