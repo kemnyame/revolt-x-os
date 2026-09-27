@@ -36,7 +36,7 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
         durationMinutes:z.coerce.number().int().min(5).max(480).default(30),
         depositPercent:z.coerce.number().min(0).max(100).default(0)
       })).min(1).max(50),
-      ownerBarberName:z.string().trim().max(160).optional(),
+      ownerBarberName:z.string().trim().min(2).max(160),
       ownerCommissionPercent:z.coerce.number().min(0).max(100).default(0)
     }).parse(req.body);
     if(b.closeTime<=b.openTime){
@@ -79,7 +79,7 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
           [a.core.organisation_id,shopId,svc.name,svc.category||'Barbering',svc.price,svc.durationMinutes,svc.depositPercent]
         );
       }
-      if(b.ownerBarberName){
+      {
         await client.query(
           "INSERT INTO salon_staff(organisation_id,shop_id,branch_id,os_user_id,staff_no,full_name,email,role,specialty,commission_percent,hire_date,status) VALUES($1,$2,$3,$4,'BAR-001',$5,$6,'barber','Owner / Lead Barber',$7,CURRENT_DATE,'active')",
           [a.core.organisation_id,shopId,branchId,a.core.id,b.ownerBarberName,a.core.email,b.ownerCommissionPercent]
