@@ -74,11 +74,11 @@ const defaultRoles=[
 
 const defaultRoleCapabilities:Record<string,string[]>={
   shop_admin:['*'],
-  manager:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','inventory.read','inventory.manage','sales.manage','payments.read','payments.create','reports.read','tickets.manage','assets.manage'],
+  manager:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','inventory.read','inventory.manage','procurement.manage','sales.manage','payments.read','payments.create','reports.read','tickets.manage','assets.manage'],
   cashier:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','services.read','sales.manage','payments.read','payments.create','tickets.manage'],
   finance:['dashboard.read','customers.read','payments.read','payments.create','finance.read','finance.manage','reports.read'],
   service:['dashboard.read','appointments.manage','customers.read','services.read'],
-  inventory:['dashboard.read','inventory.read','inventory.manage','assets.manage'],
+  inventory:['dashboard.read','inventory.read','inventory.manage','procurement.manage','assets.manage'],
   auditor:['dashboard.read','customers.read','services.read','payments.read','finance.read','reports.read','audit.read','system.read']
 };
 
@@ -112,6 +112,7 @@ async function ensureFinanceDefaults(db:Db,orgId:string,shopId:string){
     ['1020','Mobile Money Clearing','asset','mobile_money',true],
     ['1030','Card Clearing','asset','card',true],
     ['1100','Accounts Receivable','asset','receivable',false],
+    ['1200','Inventory Asset','asset','inventory',false],
     ['2000','Accounts Payable','liability','payable',false],
     ['2100','Tax Payable','liability','tax',false],
     ['3000','Owner Equity','equity','equity',false],
@@ -405,6 +406,12 @@ async function applyApprovedRequest(db:Db,request:any){
        VALUES($1,$2,$3,$4)
        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status`,
       [request.organisation_id,request.target_id,p.role,p.status||'active']
+    );
+  }else if(request.action_key==='purchase_order.approve'){
+    await db.query(
+      `UPDATE shop_purchase_orders SET status='approved',approved_by=$1,approved_at=now(),updated_at=now()
+       WHERE id=$2 AND organisation_id=$3 AND status='pending_approval'`,
+      [request.requested_by===null?null:request.payload?.approvedBy||null,request.target_id,request.organisation_id]
     );
   }else if(request.action_key==='settings.automation_change'){
     await ensureAutomationSetting(db,request.organisation_id,request.shop_id,p.branchId||null);
