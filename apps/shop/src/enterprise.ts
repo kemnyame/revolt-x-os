@@ -858,6 +858,61 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     return reply.code(201).send(entry);
   });
 
+  app.post('/api/finance/journals/:id/reverse',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'finance.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({reason:z.string().trim().min(3).max(1000)}).parse(req.body);
+    const reversal=await tx(db,async client=>{
+      const jr=await client.query(
+        'SELECT * FROM shop_finance_journal_entries WHERE id=$1 AND organisation_id=$2 FOR UPDATE',
+        [id,a.core.organisation_id]
+      );
+      if(!jr.rowCount)return null;
+      const journal=jr.rows[0];
+      if(journal.status!=='posted')throw Object.assign(new Error('Only posted journals can be reversed'),{statusCode:409});
+      if(journal.reversal_entry_id)throw Object.assign(new Error('This journal already has a reversal'),{statusCode:409});
+      const lines=(await client.query(
+        `SELECT l.*,a.code account_code,a.name account_name
+         FROM shop_finance_journal_lines l
+         JOIN shop_finance_accounts a ON a.id=l.account_id
+         WHERE l.journal_entry_id=$1 ORDER BY l.id`,[id]
+      )).rows;
+      if(!lines.length)throw Object.assign(new Error('Journal has no lines to reverse'),{statusCode:409});
+      const rev=(await client.query(`
+        INSERT INTO shop_finance_journal_entries(
+          organisation_id,shop_id,branch_id,entry_no,entry_date,description,source_type,source_id,status,reference,created_by,posted_at
+        )
+        VALUES($1,$2,$3,$4,CURRENT_DATE,$5,'journal_reversal',$6,'posted',$7,$8,now())
+        RETURNING *`,
+        [a.core.organisation_id,journal.shop_id,journal.branch_id,code('REV'),'Reversal of '+journal.entry_no+': '+b.reason,id,journal.entry_no,a.core.id]
+      )).rows[0];
+      for(const line of lines){
+        await client.query(
+          `INSERT INTO shop_finance_journal_lines(journal_entry_id,account_id,description,debit,credit)
+           VALUES($1,$2,$3,$4,$5)`,
+          [rev.id,line.account_id,'Reversal: '+(line.description||journal.description),line.credit,line.debit]
+        );
+        await client.query(
+          `INSERT INTO shop_ledger_entries(
+            organisation_id,shop_id,branch_id,entry_date,account_code,account_name,debit,credit,source_type,source_id,reference,description
+          )
+          VALUES($1,$2,$3,CURRENT_DATE,$4,$5,$6,$7,'finance_journal_reversal',$8,$9,$10)`,
+          [a.core.organisation_id,journal.shop_id,journal.branch_id,line.account_code,line.account_name,line.credit,line.debit,rev.id,rev.entry_no,'Reversal: '+(line.description||journal.description)]
+        );
+      }
+      await client.query(
+        `UPDATE shop_finance_journal_entries
+         SET status='voided',voided_at=now(),voided_by=$1,void_reason=$2,reversal_entry_id=$3
+         WHERE id=$4`,
+        [a.core.id,b.reason,rev.id,id]
+      );
+      return rev;
+    });
+    if(!reversal)return reply.code(404).send({error:{message:'Journal not found'}});
+    await audit(db,a.core.organisation_id,a.core.id,'finance.journal_reversed','finance_journal',id,reversal.shop_id,reversal.branch_id,{reversalEntryId:reversal.id,reason:b.reason});
+    return reply.code(201).send(reversal);
+  });
+
   app.post('/api/finance/budgets',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'finance.manage');
     const b=z.object({shopId:uuid,accountId:uuid,periodStart:z.string(),periodEnd:z.string(),amount:money,notes:z.string().max(1000).optional()}).parse(req.body);
