@@ -226,20 +226,34 @@ function nextQueue(rows:any[]){
   return rows.reduce((m,r)=>Math.max(m,Number(r.queue_number||0)),0)+1;
 }
 
-async function salonDashboard(db:Db,orgId:string,shopId?:string){
-  const params:any[]=[orgId];
-  let shopFilter='';
-  if(shopId){params.push(shopId);shopFilter=' AND shop_id=$2';}
+async function salonDashboard(db:Db,orgId:string,shopId?:string,branchId?:string){
+  const params=[orgId,shopId||null,branchId||null];
   const q=await db.query(`
     SELECT
-      (SELECT count(*)::int FROM shop_bookings WHERE organisation_id=$1 ${shopFilter} AND booked_for::date=CURRENT_DATE) appointments_today,
-      (SELECT count(*)::int FROM shop_bookings WHERE organisation_id=$1 ${shopFilter} AND booked_for::date=CURRENT_DATE AND appointment_type='walk_in') walkins_today,
-      (SELECT count(*)::int FROM shop_bookings WHERE organisation_id=$1 ${shopFilter} AND booked_for::date=CURRENT_DATE AND status IN ('queued','checked_in')) waiting_now,
-      (SELECT count(*)::int FROM salon_chairs WHERE organisation_id=$1 ${shopFilter} AND status='available') available_chairs,
-      (SELECT count(*)::int FROM salon_staff WHERE organisation_id=$1 ${shopFilter} AND role='barber' AND status='active') active_barbers,
-      (SELECT coalesce(sum(amount),0) FROM shop_payments WHERE organisation_id=$1 ${shopFilter} AND status='successful' AND created_at::date=CURRENT_DATE) revenue_today,
-      (SELECT coalesce(sum(commission_amount),0) FROM salon_commission_entries WHERE organisation_id=$1 ${shopFilter} AND earned_at::date=CURRENT_DATE) commissions_today,
-      (SELECT coalesce(avg(extract(epoch from (service_started_at-check_in_at))/60),0) FROM shop_bookings WHERE organisation_id=$1 ${shopFilter} AND check_in_at IS NOT NULL AND service_started_at IS NOT NULL AND booked_for::date=CURRENT_DATE) avg_wait_minutes
+      (SELECT count(*)::int FROM shop_bookings x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.booked_for::date=CURRENT_DATE) appointments_today,
+      (SELECT count(*)::int FROM shop_bookings x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.booked_for::date=CURRENT_DATE AND x.appointment_type='walk_in') walkins_today,
+      (SELECT count(*)::int FROM shop_bookings x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.booked_for::date=CURRENT_DATE AND x.status IN ('queued','checked_in')) waiting_now,
+      (SELECT count(*)::int FROM salon_chairs x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.status='available') available_chairs,
+      (SELECT count(*)::int FROM salon_staff x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3 OR x.branch_id IS NULL)
+         AND x.role='barber' AND x.status='active') active_barbers,
+      (SELECT coalesce(sum(x.amount),0) FROM shop_payments x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.status='successful' AND x.created_at::date=CURRENT_DATE) revenue_today,
+      (SELECT coalesce(sum(x.commission_amount),0) FROM salon_commission_entries x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.earned_at::date=CURRENT_DATE) commissions_today,
+      (SELECT coalesce(avg(extract(epoch from (x.service_started_at-x.check_in_at))/60),0) FROM shop_bookings x
+       WHERE x.organisation_id=$1 AND ($2::uuid IS NULL OR x.shop_id=$2) AND ($3::uuid IS NULL OR x.branch_id=$3)
+         AND x.check_in_at IS NOT NULL AND x.service_started_at IS NOT NULL AND x.booked_for::date=CURRENT_DATE) avg_wait_minutes
   `,params);
   return q.rows[0];
 }
@@ -247,30 +261,60 @@ async function salonDashboard(db:Db,orgId:string,shopId?:string){
 export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db;config:ShopConfig}){
   app.get('/api/salon/bootstrap',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'dashboard.read');
-    const shopId=(req.query as any)?.shopId;
-    const params:any[]=[a.core.organisation_id];
-    let f='';
-    if(shopId){params.push(shopId);f=' AND shop_id=$2';}
+    const query=z.object({shopId:uuid.optional(),branchId:uuid.optional()}).parse(req.query);
+    const params=[a.core.organisation_id,query.shopId||null,query.branchId||null];
+    if(query.branchId&&query.shopId){
+      const branch=await maybeOne<any>(db,
+        'SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3',
+        [query.branchId,query.shopId,a.core.organisation_id]
+      );
+      if(!branch)return reply.code(400).send({error:{message:'Selected branch does not belong to this shop.'}});
+    }
+
     const empty=()=>Promise.resolve({rows:[]} as any);
     const canAppointments=['shop_admin','manager','cashier','service'].includes(a.role);
     const canFinance=['shop_admin','finance','auditor'].includes(a.role);
     const canFinancialStats=['shop_admin','manager','cashier','finance','auditor'].includes(a.role);
 
     const [staff,chairs,appointments,commissions,eod,rawStats]=await Promise.all([
-      db.query('SELECT * FROM salon_staff WHERE organisation_id=$1'+f+' ORDER BY role,full_name',params),
-      db.query('SELECT * FROM salon_chairs WHERE organisation_id=$1'+f+' ORDER BY name',params),
-      canAppointments?db.query(`SELECT b.*,s.name service_name,st.full_name barber_name,c.name chair_name
-                FROM shop_bookings b
-                LEFT JOIN shop_services s ON s.id=b.service_id
-                LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
-                LEFT JOIN salon_chairs c ON c.id=b.salon_chair_id
-                WHERE b.organisation_id=$1${f} AND b.booked_for::date BETWEEN CURRENT_DATE-7 AND CURRENT_DATE+30
-                ORDER BY b.booked_for`,params):empty(),
-      canFinance?db.query(`SELECT ce.*,st.full_name barber_name FROM salon_commission_entries ce
-                JOIN salon_staff st ON st.id=ce.staff_id
-                WHERE ce.organisation_id=$1${f} ORDER BY ce.earned_at DESC LIMIT 250`,params):empty(),
-      canFinance?db.query('SELECT * FROM salon_eod_closures WHERE organisation_id=$1'+f+' ORDER BY business_date DESC LIMIT 45',params):empty(),
-      salonDashboard(db,a.core.organisation_id,shopId)
+      db.query(
+        `SELECT * FROM salon_staff x
+         WHERE x.organisation_id=$1
+           AND ($2::uuid IS NULL OR x.shop_id=$2)
+           AND ($3::uuid IS NULL OR x.branch_id=$3 OR x.branch_id IS NULL)
+         ORDER BY x.role,x.full_name`,params),
+      db.query(
+        `SELECT * FROM salon_chairs x
+         WHERE x.organisation_id=$1
+           AND ($2::uuid IS NULL OR x.shop_id=$2)
+           AND ($3::uuid IS NULL OR x.branch_id=$3)
+         ORDER BY x.name`,params),
+      canAppointments?db.query(
+        `SELECT b.*,s.name service_name,st.full_name barber_name,ch.name chair_name
+         FROM shop_bookings b
+         LEFT JOIN shop_services s ON s.id=b.service_id
+         LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
+         LEFT JOIN salon_chairs ch ON ch.id=b.salon_chair_id
+         WHERE b.organisation_id=$1
+           AND ($2::uuid IS NULL OR b.shop_id=$2)
+           AND ($3::uuid IS NULL OR b.branch_id=$3)
+           AND b.booked_for::date BETWEEN CURRENT_DATE-7 AND CURRENT_DATE+30
+         ORDER BY b.booked_for`,params):empty(),
+      canFinance?db.query(
+        `SELECT ce.*,st.full_name barber_name
+         FROM salon_commission_entries ce
+         JOIN salon_staff st ON st.id=ce.staff_id
+         WHERE ce.organisation_id=$1
+           AND ($2::uuid IS NULL OR ce.shop_id=$2)
+           AND ($3::uuid IS NULL OR ce.branch_id=$3)
+         ORDER BY ce.earned_at DESC LIMIT 250`,params):empty(),
+      canFinance?db.query(
+        `SELECT * FROM salon_eod_closures x
+         WHERE x.organisation_id=$1
+           AND ($2::uuid IS NULL OR x.shop_id=$2)
+           AND ($3::uuid IS NULL OR x.branch_id=$3)
+         ORDER BY x.business_date DESC LIMIT 45`,params):empty(),
+      salonDashboard(db,a.core.organisation_id,query.shopId,query.branchId)
     ]);
 
     const stats={...rawStats};
@@ -285,7 +329,14 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
       ? staff.rows
       : staff.rows.map((row:any)=>({...row,commission_percent:null}));
 
-    return{staff:staffRows,chairs:chairs.rows,appointments:appointments.rows,commissions:commissions.rows,eod:eod.rows,stats};
+    return{
+      staff:staffRows,
+      chairs:chairs.rows,
+      appointments:appointments.rows,
+      commissions:commissions.rows,
+      eod:eod.rows,
+      stats
+    };
   });
 
   app.post('/api/salon/staff',async(req,reply)=>{
