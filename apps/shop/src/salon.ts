@@ -315,6 +315,26 @@ export async function seedSalonDemo(db:Db,config:ShopConfig){
       [org.id,shopId,branchId]
     );
 
+    const completed=await c.query(
+      `SELECT b.id booking_id,b.salon_staff_id,b.service_id,s.price,st.commission_percent
+       FROM shop_bookings b
+       LEFT JOIN shop_services s ON s.id=b.service_id
+       LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
+       WHERE b.shop_id=$1 AND b.status='completed' AND b.salon_staff_id IS NOT NULL
+       ORDER BY b.booked_for DESC LIMIT 1`,
+      [shopId]
+    );
+    if(completed.rowCount){
+      const x=completed.rows[0];
+      const gross=Number(x.price||0),pct=Number(x.commission_percent||0);
+      await c.query(
+        `INSERT INTO salon_commission_entries(organisation_id,shop_id,branch_id,staff_id,booking_id,gross_amount,commission_percent,commission_amount,status,note)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,'earned','Demo completed service'
+         WHERE NOT EXISTS(SELECT 1 FROM salon_commission_entries WHERE booking_id=$5)`,
+        [org.id,shopId,branchId,x.salon_staff_id,x.booking_id,gross,pct,gross*pct/100]
+      );
+    }
+
     await c.query('INSERT INTO shop_bootstrap_state(key) VALUES($1) ON CONFLICT DO NOTHING',[key]);
   });
 }
