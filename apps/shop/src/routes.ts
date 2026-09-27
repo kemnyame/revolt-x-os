@@ -5,7 +5,7 @@ import type { Db } from './db.js';
 import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
 import { assertSalonBookingAvailability } from './salon.js';
-import { authorize, hasShopCapability, resetCorePasswordAsSystem } from './auth.js';
+import { authorize, hasShopCapability, listShopCapabilities, resetCorePasswordAsSystem } from './auth.js';
 
 const money=z.coerce.number().finite().min(0);
 const positive=z.coerce.number().finite().positive();
@@ -95,6 +95,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const a=await authorize(db,config,req,reply,'dashboard.read');
     const org=a.core.organisation_id;
     const role=a.role;
+    const shopCapabilities=await listShopCapabilities(db,org,role);
     const empty=()=>Promise.resolve({rows:[]} as any);
     const [canCustomers,canProducts,canJobs,canBookings,canSales,canPayments,canFinance,canReports]=await Promise.all([
       hasShopCapability(db,org,role,'customers.read'),
@@ -132,7 +133,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     }
 
     return{
-      me:a.core,role,stats,
+      me:a.core,role,shopCapabilities,stats,
       shops:shops.rows,branches:branches.rows,customers:customers.rows,services:services.rows,
       products:products.rows,jobs:jobs.rows,bookings:bookings.rows,orders:orders.rows,
       payments:payments.rows,expenses:expenses.rows
