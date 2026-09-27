@@ -4,16 +4,20 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { ZodError, z } from 'zod';
 import bcrypt from 'bcryptjs';
+import { readFileSync } from 'node:fs';
 import { loadConfig } from './config.js';
 import { createDb } from './db.js';
 import { ensureShopSchema } from './schema.js';
 import { clearAuthCookies, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
-import { appHtml, loginHtml, resetHtml, storefrontHtml } from './ui.js';
+import { ensureSalonSchema, registerSalonRoutes, seedSalonDemo } from './salon.js';
+import { loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
 const db=createDb(config);
 const app=Fastify({logger:true,trustProxy:true});
+const salonHtml=readFileSync(new URL('../public/salon.html',import.meta.url),'utf8');
+const salonStorefrontHtml=readFileSync(new URL('../public/salon-storefront.html',import.meta.url),'utf8');
 
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{
@@ -51,10 +55,10 @@ app.post('/auth/logout',async(_req,reply)=>{
   return{ok:true};
 });
 
-app.get('/',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(appHtml()));
+app.get('/',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(salonHtml));
 app.get('/store/:slug',async(req,reply)=>{
   const slug=z.string().min(2).max(100).parse((req.params as any).slug);
-  return reply.type('text/html; charset=utf-8').send(storefrontHtml(slug));
+  return reply.type('text/html; charset=utf-8').send(salonStorefrontHtml);
 });
 app.get('/payments/callback',async(req,reply)=>{
   const ref=String((req.query as any)?.reference||'');
@@ -62,7 +66,9 @@ app.get('/payments/callback',async(req,reply)=>{
 });
 
 await registerShopApi(app,{db,config});
+await registerSalonRoutes(app,{db,config});
 await ensureShopSchema(db);
+await ensureSalonSchema(db);
 
 async function ensureCoreOwnerAccount(email:string,password:string,firstName:string,lastName:string){
   const hash=await bcrypt.hash(password,12);
@@ -136,4 +142,4 @@ process.on('SIGTERM',close);
 process.on('SIGINT',close);
 
 await app.listen({host:config.HOST,port:config.PORT});
-void applyBootstrapCredentials().catch(error=>app.log.error({error},'Bootstrap credential setup failed'));
+void applyBootstrapCredentials().then(()=>seedSalonDemo(db,config)).catch(error=>app.log.error({error},'Shop bootstrap setup failed'));
