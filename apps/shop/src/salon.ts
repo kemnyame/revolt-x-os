@@ -186,6 +186,37 @@ export async function assertSalonBookingAvailability(
     if(conflict){
       const e:any=new Error('The selected barber or chair is already booked for that time.');e.statusCode=409;throw e;
     }
+  }else{
+    const cap=await maybeOne<any>(db,`
+      SELECT
+        (SELECT count(*)::int FROM salon_chairs
+          WHERE organisation_id=$1 AND shop_id=$2
+            AND ($3::uuid IS NULL OR branch_id=$3)
+            AND status<>'maintenance') AS chairs,
+        (SELECT count(*)::int FROM salon_staff
+          WHERE organisation_id=$1 AND shop_id=$2
+            AND ($3::uuid IS NULL OR branch_id=$3)
+            AND role='barber' AND status='active') AS barbers,
+        (SELECT count(*)::int
+          FROM shop_bookings b
+          LEFT JOIN shop_services s ON s.id=b.service_id
+          WHERE b.organisation_id=$1 AND b.shop_id=$2
+            AND ($3::uuid IS NULL OR b.branch_id=$3)
+            AND b.status NOT IN ('cancelled','no_show','completed')
+            AND ($6::uuid IS NULL OR b.id<>$6)
+            AND b.booked_for < $5::timestamptz
+            AND (b.booked_for + make_interval(mins=>COALESCE(s.duration_minutes,30))) > $4::timestamptz
+        ) AS busy
+    `,[
+      input.organisationId,input.shopId,input.branchId||null,input.bookedFor.toISOString(),endAt.toISOString(),
+      input.ignoreBookingId||null
+    ]);
+    const chairs=Math.max(0,Number(cap?.chairs||0));
+    const barbers=Math.max(0,Number(cap?.barbers||0));
+    const capacity=chairs>0&&barbers>0?Math.min(chairs,barbers):Math.max(chairs,barbers,1);
+    if(Number(cap?.busy||0)>=capacity){
+      const e:any=new Error('The salon is fully booked for the selected time. Please choose another time.');e.statusCode=409;throw e;
+    }
   }
   return{durationMinutes:duration,endAt};
 }
