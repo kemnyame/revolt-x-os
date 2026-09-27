@@ -316,10 +316,27 @@ window.openFinanceForm=function(type){
 };
 
 let roleData=null,selectedRoleKey=null;
+renderAccess=function(){
+  const fallback=['shop_admin','manager','cashier','finance','service','inventory','auditor'].map(key=>({key,name:key.replaceAll('_',' ')}));
+  const roles=roleData?.roles?.length?roleData.roles:fallback;
+  const editable=base.role==='shop_admin';
+  accessTable.innerHTML=table([
+    ['User',u=>'<b>'+esc((u.first_name||'')+' '+(u.last_name||''))+'</b><br><small class="muted">'+esc(u.email)+'</small>'],
+    ['Core status',u=>tag(u.membership_status||u.core_status)],
+    ['Shop role',u=>editable?'<select id="role-'+u.user_id+'">'+roles.map(r=>'<option value="'+esc(r.key)+'" '+(u.shop_role===r.key?'selected':'')+'>'+esc(r.name||r.key.replaceAll('_',' '))+'</option>').join('')+'</select>':tag(u.shop_role||'not assigned')],
+    ['Shop status',u=>editable?'<select id="status-'+u.user_id+'"><option value="active" '+(u.shop_status!=='inactive'?'selected':'')+'>active</option><option value="inactive" '+(u.shop_status==='inactive'?'selected':'')+'>inactive</option></select>':tag(u.shop_status||'not assigned')],
+    ['Action',u=>editable?'<button class="btn sm primary" onclick="saveAccess(\''+u.user_id+'\')">Submit change</button>':'Read only']
+  ],accessUsers||[]);
+};
+saveAccess=function(userId){
+  const role=document.getElementById('role-'+userId).value,status=document.getElementById('status-'+userId).value;
+  openActionPrompt({title:'Change Shop access',notice:'Access changes are controlled and will not apply until approved.',label:'Reason for access change',required:true,button:'Submit for approval',onSubmit:async({text})=>{await api('/api/access/users/'+userId,{method:'PUT',body:JSON.stringify({role,status,reason:text})});showToast('Access change submitted for approval');await loadApprovals()}});
+};
+
 window.loadRoleCapabilities=async function(){
   if(!document.getElementById('roleCapabilityBody'))return;
   try{
-    roleData=await api('/api/access/roles');selectedRoleKey=selectedRoleKey||roleData.roles[0]?.key||null;renderRoleCapabilities();
+    roleData=await api('/api/access/roles');selectedRoleKey=selectedRoleKey||roleData.roles[0]?.key||null;renderRoleCapabilities();renderAccess();const btn=document.querySelector('#roleCapabilityPanel .card-head .primary');if(btn)btn.style.display=base.role==='shop_admin'?'inline-flex':'none';
   }catch(e){roleCapabilityBody.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
 function renderRoleCapabilities(){
