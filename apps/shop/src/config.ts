@@ -15,7 +15,13 @@ const schema=z.object({
   PUBLIC_BASE_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
   PAYSTACK_SECRET_KEY:z.preprocess(emptyToUndefined,z.string().optional()),
   PAYSTACK_CURRENCY:z.string().length(3).default('GHS'),
-  ENABLE_DEMO_LOGIN:bool
+  ENABLE_DEMO_LOGIN:bool,
+  CUSTOMER_PORTAL_SESSION_DAYS:z.coerce.number().int().min(1).max(90).default(30),
+  SMS_WEBHOOK_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
+  SMS_WEBHOOK_TOKEN:z.preprocess(emptyToUndefined,z.string().optional()),
+  WHATSAPP_API_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
+  WHATSAPP_TOKEN:z.preprocess(emptyToUndefined,z.string().optional()),
+  WHATSAPP_PHONE:z.preprocess(emptyToUndefined,z.string().optional())
 });
 
 export type ShopConfig=z.infer<typeof schema>;
