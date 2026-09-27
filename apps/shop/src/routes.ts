@@ -78,9 +78,9 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const a=await authorize(db,config,req,reply,'shops.manage');
     const b=z.object({name:z.string().trim().min(2),slug:z.string().trim().min(2).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),businessType:z.string().default('general_service'),currency:z.string().length(3).default('GHS'),phone:z.string().optional(),email:z.string().email().optional().or(z.literal('')),address:z.string().optional()}).parse(req.body);
     const r=await db.query(
-      `INSERT INTO shops(organisation_id,name,slug,business_type,currency,phone,email,address,created_by)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [a.core.organisation_id,b.name,b.slug,b.businessType,b.currency.toUpperCase(),b.phone||null,b.email||null,b.address||null,a.core.id]
+      `INSERT INTO shops(organisation_id,name,slug,public_slug,business_type,currency,phone,email,address,created_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [a.core.organisation_id,b.name,b.slug,(a.core.organisation_slug+'-'+b.slug).toLowerCase(),b.businessType,b.currency.toUpperCase(),b.phone||null,b.email||null,b.address||null,a.core.id]
     );
     await audit(db,a.core.organisation_id,a.core.id,'shop.created','shop',r.rows[0].id,r.rows[0].id,{name:b.name});
     return reply.code(201).send(r.rows[0]);
@@ -367,7 +367,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
 
   app.get('/api/public/store/:slug',async(req,reply)=>{
     const slug=z.string().min(2).parse((req.params as any).slug);
-    const shop=await maybeOne<any>(db,"SELECT id,name,slug,business_type,currency,phone,email,address FROM shops WHERE slug=$1 AND status='active' ORDER BY created_at DESC LIMIT 1",[slug]);
+    const shop=await maybeOne<any>(db,"SELECT id,name,slug,public_slug,business_type,currency,phone,email,address FROM shops WHERE public_slug=$1 AND status='active' LIMIT 1",[slug]);
     if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
     const [services,products,branches]=await Promise.all([
       db.query('SELECT id,name,category,description,price,duration_minutes,deposit_percent FROM shop_services WHERE shop_id=$1 AND active=true ORDER BY name',[shop.id]),
@@ -379,7 +379,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
 
   app.post('/api/public/store/:slug/bookings',async(req,reply)=>{
     const slug=z.string().min(2).parse((req.params as any).slug);
-    const shop=await maybeOne<any>(db,"SELECT id,organisation_id FROM shops WHERE slug=$1 AND status='active' ORDER BY created_at DESC LIMIT 1",[slug]);
+    const shop=await maybeOne<any>(db,"SELECT id,organisation_id FROM shops WHERE public_slug=$1 AND status='active' LIMIT 1",[slug]);
     if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
     const b=z.object({branchId:uuid.optional(),serviceId:uuid.optional(),customerName:z.string().trim().min(2),phone:z.string().min(6),email:z.string().email().optional().or(z.literal('')),bookedFor:z.coerce.date(),notes:z.string().optional()}).parse(req.body);
     const r=await db.query(
