@@ -214,7 +214,10 @@ export async function assertSalonBookingAvailability(
     ]);
     const chairs=Math.max(0,Number(cap?.chairs||0));
     const barbers=Math.max(0,Number(cap?.barbers||0));
-    const capacity=chairs>0&&barbers>0?Math.min(chairs,barbers):Math.max(chairs,barbers,1);
+    const capacity=Math.min(chairs,barbers);
+    if(capacity<=0){
+      const e:any=new Error('No active barber and chair capacity is configured for this branch.');e.statusCode=409;throw e;
+    }
     if(Number(cap?.busy||0)>=capacity){
       const e:any=new Error('The salon is fully booked for the selected time. Please choose another time.');e.statusCode=409;throw e;
     }
