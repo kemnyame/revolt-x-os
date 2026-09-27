@@ -264,6 +264,15 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     }).parse(req.body);
     let queueNo:null|number=null;
     let status='booked';
+    await assertSalonBookingAvailability(db,{
+      organisationId:a.core.organisation_id,
+      shopId:b.shopId,
+      branchId:b.branchId||null,
+      bookedFor:b.bookedFor,
+      serviceId:b.serviceId||null,
+      staffId:b.staffId||null,
+      chairId:b.chairId||null
+    });
     if(b.appointmentType==='walk_in'){
       const q=await db.query("SELECT queue_number FROM shop_bookings WHERE organisation_id=$1 AND shop_id=$2 AND booked_for::date=CURRENT_DATE AND appointment_type='walk_in'",[a.core.organisation_id,b.shopId]);
       queueNo=nextQueue(q.rows);status='queued';
