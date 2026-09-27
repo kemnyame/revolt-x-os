@@ -1,5 +1,5 @@
 export function loginHtml(){
-  return \`<!doctype html>
+  return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revolt-X Shop</title>
 <style>
@@ -16,11 +16,11 @@ button{width:100%;margin-top:20px;border:0;border-radius:12px;padding:13px 16px;
 <section class="login"><h2>Sign in</h2><div class="muted">Use your Revolt-X OS account.</div><form id="f"><label>Email</label><input id="email" type="email" required autocomplete="username"><label>Password</label><input id="password" type="password" required autocomplete="current-password"><button>Continue to workspace</button><div id="err" class="err"></div></form></section></div>
 <script>
 document.getElementById('f').addEventListener('submit',async(e)=>{e.preventDefault();const err=document.getElementById('err');err.textContent='Signing in...';const r=await fetch('/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});const b=await r.json().catch(()=>({}));if(!r.ok){err.textContent=b?.error?.message||'Sign in failed';return}location.href='/'});
-</script></body></html>\`;
+</script></body></html>`;
 }
 
 export function appHtml(){
-  return \`<!doctype html>
+  return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revolt-X Shop</title>
 <style>
@@ -99,13 +99,13 @@ async function loadReport(){try{const r=await api('/api/reports/finance');report
 nav.addEventListener('click',e=>{const b=e.target.closest('button[data-p]');if(!b)return;document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(b.dataset.p).classList.add('active');if(b.dataset.p==='reports')loadReport()});
 logout.onclick=async()=>{await fetch('/auth/logout',{method:'POST'});location.href='/login'};
 reload().catch(e=>{if(!String(e.message).includes('Session'))alert(e.message)});
-</script></body></html>\`;
+</script></body></html>`;
 }
 
 export function storefrontHtml(slug:string){
   const safe=JSON.stringify(slug);
-  return \`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shop</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shop</title>
 <style>*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui;background:#f6f8fb;color:#17243a}.hero{background:linear-gradient(135deg,#071425,#123b67);color:#fff;padding:50px 7vw}.hero h1{font-size:42px;margin:8px 0}.wrap{max-width:1100px;margin:0 auto;padding:28px 20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.card{background:#fff;border:1px solid #e0e7ef;border-radius:16px;padding:18px}.price{font-size:22px;font-weight:900;color:#2563eb}.book{display:grid;grid-template-columns:1fr 1fr;gap:12px}.book input,.book select,.book textarea{width:100%;padding:11px;border:1px solid #d5deea;border-radius:10px}.wide{grid-column:1/-1}button{background:#2563eb;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer}@media(max-width:760px){.grid{grid-template-columns:1fr}.book{grid-template-columns:1fr}.wide{grid-column:auto}}</style></head><body>
 <div class="hero"><div>Powered by Revolt-X Shop</div><h1 id="name">Loading shop...</h1><div id="contact"></div></div><div class="wrap"><h2>Services</h2><div class="grid" id="services"></div><h2 style="margin-top:34px">Book a service</h2><div class="card"><form id="book" class="book"><div><label>Name</label><input name="customerName" required></div><div><label>Phone</label><input name="phone" required></div><div><label>Email</label><input name="email" type="email"></div><div><label>Service</label><select name="serviceId" id="svc"></select></div><div class="wide"><label>Date & time</label><input name="bookedFor" type="datetime-local" required></div><div class="wide"><label>Notes</label><textarea name="notes"></textarea></div><div class="wide"><button>Confirm booking</button></div></form><div id="msg"></div></div></div>
-<script>const slug=\${safe};let data;fetch('/api/public/store/'+encodeURIComponent(slug)).then(r=>r.json()).then(x=>{data=x;name.textContent=x.shop.name;contact.textContent=[x.shop.phone,x.shop.email,x.shop.address].filter(Boolean).join(' · ');services.innerHTML=x.services.map(s=>'<div class="card"><b>'+s.name+'</b><p>'+(s.description||'')+'</p><div class="price">GHS '+Number(s.price).toFixed(2)+'</div><small>'+s.duration_minutes+' minutes</small></div>').join('')||'<p>No services published yet.</p>';svc.innerHTML='<option value="">Select service</option>'+x.services.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')});book.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(book));f.bookedFor=new Date(f.bookedFor).toISOString();if(!f.serviceId)delete f.serviceId;const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(f)});const b=await r.json();msg.textContent=r.ok?'Booking confirmed. Reference: '+b.id:(b?.error?.message||'Booking failed');if(r.ok)book.reset()}</script></body></html>\`;
+<script>const slug=${safe};let data;fetch('/api/public/store/'+encodeURIComponent(slug)).then(r=>r.json()).then(x=>{data=x;name.textContent=x.shop.name;contact.textContent=[x.shop.phone,x.shop.email,x.shop.address].filter(Boolean).join(' · ');services.innerHTML=x.services.map(s=>'<div class="card"><b>'+s.name+'</b><p>'+(s.description||'')+'</p><div class="price">GHS '+Number(s.price).toFixed(2)+'</div><small>'+s.duration_minutes+' minutes</small></div>').join('')||'<p>No services published yet.</p>';svc.innerHTML='<option value="">Select service</option>'+x.services.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')});book.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(book));f.bookedFor=new Date(f.bookedFor).toISOString();if(!f.serviceId)delete f.serviceId;const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(f)});const b=await r.json();msg.textContent=r.ok?'Booking confirmed. Reference: '+b.id:(b?.error?.message||'Booking failed');if(r.ok)book.reset()}</script></body></html>`;
 }
