@@ -712,24 +712,82 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
 
   app.post('/api/salon/eod',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'finance.manage');
-    const b=z.object({shopId:uuid,branchId:uuid.optional(),openingCash:money.default(0),actualCash:money,notes:z.string().optional()}).parse(req.body);
-    const params=[a.core.organisation_id,b.shopId,b.branchId||null];
-    const p=await db.query(`SELECT
-      coalesce(sum(CASE WHEN method='cash' AND status='successful' THEN amount ELSE 0 END),0) cash,
-      coalesce(sum(CASE WHEN method='mobile_money' AND status='successful' THEN amount ELSE 0 END),0) momo,
-      coalesce(sum(CASE WHEN method='card' AND status='successful' THEN amount ELSE 0 END),0) card,
-      coalesce(sum(CASE WHEN method='bank_transfer' AND status='successful' THEN amount ELSE 0 END),0) bank,
-      coalesce(sum(CASE WHEN status='successful' THEN amount ELSE 0 END),0) total
-      FROM shop_payments WHERE organisation_id=$1 AND shop_id=$2 AND ($3::uuid IS NULL OR branch_id=$3) AND created_at::date=CURRENT_DATE`,params);
-    const e=await db.query(`SELECT coalesce(sum(amount),0) total FROM shop_expenses WHERE organisation_id=$1 AND shop_id=$2 AND ($3::uuid IS NULL OR branch_id=$3) AND expense_date=CURRENT_DATE`,params);
-    const pay=p.rows[0], expenses=Number(e.rows[0].total||0);
-    const expected=Number(b.openingCash)+Number(pay.cash||0)-expenses;
+    const b=z.object({
+      shopId:uuid,
+      branchId:uuid,
+      openingCash:money.default(0),
+      actualCash:money,
+      notes:z.string().max(2000).optional()
+    }).parse(req.body);
+
+    const branch=await maybeOne<any>(
+      db,
+      'SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status=\'active\'',
+      [b.branchId,b.shopId,a.core.organisation_id]
+    );
+    if(!branch)return reply.code(400).send({error:{message:'Selected branch is not active for this salon.'}});
+
+    const params=[a.core.organisation_id,b.shopId,b.branchId];
+    const [payments,expenses]=await Promise.all([
+      db.query(`
+        SELECT
+          coalesce(sum(CASE WHEN method='cash' AND status='successful' THEN amount ELSE 0 END),0) cash,
+          coalesce(sum(CASE WHEN method='mobile_money' AND status='successful' THEN amount ELSE 0 END),0) momo,
+          coalesce(sum(CASE WHEN method='card' AND status='successful' THEN amount ELSE 0 END),0) card,
+          coalesce(sum(CASE WHEN method='bank_transfer' AND status='successful' THEN amount ELSE 0 END),0) bank,
+          coalesce(sum(CASE WHEN status='successful' THEN amount ELSE 0 END),0) total
+        FROM shop_payments
+        WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+          AND created_at::date=CURRENT_DATE`,params),
+      db.query(`
+        SELECT
+          coalesce(sum(amount),0) total,
+          coalesce(sum(CASE WHEN payment_method='cash' THEN amount ELSE 0 END),0) cash
+        FROM shop_expenses
+        WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+          AND expense_date=CURRENT_DATE`,params)
+    ]);
+
+    const pay=payments.rows[0];
+    const exp=expenses.rows[0];
+    const totalExpenses=Number(exp.total||0);
+    const cashExpenses=Number(exp.cash||0);
+    const expected=Number(b.openingCash)+Number(pay.cash||0)-cashExpenses;
     const variance=Number(b.actualCash)-expected;
-    const r=await db.query(`INSERT INTO salon_eod_closures(organisation_id,shop_id,branch_id,business_date,opening_cash,expected_cash,actual_cash,variance,momo_total,card_total,bank_total,total_sales,total_expenses,notes,closed_by)
+
+    const r=await db.query(`
+      INSERT INTO salon_eod_closures(
+        organisation_id,shop_id,branch_id,business_date,opening_cash,expected_cash,actual_cash,variance,
+        momo_total,card_total,bank_total,total_sales,total_expenses,notes,closed_by
+      )
       VALUES($1,$2,$3,CURRENT_DATE,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      ON CONFLICT(shop_id,branch_id,business_date) DO UPDATE SET opening_cash=EXCLUDED.opening_cash,expected_cash=EXCLUDED.expected_cash,actual_cash=EXCLUDED.actual_cash,variance=EXCLUDED.variance,momo_total=EXCLUDED.momo_total,card_total=EXCLUDED.card_total,bank_total=EXCLUDED.bank_total,total_sales=EXCLUDED.total_sales,total_expenses=EXCLUDED.total_expenses,notes=EXCLUDED.notes,closed_by=EXCLUDED.closed_by,closed_at=now()
+      ON CONFLICT(shop_id,branch_id,business_date) DO UPDATE SET
+        opening_cash=EXCLUDED.opening_cash,
+        expected_cash=EXCLUDED.expected_cash,
+        actual_cash=EXCLUDED.actual_cash,
+        variance=EXCLUDED.variance,
+        momo_total=EXCLUDED.momo_total,
+        card_total=EXCLUDED.card_total,
+        bank_total=EXCLUDED.bank_total,
+        total_sales=EXCLUDED.total_sales,
+        total_expenses=EXCLUDED.total_expenses,
+        notes=EXCLUDED.notes,
+        closed_by=EXCLUDED.closed_by,
+        closed_at=now()
       RETURNING *`,
-      [a.core.organisation_id,b.shopId,b.branchId||null,b.openingCash,expected,b.actualCash,variance,pay.momo,pay.card,pay.bank,pay.total,expenses,b.notes||null,a.core.id]);
+      [
+        a.core.organisation_id,b.shopId,b.branchId,b.openingCash,expected,b.actualCash,variance,
+        pay.momo,pay.card,pay.bank,pay.total,totalExpenses,b.notes||null,a.core.id
+      ]
+    );
+
+    await db.query(
+      `INSERT INTO shop_audit_logs(
+        organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata
+      )
+      VALUES($1,$2,'finance.day_closed','salon_eod',$3,$4,$5,$6)`,
+      [a.core.organisation_id,a.core.id,r.rows[0].id,b.shopId,b.branchId,JSON.stringify({expectedCash:expected,actualCash:b.actualCash,variance,cashExpenses,totalExpenses})]
+    );
     return reply.code(201).send(r.rows[0]);
   });
 
