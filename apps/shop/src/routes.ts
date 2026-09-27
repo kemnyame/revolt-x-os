@@ -443,38 +443,110 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   });
 
   app.get('/api/payments/:reference/verify',async(req,reply)=>{
-    const a=await authorize(db,config,req,reply,'payments.read');
+    const a=await authorize(db,config,req,reply,'payments.create');
     if(!config.PAYSTACK_SECRET_KEY)return reply.code(503).send({error:{message:'Online payment provider is not configured'}});
     const reference=z.string().min(3).parse((req.params as any).reference);
     const p=await maybeOne<any>(db,'SELECT * FROM shop_payments WHERE reference=$1 AND organisation_id=$2',[reference,a.core.organisation_id]);
     if(!p)return reply.code(404).send({error:{message:'Payment not found'}});
     if(p.provider!=='paystack')return p;
+
     const ps=await fetch('https://api.paystack.co/transaction/verify/'+encodeURIComponent(reference),{
-      headers:{authorization:'Bearer '+config.PAYSTACK_SECRET_KEY},signal:AbortSignal.timeout(15000)
+      headers:{authorization:'Bearer '+config.PAYSTACK_SECRET_KEY},
+      signal:AbortSignal.timeout(15000)
     });
     const data=await ps.json() as any;
     if(!ps.ok||!data?.status)return reply.code(502).send({error:{message:data?.message||'Payment verification failed'}});
-    const successful=data.data?.status==='success';
-    await tx(db,async c=>{
-      await c.query(
-        `UPDATE shop_payments SET status=$1,provider_reference=$2,fee=$3,settlement_amount=$4,paid_at=CASE WHEN $1='successful' THEN coalesce(paid_at,now()) ELSE paid_at END,raw_json=$5
-         WHERE id=$6`,
-        [successful?'successful':data.data?.status||'pending',String(data.data?.id||p.provider_reference||reference),Number(data.data?.fees||0)/100,successful?Math.max(0,Number(p.amount)-Number(data.data?.fees||0)/100):null,data,p.id]
+
+    const providerStatus=String(data.data?.status||'pending');
+    const successful=providerStatus==='success';
+    const receivedAmount=Math.round(Number(data.data?.amount||0));
+    const expectedAmount=Math.round(Number(p.amount||0)*100);
+    const receivedCurrency=String(data.data?.currency||'').toUpperCase();
+    const expectedCurrency=String(p.currency||config.PAYSTACK_CURRENCY).toUpperCase();
+    const providerFee=Math.max(0,Number(data.data?.fees||0)/100);
+
+    if(successful&&(receivedAmount!==expectedAmount||receivedCurrency!==expectedCurrency)){
+      await db.query(
+        `UPDATE shop_payments
+         SET status='review_required',provider_reference=$1,raw_json=$2
+         WHERE id=$3 AND organisation_id=$4`,
+        [String(data.data?.id||p.provider_reference||reference),data,p.id,a.core.organisation_id]
       );
-      if(successful&&p.order_id){
-        const posted=await c.query("SELECT 1 FROM shop_ledger_entries WHERE source_type='payment' AND source_id=$1 LIMIT 1",[p.id]);
+      await audit(db,a.core.organisation_id,a.core.id,'payment.amount_mismatch','payment',p.id,p.shop_id,{
+        reference,expectedAmount,receivedAmount,expectedCurrency,receivedCurrency
+      });
+      return reply.code(409).send({error:{message:'Payment provider amount or currency does not match the invoice. The transaction has been flagged for review.'}});
+    }
+
+    await tx(db,async client=>{
+      const locked=await client.query(
+        'SELECT * FROM shop_payments WHERE id=$1 AND organisation_id=$2 FOR UPDATE',
+        [p.id,a.core.organisation_id]
+      );
+      if(!locked.rowCount)return;
+      const current=locked.rows[0];
+
+      await client.query(
+        `UPDATE shop_payments SET
+           status=$1,
+           provider_reference=$2,
+           fee=$3,
+           settlement_amount=$4,
+           paid_at=CASE WHEN $1='successful' THEN coalesce(paid_at,now()) ELSE paid_at END,
+           raw_json=$5
+         WHERE id=$6`,
+        [
+          successful?'successful':providerStatus,
+          String(data.data?.id||current.provider_reference||reference),
+          providerFee,
+          successful?Math.max(0,Number(current.amount)-providerFee):null,
+          data,
+          current.id
+        ]
+      );
+
+      if(successful&&current.order_id){
+        const posted=await client.query(
+          "SELECT 1 FROM shop_ledger_entries WHERE source_type='payment' AND source_id=$1 LIMIT 1",
+          [current.id]
+        );
         if(!posted.rowCount){
-          await c.query(
-            `INSERT INTO shop_ledger_entries(organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,source_type,source_id,reference,description)
-             VALUES($1,$2,$3,'1010','Payment Gateway Settlement',$4,0,'payment',$5,$6,'Online customer payment'),
-                   ($1,$2,$3,'4000','Sales Revenue',0,$4,'payment',$5,$6,'Online customer payment')`,
-            [p.organisation_id,p.shop_id,p.branch_id,p.amount,p.id,p.reference]
+          await client.query(
+            `INSERT INTO shop_ledger_entries(
+              organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,
+              source_type,source_id,reference,description
+            )
+            VALUES
+              ($1,$2,$3,'1010','Payment Gateway Settlement',$4,0,'payment',$5,$6,'Online customer payment'),
+              ($1,$2,$3,'4000','Sales Revenue',0,$4,'payment',$5,$6,'Online customer payment')`,
+            [current.organisation_id,current.shop_id,current.branch_id,current.amount,current.id,current.reference]
           );
         }
-        await updateOrderPaid(c,p.order_id);
+
+        if(providerFee>0){
+          const feePosted=await client.query(
+            "SELECT 1 FROM shop_ledger_entries WHERE source_type='payment_fee' AND source_id=$1 LIMIT 1",
+            [current.id]
+          );
+          if(!feePosted.rowCount){
+            await client.query(
+              `INSERT INTO shop_ledger_entries(
+                organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,
+                source_type,source_id,reference,description
+              )
+              VALUES
+                ($1,$2,$3,'5100','Payment Processing Fees',$4,0,'payment_fee',$5,$6,'Payment gateway fee'),
+                ($1,$2,$3,'1010','Payment Gateway Settlement',0,$4,'payment_fee',$5,$6,'Payment gateway fee')`,
+              [current.organisation_id,current.shop_id,current.branch_id,providerFee,current.id,current.reference]
+            );
+          }
+        }
+        await updateOrderPaid(client,current.order_id);
       }
     });
-    return maybeOne<any>(db,'SELECT * FROM shop_payments WHERE id=$1',[p.id]);
+
+    await audit(db,a.core.organisation_id,a.core.id,'payment.verified','payment',p.id,p.shop_id,{reference,status:providerStatus});
+    return maybeOne<any>(db,'SELECT * FROM shop_payments WHERE id=$1 AND organisation_id=$2',[p.id,a.core.organisation_id]);
   });
 
   app.post('/api/expenses',async(req,reply)=>{
