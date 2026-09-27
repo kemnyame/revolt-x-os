@@ -305,6 +305,54 @@ async function autoCloseEod(db:Db){
   return{autoClosed:eligible.rowCount??0};
 }
 
+async function queueAppointmentReminders(db:Db,config:ShopConfig){
+  const appointments=await db.query(`
+    SELECT b.id,b.organisation_id,b.shop_id,b.branch_id,b.booked_for,
+           c.id customer_id,c.name customer_name,c.phone,c.email,c.sms_opt_in,c.whatsapp_opt_in,
+           s.name service_name,sh.name shop_name,coalesce(ss.timezone,'Africa/Accra') timezone,
+           st.full_name barber_name
+    FROM shop_bookings b
+    JOIN shop_customers c ON c.id=b.customer_id
+    LEFT JOIN shop_services s ON s.id=b.service_id
+    JOIN shops sh ON sh.id=b.shop_id
+    LEFT JOIN salon_settings ss ON ss.shop_id=b.shop_id
+    LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
+    WHERE b.status='booked'
+      AND b.booked_for BETWEEN now()+interval '23 hours' AND now()+interval '25 hours'
+      AND c.phone IS NOT NULL
+  `);
+  let queued=0,skipped=0;
+  for(const appt of appointments.rows){
+    let channel:'whatsapp'|'sms'|null=null;
+    if(config.WHATSAPP_API_URL&&appt.whatsapp_opt_in)channel='whatsapp';
+    else if(config.SMS_WEBHOOK_URL&&appt.sms_opt_in)channel='sms';
+    if(!channel){skipped++;continue;}
+    const key='appointment_reminder_24h:'+appt.id+':'+channel;
+    const existing=await maybeOne<any>(db,'SELECT id FROM shop_communication_outbox WHERE organisation_id=$1 AND automation_key=$2',[appt.organisation_id,key]);
+    if(existing){skipped++;continue;}
+    let formatted='';
+    try{
+      formatted=new Intl.DateTimeFormat('en-GH',{
+        timeZone:appt.timezone||'Africa/Accra',weekday:'short',day:'numeric',month:'short',hour:'numeric',minute:'2-digit'
+      }).format(new Date(appt.booked_for));
+    }catch{
+      formatted=new Date(appt.booked_for).toLocaleString();
+    }
+    const barber=appt.barber_name?' with '+appt.barber_name:'';
+    const body='Hello '+appt.customer_name+', reminder from '+appt.shop_name+': your '+(appt.service_name||'appointment')+barber+' is scheduled for '+formatted+'. Please use your customer portal if you need to reschedule or cancel.';
+    await db.query(`
+      INSERT INTO shop_communication_outbox(
+        organisation_id,shop_id,branch_id,customer_id,channel,recipient,body,automation_key,metadata
+      )
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+      ON CONFLICT(organisation_id,automation_key) WHERE automation_key IS NOT NULL DO NOTHING`,
+      [appt.organisation_id,appt.shop_id,appt.branch_id,appt.customer_id,channel,appt.phone,body,key,JSON.stringify({bookingId:appt.id,event:'appointment.reminder.24h'})]
+    );
+    queued++;
+  }
+  return{candidates:appointments.rowCount??0,queued,skipped};
+}
+
 async function dispatchOutbox(db:Db,config:ShopConfig,limit=50){
   const rows=await db.query(
     `SELECT * FROM shop_communication_outbox
@@ -347,13 +395,14 @@ async function dispatchOutbox(db:Db,config:ShopConfig,limit=50){
 }
 
 export async function runShopAutomations(db:Db,config:ShopConfig){
-  const [customers,inventory,eod,outbox]=await Promise.all([
+  const [customers,inventory,eod,reminders]=await Promise.all([
     syncCustomerLifecycle(db),
     syncInventoryAlerts(db),
     autoCloseEod(db),
-    dispatchOutbox(db,config)
+    queueAppointmentReminders(db,config)
   ]);
-  return{customers,inventory,eod,outbox};
+  const outbox=await dispatchOutbox(db,config);
+  return{customers,inventory,eod,reminders,outbox};
 }
 
 async function customerContext(db:Db,request:FastifyRequest){
