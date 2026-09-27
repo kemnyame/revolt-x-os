@@ -1298,6 +1298,29 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     return r.rows[0];
   });
 
+  app.get('/api/tickets/:id/comments',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'tickets.manage');
+    const id=uuid.parse((req.params as any).id);
+    const ticket=await maybeOne<any>(db,'SELECT id FROM shop_tickets WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!ticket)return reply.code(404).send({error:{message:'Ticket not found'}});
+    return (await db.query('SELECT * FROM shop_ticket_comments WHERE ticket_id=$1 ORDER BY created_at',[id])).rows;
+  });
+
+  app.post('/api/tickets/:id/comments',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'tickets.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({body:z.string().trim().min(1).max(5000)}).parse(req.body);
+    const ticket=await maybeOne<any>(db,'SELECT * FROM shop_tickets WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!ticket)return reply.code(404).send({error:{message:'Ticket not found'}});
+    const r=await db.query(
+      `INSERT INTO shop_ticket_comments(ticket_id,author_type,author_id,body)
+       VALUES($1,'staff',$2,$3) RETURNING *`,
+      [id,a.core.id,b.body]
+    );
+    await db.query("UPDATE shop_tickets SET updated_at=now() WHERE id=$1",[id]);
+    return reply.code(201).send(r.rows[0]);
+  });
+
   app.get('/api/pos/devices',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'sales.manage');
     const shopId=(req.query as any)?.shopId||null;
@@ -1564,6 +1587,47 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     return reply.code(201).send(r.rows[0]);
   });
 
+  app.patch('/api/customer-portal/appointments/:id/reschedule',async(req,reply)=>{
+    const customer=await customerContext(db,req);
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({
+      branchId:uuid.optional(),serviceId:uuid,staffId:uuid.optional().nullable(),
+      bookedFor:z.coerce.date(),notes:z.string().max(2000).optional().nullable()
+    }).parse(req.body);
+    const current=await maybeOne<any>(db,'SELECT * FROM shop_bookings WHERE id=$1 AND customer_id=$2 AND shop_id=$3',[id,customer.customer_id,customer.shop_id]);
+    if(!current)return reply.code(404).send({error:{message:'Appointment not found'}});
+    if(!['booked','queued'].includes(current.status))return reply.code(409).send({error:{message:'Only upcoming appointments can be rescheduled online'}});
+    const branchId=b.branchId||current.branch_id;
+    await assertSalonBookingAvailability(db,{
+      organisationId:customer.organisation_id,shopId:customer.shop_id,branchId,
+      bookedFor:b.bookedFor,serviceId:b.serviceId,staffId:b.staffId||null,ignoreBookingId:id
+    });
+    const r=await db.query(`
+      UPDATE shop_bookings SET branch_id=$1,service_id=$2,salon_staff_id=$3,booked_for=$4,
+       notes=CASE WHEN $5 THEN $6 ELSE notes END,status='booked'
+      WHERE id=$7 AND customer_id=$8 AND shop_id=$9 RETURNING *`,
+      [branchId,b.serviceId,b.staffId||null,b.bookedFor,Object.prototype.hasOwnProperty.call(b,'notes'),b.notes??null,id,customer.customer_id,customer.shop_id]
+    );
+    await audit(db,customer.organisation_id,null,'customer.appointment_rescheduled','booking',id,customer.shop_id,branchId,{customerId:customer.customer_id,bookedFor:b.bookedFor});
+    return r.rows[0];
+  });
+
+  app.patch('/api/customer-portal/appointments/:id/cancel',async(req,reply)=>{
+    const customer=await customerContext(db,req);
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({reason:z.string().trim().min(2).max(1000).optional()}).parse(req.body||{});
+    const r=await db.query(`
+      UPDATE shop_bookings SET status='cancelled',
+       notes=concat_ws(E'\\n',notes,$1)
+      WHERE id=$2 AND customer_id=$3 AND shop_id=$4 AND status IN('booked','queued')
+      RETURNING *`,
+      [b.reason?'Customer cancellation: '+b.reason:null,id,customer.customer_id,customer.shop_id]
+    );
+    if(!r.rowCount)return reply.code(409).send({error:{message:'This appointment cannot be cancelled online'}});
+    await audit(db,customer.organisation_id,null,'customer.appointment_cancelled','booking',id,customer.shop_id,r.rows[0].branch_id,{customerId:customer.customer_id,reason:b.reason||null});
+    return r.rows[0];
+  });
+
   app.get('/api/customer-portal/messages',async(req,reply)=>{
     const c=await customerContext(db,req);
     let conv=await maybeOne<any>(db,"SELECT * FROM shop_conversations WHERE customer_id=$1 AND shop_id=$2 AND channel='in_app' AND status<>'closed' ORDER BY created_at LIMIT 1",[c.customer_id,c.shop_id]);
@@ -1592,6 +1656,29 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
       VALUES($1,$2,$3,$4,$5,'customer_portal',$6,$7,$8,$9) RETURNING *`,
       [c.organisation_id,c.shop_id,c.branch_id,c.customer_id,code('TKT'),b.category,b.subject,b.description,b.priority]
     );
+    return reply.code(201).send(r.rows[0]);
+  });
+
+  app.get('/api/customer-portal/tickets/:id/comments',async(req,reply)=>{
+    const customer=await customerContext(db,req);
+    const id=uuid.parse((req.params as any).id);
+    const ticket=await maybeOne<any>(db,'SELECT id FROM shop_tickets WHERE id=$1 AND customer_id=$2 AND shop_id=$3',[id,customer.customer_id,customer.shop_id]);
+    if(!ticket)return reply.code(404).send({error:{message:'Ticket not found'}});
+    return (await db.query('SELECT * FROM shop_ticket_comments WHERE ticket_id=$1 ORDER BY created_at',[id])).rows;
+  });
+
+  app.post('/api/customer-portal/tickets/:id/comments',async(req,reply)=>{
+    const customer=await customerContext(db,req);
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({body:z.string().trim().min(1).max(5000)}).parse(req.body);
+    const ticket=await maybeOne<any>(db,'SELECT * FROM shop_tickets WHERE id=$1 AND customer_id=$2 AND shop_id=$3',[id,customer.customer_id,customer.shop_id]);
+    if(!ticket)return reply.code(404).send({error:{message:'Ticket not found'}});
+    const r=await db.query(
+      `INSERT INTO shop_ticket_comments(ticket_id,author_type,author_id,body)
+       VALUES($1,'customer',$2,$3) RETURNING *`,
+      [id,customer.customer_id,b.body]
+    );
+    if(ticket.status==='waiting_customer')await db.query("UPDATE shop_tickets SET status='in_progress',updated_at=now() WHERE id=$1",[id]);
     return reply.code(201).send(r.rows[0]);
   });
 
