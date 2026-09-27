@@ -36,6 +36,7 @@ function injectNav(groupTitle,page,label,icon){
 injectNav('Salon','retention','Retention & Inactive','↺');
 injectNav('Salon','communications','Customer Messages','✉');
 injectNav('Commerce','assets','Assets & Equipment','⚒');
+injectNav('Commerce','procurement','Procurement','⇄');
 injectNav('Commerce','tickets','Ticketing','◫');
 injectNav('Commerce','posdevices','POS Devices','▦');
 injectNav('Administration','approvals','Approvals','✓');
@@ -47,6 +48,8 @@ contentRoot?.insertAdjacentHTML('beforeend',`
 <section class="page" id="communications"><div class="page-head"><div><h1>Customer Communication Centre</h1><p>In-app customer chat with SMS, email and WhatsApp hand-off.</p></div><button class="btn" onclick="loadConversations()">Refresh</button></div><div class="chat-layout"><div class="card"><div class="card-head"><h3>Conversations</h3></div><div class="conversation-list" id="conversationList"></div></div><div class="card"><div class="card-head"><div><h3 id="conversationTitle">Select a conversation</h3><small id="conversationContact"></small></div><a id="conversationWhatsApp" class="btn sm soft" target="_blank" rel="noopener" style="display:none">WhatsApp</a></div><div class="admin-chat" id="conversationMessages"><div class="empty">Choose a customer conversation.</div></div><form id="conversationReplyForm" class="form-grid" style="margin-top:10px"><input type="hidden" id="activeConversationId"><div class="field wide"><label>Reply</label><textarea id="conversationReply" required placeholder="Type your reply"></textarea></div><div class="field"><label>Send via</label><select id="conversationChannel"><option value="in_app">In-app chat</option><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option><option value="email">Email</option></select></div><div class="field"><label>&nbsp;</label><button class="btn primary" style="width:100%">Send reply</button></div></form></div></div></section>
 
 <section class="page" id="assets"><div class="page-head"><div><h1>Assets & Equipment</h1><p>Track barber chairs, clippers, dryers, sterilizers, generators, POS hardware and maintenance.</p></div><button class="btn primary" onclick="openModal('assetModal')">+ Equipment</button></div><div class="enterprise-grid"><div class="card"><div class="card-head"><h3>Equipment register</h3></div><div id="assetTable"></div></div><div class="card"><div class="card-head"><h3>Inventory & maintenance alerts</h3></div><div id="enterpriseAlerts"></div></div></div></section>
+
+<section class="page" id="procurement"><div class="page-head"><div><h1>Procurement</h1><p>Supplier purchase orders, approvals, goods receiving and automatic stock updates.</p></div><button class="btn primary" onclick="openPurchaseOrder()">+ Purchase order</button></div><div class="enterprise-grid"><div class="card"><div class="card-head"><h3>Purchase orders</h3><button class="btn sm" onclick="loadProcurement()">Refresh</button></div><div id="purchaseOrderTable"></div></div><div class="card"><div class="card-head"><h3>Goods receipts</h3><small>Stock received from approved POs</small></div><div id="goodsReceiptTable"></div></div></div></section>
 
 <section class="page" id="tickets"><div class="page-head"><div><h1>Ticketing & Requests</h1><p>Track customer complaints, appointment issues, payment queries and internal service requests.</p></div><button class="btn primary" onclick="openModal('ticketModal')">+ Ticket</button></div><div class="card"><div id="ticketTable"></div></div></section>
 
@@ -61,6 +64,8 @@ document.body.insertAdjacentHTML('beforeend',`
 <div class="modal-backdrop" id="serviceEditModal"><div class="modal"><div class="modal-head"><h3>Edit service & submit for approval</h3><button class="xbtn" onclick="closeModal('serviceEditModal')">×</button></div><form id="serviceEditForm" class="form-grid"><input type="hidden" id="editServiceId"><div class="field wide"><label>Service name</label><input id="editServiceName" required></div><div class="field"><label>Category</label><input id="editServiceCategory"></div><div class="field"><label>Price (GHS)</label><input id="editServicePrice" type="number" step="0.01" min="0" required></div><div class="field"><label>Duration minutes</label><input id="editServiceDuration" type="number" min="5" required></div><div class="field"><label>Deposit %</label><input id="editServiceDeposit" type="number" min="0" max="100"></div><div class="field wide"><label>Description</label><textarea id="editServiceDescription"></textarea></div><div class="field wide"><label>Reason for change</label><textarea id="editServiceReason" required placeholder="Why is this price or service being changed?"></textarea></div><div class="field wide"><div class="notice">The live service and customer portal remain unchanged until this request is approved.</div></div><div class="field wide"><button class="btn primary" style="width:100%">Submit change for approval</button></div></form></div></div>
 <div class="modal-backdrop" id="assetModal"><div class="modal"><div class="modal-head"><h3>Add equipment / asset</h3><button class="xbtn" onclick="closeModal('assetModal')">×</button></div><form id="assetForm" class="form-grid"><div class="field"><label>Asset number</label><input name="assetNo" required placeholder="EQ-001"></div><div class="field"><label>Name</label><input name="name" required></div><div class="field"><label>Category</label><input name="category" required placeholder="Clipper, Chair, Dryer, POS"></div><div class="field"><label>Brand</label><input name="brand"></div><div class="field"><label>Model</label><input name="model"></div><div class="field"><label>Serial number</label><input name="serialNumber"></div><div class="field"><label>Purchase cost</label><input name="purchaseCost" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Next service date</label><input name="nextServiceDate" type="date"></div><div class="field wide"><label>Notes</label><textarea name="notes"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Add equipment</button></div></form></div></div>
 <div class="modal-backdrop" id="maintenanceModal"><div class="modal"><div class="modal-head"><h3>Record equipment maintenance</h3><button class="xbtn" onclick="closeModal('maintenanceModal')">×</button></div><form id="maintenanceForm" class="form-grid"><input type="hidden" id="maintenanceAssetId"><div class="field"><label>Maintenance type</label><input id="maintenanceType" required placeholder="Service / Repair"></div><div class="field"><label>Cost</label><input id="maintenanceCost" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Vendor</label><input id="maintenanceVendor"></div><div class="field"><label>Next service date</label><input id="maintenanceNext" type="date"></div><div class="field wide"><label>Description</label><textarea id="maintenanceDescription"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Save maintenance</button></div></form></div></div>
+<div class="modal-backdrop" id="purchaseOrderModal"><div class="modal" style="width:min(820px,97vw)"><div class="modal-head"><h3>Create purchase order</h3><button class="xbtn" onclick="closeModal('purchaseOrderModal')">×</button></div><form id="purchaseOrderForm" class="form-grid"><div class="field"><label>Supplier</label><select id="poVendor"></select></div><div class="field"><label>Expected date</label><input id="poExpectedDate" type="date"></div><div class="field wide"><label>Notes</label><input id="poNotes"></div><div class="field wide"><div class="card" style="padding:12px"><div class="card-head"><h4 style="margin:0">Items</h4><button class="btn sm" type="button" onclick="addPoLine()">+ Line</button></div><div id="poLines"></div></div></div><div class="field"><label>Tax / levy (GHS)</label><input id="poTax" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>&nbsp;</label><button class="btn primary" style="width:100%">Save draft PO</button></div></form></div></div>
+<div class="modal-backdrop" id="receivePoModal"><div class="modal" style="width:min(760px,97vw)"><div class="modal-head"><h3 id="receivePoTitle">Receive goods</h3><button class="xbtn" onclick="closeModal('receivePoModal')">×</button></div><form id="receivePoForm" class="form-grid"><input type="hidden" id="receivePoId"><div class="field wide"><div id="receivePoLines"></div></div><div class="field wide"><label>Receiving notes</label><textarea id="receivePoNotes"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Post goods receipt & update stock</button></div></form></div></div>
 <div class="modal-backdrop" id="ticketModal"><div class="modal"><div class="modal-head"><h3>Create ticket</h3><button class="xbtn" onclick="closeModal('ticketModal')">×</button></div><form id="ticketFormAdmin" class="form-grid"><div class="field"><label>Customer</label><select id="ticketCustomer"></select></div><div class="field"><label>Category</label><select id="ticketCategory"><option value="general">General</option><option value="appointment">Appointment</option><option value="payment">Payment</option><option value="service">Service</option><option value="complaint">Complaint</option></select></div><div class="field"><label>Priority</label><select id="ticketPriority"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></div><div class="field wide"><label>Subject</label><input id="ticketSubject" required></div><div class="field wide"><label>Description</label><textarea id="ticketDescription" required></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create ticket</button></div></form></div></div>
 <div class="modal-backdrop" id="posDeviceModal"><div class="modal"><div class="modal-head"><h3>Register POS device</h3><button class="xbtn" onclick="closeModal('posDeviceModal')">×</button></div><form id="posDeviceForm" class="form-grid"><div class="field"><label>Device name</label><input name="deviceName" required></div><div class="field"><label>Device code</label><input name="deviceCode" required placeholder="POS-FRONT-01"></div><div class="field"><label>Provider</label><input name="provider" placeholder="Optional"></div><div class="field"><label>Terminal ID</label><input name="terminalId"></div><div class="field wide"><button class="btn primary" style="width:100%">Register device</button></div></form></div></div>
 <div class="modal-backdrop" id="roleModal"><div class="modal"><div class="modal-head"><h3>Create custom Shop role</h3><button class="xbtn" onclick="closeModal('roleModal')">×</button></div><form id="roleForm" class="form-grid"><div class="field"><label>Role key</label><input name="key" required placeholder="supervisor"></div><div class="field"><label>Role name</label><input name="name" required placeholder="Salon Supervisor"></div><div class="field wide"><label>Description</label><textarea name="description"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create role</button></div></form></div></div>
@@ -71,12 +76,12 @@ const oldAllowed=allowedPages;
 allowedPages=function(role){
   const basePages=oldAllowed(role);
   const extra={
-    shop_admin:['retention','communications','assets','tickets','posdevices','approvals'],
-    manager:['retention','communications','assets','tickets','posdevices','approvals'],
+    shop_admin:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
+    manager:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
     cashier:['communications','tickets','posdevices'],
     finance:[],
     service:[],
-    inventory:['assets'],
+    inventory:['assets','procurement'],
     auditor:[]
   }[role]||[];
   return [...new Set([...basePages,...extra])];
@@ -135,6 +140,7 @@ window.loadEnterprisePage=async function(page){
   if(page==='retention')return loadRetention();
   if(page==='communications')return loadConversations();
   if(page==='assets')return loadAssets();
+  if(page==='procurement')return loadProcurement();
   if(page==='tickets')return loadTickets();
   if(page==='posdevices')return loadPosDevices();
   if(page==='approvals')return loadApprovals();
@@ -326,6 +332,46 @@ window.loadPaymentOperations=async function(){
   }catch(e){paymentOperationsBody.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
 window.reconcilePayment=async function(id){try{await api('/api/payments/'+id+'/reconcile',{method:'PATCH',body:JSON.stringify({note:'Reconciled from Shop payment operations'})});showToast('Payment reconciled');await Promise.all([reloadAll(),loadPaymentOperations()])}catch(e){showToast(e.message)}};
+
+let procurementData=null;
+window.loadProcurement=async function(){
+  if(!selectedShopId)return;
+  try{
+    procurementData=await api('/api/procurement?shopId='+encodeURIComponent(selectedShopId));
+    purchaseOrderTable.innerHTML=table([
+      ['PO',x=>'<b>'+esc(x.po_no)+'</b><br><small class="muted">'+esc(x.vendor_name||'No supplier')+'</small>'],
+      ['Date',x=>esc(x.order_date)],['Expected',x=>esc(x.expected_date||'—')],['Total',x=>money(x.total)],['Status',x=>tag(x.status)],
+      ['Action',x=>{let h='<div class="toolbar">';if(x.status==='draft')h+='<button class="btn sm primary" onclick="submitPo(\''+x.id+'\')">Submit</button>';if(['approved','part_received'].includes(x.status))h+='<button class="btn sm soft" onclick="openReceivePo(\''+x.id+'\')">Receive</button>';return h+'</div>'}]
+    ],procurementData.orders||[]);
+    goodsReceiptTable.innerHTML=table([
+      ['GRN',x=>'<b>'+esc(x.grn_no)+'</b><br><small class="muted">'+esc(x.po_no)+'</small>'],['Supplier',x=>esc(x.vendor_name||'—')],['Received',x=>new Date(x.received_at).toLocaleString()],['Cost',x=>money(x.total_cost)]
+    ],procurementData.receipts||[]);
+  }catch(e){purchaseOrderTable.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
+};
+window.openPurchaseOrder=async function(){
+  if(!procurementData)await loadProcurement();
+  poVendor.innerHTML='<option value="">No supplier selected</option>'+(procurementData?.vendors||[]).map(x=>'<option value="'+x.id+'">'+esc(x.name)+'</option>').join('');
+  poExpectedDate.value='';poNotes.value='';poTax.value='0';poLines.innerHTML='';addPoLine();openModal('purchaseOrderModal');
+};
+window.addPoLine=function(){
+  const row=document.createElement('div');row.className='form-grid po-line';row.style.marginBottom='9px';
+  row.innerHTML='<div class="field"><label>Product</label><select class="po-product"><option value="">Other / non-stock item</option>'+filtered(base.products).map(x=>'<option value="'+x.id+'" data-name="'+esc(x.name)+'" data-cost="'+Number(x.cost_price||0)+'">'+esc(x.name)+'</option>').join('')+'</select></div><div class="field"><label>Description</label><input class="po-description" required></div><div class="field"><label>Quantity</label><input class="po-qty" type="number" min="0.001" step="0.001" value="1" required></div><div class="field"><label>Unit cost</label><input class="po-cost" type="number" min="0" step="0.01" value="0" required></div><div class="field wide"><button class="btn sm danger" type="button">Remove line</button></div>';
+  row.querySelector('.po-product').onchange=e=>{const opt=e.target.selectedOptions[0];if(opt?.value){row.querySelector('.po-description').value=opt.dataset.name||opt.textContent;row.querySelector('.po-cost').value=opt.dataset.cost||0}};
+  row.querySelector('.danger').onclick=()=>{if(document.querySelectorAll('.po-line').length>1)row.remove()};
+  poLines.appendChild(row);
+};
+purchaseOrderForm.onsubmit=async e=>{
+  e.preventDefault();const lines=[...document.querySelectorAll('.po-line')].map(row=>({productId:row.querySelector('.po-product').value||undefined,description:row.querySelector('.po-description').value,quantity:Number(row.querySelector('.po-qty').value),unitCost:Number(row.querySelector('.po-cost').value)}));
+  try{await api('/api/procurement/purchase-orders',{method:'POST',body:JSON.stringify({shopId:selectedShopId,branchId:selectedBranchId||undefined,vendorId:poVendor.value||undefined,expectedDate:poExpectedDate.value||undefined,tax:Number(poTax.value||0),notes:poNotes.value||undefined,lines})});closeModal('purchaseOrderModal');showToast('Purchase order draft created');await loadProcurement()}catch(err){showToast(err.message)}
+};
+window.submitPo=async function(id){try{await api('/api/procurement/purchase-orders/'+id+'/submit',{method:'POST',body:JSON.stringify({reason:'Purchase stock and supplies for salon operations'})});showToast('Purchase order submitted for approval');await Promise.all([loadProcurement(),loadApprovals()])}catch(e){showToast(e.message)}};
+window.openReceivePo=function(id){
+  const po=procurementData?.orders?.find(x=>x.id===id);if(!po)return;receivePoId.value=id;receivePoTitle.textContent='Receive '+po.po_no;receivePoNotes.value='';
+  const lines=Array.isArray(po.lines)?po.lines:JSON.parse(po.lines||'[]');
+  receivePoLines.innerHTML=lines.map(l=>{const remaining=Math.max(0,Number(l.ordered_quantity)-Number(l.received_quantity));return '<div class="form-grid receive-line" data-line="'+l.id+'" style="margin-bottom:8px"><div class="field wide"><label>'+esc(l.description)+' · Remaining '+remaining+'</label><input class="receive-qty" type="number" min="0" max="'+remaining+'" step="0.001" value="'+remaining+'"></div></div>'}).join('');
+  openModal('receivePoModal');
+};
+receivePoForm.onsubmit=async e=>{e.preventDefault();const lines=[...document.querySelectorAll('.receive-line')].map(x=>({lineId:x.dataset.line,quantity:Number(x.querySelector('.receive-qty').value||0)})).filter(x=>x.quantity>0);if(!lines.length)return showToast('Enter at least one quantity received');try{await api('/api/procurement/purchase-orders/'+receivePoId.value+'/receive',{method:'POST',body:JSON.stringify({notes:receivePoNotes.value||undefined,lines})});closeModal('receivePoModal');showToast('Goods received and stock updated');await Promise.all([reloadAll(),loadProcurement(),loadInventoryAlerts()])}catch(err){showToast(err.message)}};
 
 window.loadTickets=async function(){
   try{const rows=await api('/api/tickets?shopId='+encodeURIComponent(selectedShopId));ticketTable.innerHTML=table([
