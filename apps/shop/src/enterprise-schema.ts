@@ -182,6 +182,11 @@ export async function ensureEnterpriseShopSchema(db:Db){
       created_at timestamptz NOT NULL DEFAULT now()
     );
 
+    ALTER TABLE shop_communication_outbox ADD COLUMN IF NOT EXISTS automation_key text;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shop_outbox_automation_key
+      ON shop_communication_outbox(organisation_id,automation_key)
+      WHERE automation_key IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS shop_notification_rules(
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       organisation_id uuid NOT NULL,
