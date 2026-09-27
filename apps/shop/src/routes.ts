@@ -94,20 +94,45 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   app.get('/api/bootstrap',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'dashboard.read');
     const org=a.core.organisation_id;
-    const [shops,branches,customers,services,products,jobs,bookings,orders,payments,expenses,stats]=await Promise.all([
+    const role=a.role;
+    const empty=()=>Promise.resolve({rows:[]} as any);
+    const canCustomers=['shop_admin','manager','cashier','finance','service','auditor'].includes(role);
+    const canProducts=['shop_admin','manager','cashier','inventory'].includes(role);
+    const canJobs=['shop_admin','manager','service','auditor'].includes(role);
+    const canBookings=['shop_admin','manager','cashier','service'].includes(role);
+    const canSales=['shop_admin','manager','cashier','finance','auditor'].includes(role);
+    const canPayments=['shop_admin','manager','cashier','finance','auditor'].includes(role);
+    const canExpenses=['shop_admin','finance','auditor'].includes(role);
+    const canFinancialDashboard=['shop_admin','manager','cashier','finance','auditor'].includes(role);
+
+    const [shops,branches,customers,services,products,jobs,bookings,orders,payments,expenses,rawStats]=await Promise.all([
       db.query('SELECT * FROM shops WHERE organisation_id=$1 ORDER BY created_at DESC',[org]),
       db.query('SELECT * FROM shop_branches WHERE organisation_id=$1 ORDER BY name',[org]),
-      db.query('SELECT * FROM shop_customers WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 300',[org]),
+      canCustomers?db.query('SELECT * FROM shop_customers WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 300',[org]):empty(),
       db.query('SELECT * FROM shop_services WHERE organisation_id=$1 ORDER BY name',[org]),
-      db.query('SELECT * FROM shop_products WHERE organisation_id=$1 ORDER BY name',[org]),
-      db.query('SELECT * FROM shop_jobs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 200',[org]),
-      db.query('SELECT * FROM shop_bookings WHERE organisation_id=$1 ORDER BY booked_for DESC LIMIT 200',[org]),
-      db.query('SELECT * FROM shop_orders WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 200',[org]),
-      db.query('SELECT * FROM shop_payments WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 250',[org]),
-      db.query('SELECT * FROM shop_expenses WHERE organisation_id=$1 ORDER BY expense_date DESC,created_at DESC LIMIT 200',[org]),
+      canProducts?db.query('SELECT * FROM shop_products WHERE organisation_id=$1 ORDER BY name',[org]):empty(),
+      canJobs?db.query('SELECT * FROM shop_jobs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 200',[org]):empty(),
+      canBookings?db.query('SELECT * FROM shop_bookings WHERE organisation_id=$1 ORDER BY booked_for DESC LIMIT 200',[org]):empty(),
+      canSales?db.query('SELECT * FROM shop_orders WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 200',[org]):empty(),
+      canPayments?db.query('SELECT * FROM shop_payments WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT 250',[org]):empty(),
+      canExpenses?db.query('SELECT * FROM shop_expenses WHERE organisation_id=$1 ORDER BY expense_date DESC,created_at DESC LIMIT 200',[org]):empty(),
       dashboard(db,org)
     ]);
-    return{me:a.core,role:a.role,stats,shops:shops.rows,branches:branches.rows,customers:customers.rows,services:services.rows,products:products.rows,jobs:jobs.rows,bookings:bookings.rows,orders:orders.rows,payments:payments.rows,expenses:expenses.rows};
+
+    const stats={...rawStats};
+    if(!canFinancialDashboard){
+      stats.sales_today=null;
+      stats.payments_today=null;
+      stats.expenses_today=null;
+      stats.pending_payments=null;
+    }
+
+    return{
+      me:a.core,role,stats,
+      shops:shops.rows,branches:branches.rows,customers:customers.rows,services:services.rows,
+      products:products.rows,jobs:jobs.rows,bookings:bookings.rows,orders:orders.rows,
+      payments:payments.rows,expenses:expenses.rows
+    };
   });
 
   app.post('/api/shops',async(req,reply)=>{
