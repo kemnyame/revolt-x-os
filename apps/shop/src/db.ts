@@ -1,28 +1,38 @@
 import pg from 'pg';
 import type { ShopConfig } from './config.js';
 
-export type Db=pg.Pool;
+export type Db=pg.Pool | pg.PoolClient;
+
+function normalizeDatabaseUrl(value:string){
+  try{
+    const url=new URL(value);
+    const mode=url.searchParams.get('sslmode');
+    if(mode==='prefer'||mode==='require'||mode==='verify-ca')url.searchParams.set('sslmode','verify-full');
+    return url.toString();
+  }catch{return value;}
+}
 
 export function createDb(config:ShopConfig){
-  const isRemote=/sslmode=require|render\.com|neon\.tech|railway/i.test(config.SHOP_DATABASE_URL);
   return new pg.Pool({
-    connectionString:config.SHOP_DATABASE_URL,
+    connectionString:normalizeDatabaseUrl(config.SHOP_DATABASE_URL),
     max:config.DB_POOL_MAX,
-    ssl:isRemote?{rejectUnauthorized:false}:undefined
+    application_name:'revolt-x-shop'
   });
 }
 
-export async function one<T>(db:Db,sql:string,params:any[]=[]):Promise<T>{
-  const r=await db.query<T>(sql,params);
-  if(r.rowCount!==1)throw new Error('Expected one row');
-  return r.rows[0]!;
+export async function one<T=any>(db:Db,sql:string,params:unknown[]=[]):Promise<T>{
+  const r=await db.query(sql,params);
+  if(r.rowCount!==1)throw new Error('Expected one row, received '+String(r.rowCount??0));
+  return r.rows[0] as T;
 }
-export async function maybeOne<T>(db:Db,sql:string,params:any[]=[]):Promise<T|null>{
-  const r=await db.query<T>(sql,params);
-  return r.rows[0]??null;
+export async function maybeOne<T=any>(db:Db,sql:string,params:unknown[]=[]):Promise<T|null>{
+  const r=await db.query(sql,params);
+  if((r.rowCount??0)>1)throw new Error('Expected at most one row, received '+String(r.rowCount));
+  return (r.rows[0] as T|undefined)??null;
 }
-export async function tx<T>(db:Db,fn:(client:pg.PoolClient)=>Promise<T>){
-  const c=await db.connect();
+export async function tx<T>(db:Db,fn:(client:pg.PoolClient)=>Promise<T>):Promise<T>{
+  if(!('connect' in db))return fn(db as pg.PoolClient);
+  const c=await (db as pg.Pool).connect();
   try{await c.query('BEGIN');const out=await fn(c);await c.query('COMMIT');return out;}
   catch(e){await c.query('ROLLBACK');throw e;}
   finally{c.release();}
