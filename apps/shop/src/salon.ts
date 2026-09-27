@@ -140,6 +140,53 @@ export async function ensureSalonSchema(db:Db){
   `);
 }
 
+export async function assertSalonBookingAvailability(
+  db:Db,
+  input:{organisationId:string;shopId:string;branchId?:string|null;bookedFor:Date;serviceId?:string|null;staffId?:string|null;chairId?:string|null;ignoreBookingId?:string|null}
+){
+  const settings=await maybeOne<any>(db,'SELECT * FROM salon_settings WHERE shop_id=$1 AND organisation_id=$2',[input.shopId,input.organisationId]);
+  const durationRow=input.serviceId?await maybeOne<any>(db,'SELECT duration_minutes FROM shop_services WHERE id=$1 AND shop_id=$2',[input.serviceId,input.shopId]):null;
+  const duration=Math.max(5,Number(durationRow?.duration_minutes||30));
+  const endAt=new Date(input.bookedFor.getTime()+duration*60000);
+
+  if(input.branchId&&settings){
+    const hours=await maybeOne<any>(db,`
+      SELECT h.open_time,h.close_time,h.is_closed,
+             ($3::timestamptz AT TIME ZONE s.timezone)::time AS local_time
+      FROM salon_settings s
+      JOIN salon_business_hours h ON h.shop_id=s.shop_id AND h.branch_id=$2
+       AND h.day_of_week=EXTRACT(DOW FROM ($3::timestamptz AT TIME ZONE s.timezone))::int
+      WHERE s.shop_id=$1
+    `,[input.shopId,input.branchId,input.bookedFor.toISOString()]);
+    if(hours&&(hours.is_closed||String(hours.local_time)<String(hours.open_time)||String(hours.local_time)>=String(hours.close_time))){
+      const e:any=new Error('The salon is closed at the selected time.');e.statusCode=409;throw e;
+    }
+  }
+
+  if(input.staffId||input.chairId){
+    const conflict=await maybeOne<any>(db,`
+      SELECT b.id
+      FROM shop_bookings b
+      LEFT JOIN shop_services s ON s.id=b.service_id
+      WHERE b.organisation_id=$1 AND b.shop_id=$2
+        AND ($3::uuid IS NULL OR b.branch_id=$3)
+        AND b.status NOT IN ('cancelled','no_show','completed')
+        AND ($8::uuid IS NULL OR b.id<>$8)
+        AND (($6::uuid IS NOT NULL AND b.salon_staff_id=$6) OR ($7::uuid IS NOT NULL AND b.salon_chair_id=$7))
+        AND b.booked_for < $5::timestamptz
+        AND (b.booked_for + make_interval(mins=>COALESCE(s.duration_minutes,30))) > $4::timestamptz
+      ORDER BY b.booked_for LIMIT 1
+    `,[
+      input.organisationId,input.shopId,input.branchId||null,input.bookedFor.toISOString(),endAt.toISOString(),
+      input.staffId||null,input.chairId||null,input.ignoreBookingId||null
+    ]);
+    if(conflict){
+      const e:any=new Error('The selected barber or chair is already booked for that time.');e.statusCode=409;throw e;
+    }
+  }
+  return{durationMinutes:duration,endAt};
+}
+
 function nextQueue(rows:any[]){
   return rows.reduce((m,r)=>Math.max(m,Number(r.queue_number||0)),0)+1;
 }
