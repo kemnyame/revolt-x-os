@@ -237,6 +237,73 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
   });
 
 
+  app.post('/api/products/:id/adjust-stock',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'inventory.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({
+      quantityDelta:z.coerce.number().finite().refine(v=>v!==0,{message:'Quantity adjustment cannot be zero'}),
+      branchId:z.string().uuid().optional(),
+      reason:z.string().trim().min(3).max(500)
+    }).parse(req.body);
+
+    const result=await tx(db,async client=>{
+      const p=await client.query('SELECT * FROM shop_products WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+      if(!p.rowCount)return null;
+      const product=p.rows[0];
+      const next=Number(product.stock_quantity)+b.quantityDelta;
+      if(next<0)throw Object.assign(new Error('Stock adjustment would make inventory negative.'),{statusCode:400});
+      if(b.branchId){
+        const branch=await maybeOne<any>(client,'SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3',[b.branchId,product.shop_id,a.core.organisation_id]);
+        if(!branch)throw Object.assign(new Error('Branch not found for this product.'),{statusCode:400});
+      }
+      await client.query('UPDATE shop_products SET stock_quantity=$1 WHERE id=$2',[next,id]);
+      const movement=await client.query(
+        `INSERT INTO shop_stock_movements(
+          organisation_id,shop_id,branch_id,product_id,movement_type,quantity,source_type,source_id,note
+        )
+        VALUES($1,$2,$3,$4,$5,$6,'manual_adjustment',$4,$7)
+        RETURNING *`,
+        [a.core.organisation_id,product.shop_id,b.branchId||null,id,b.quantityDelta>0?'adjustment_in':'adjustment_out',b.quantityDelta,b.reason]
+      );
+      await client.query(
+        `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
+         VALUES($1,$2,'inventory.adjusted','product',$3,$4,$5,$6)`,
+        [a.core.organisation_id,a.core.id,id,product.shop_id,b.branchId||null,JSON.stringify({quantityDelta:b.quantityDelta,newQuantity:next,reason:b.reason})]
+      );
+      return{product:{...product,stock_quantity:next},movement:movement.rows[0]};
+    });
+    if(!result)return reply.code(404).send({error:{message:'Product not found'}});
+    return result;
+  });
+
+  app.get('/api/products/:id/movements',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'inventory.read');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const rows=await db.query(
+      `SELECT m.*,b.name branch_name
+       FROM shop_stock_movements m
+       LEFT JOIN shop_branches b ON b.id=m.branch_id
+       WHERE m.product_id=$1 AND m.organisation_id=$2
+       ORDER BY m.created_at DESC LIMIT 250`,
+      [id,a.core.organisation_id]
+    );
+    return rows.rows;
+  });
+
+  app.get('/api/integrations/status',async(req,reply)=>{
+    await authorize(db,config,req,reply,'dashboard.read');
+    return{
+      coreOs:{configured:Boolean(config.CORE_OS_URL),status:'connected'},
+      onlinePayments:{
+        provider:'paystack',
+        configured:Boolean(config.PAYSTACK_SECRET_KEY&&config.PUBLIC_BASE_URL),
+        secretConfigured:Boolean(config.PAYSTACK_SECRET_KEY),
+        callbackConfigured:Boolean(config.PUBLIC_BASE_URL),
+        webhookUrl:config.PUBLIC_BASE_URL?config.PUBLIC_BASE_URL.replace(/\/$/,'')+'/api/webhooks/paystack':null
+      }
+    };
+  });
+
   app.get('/api/access/users',async(req,reply)=>{
     const a=await authorize(db,config,req,reply);
     if(a.role!=='shop_admin'&&a.role!=='manager')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
