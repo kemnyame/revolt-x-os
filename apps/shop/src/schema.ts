@@ -262,6 +262,23 @@ export async function ensureShopSchema(db:Db){
     ALTER TABLE shops ADD COLUMN IF NOT EXISTS public_slug text;
     CREATE UNIQUE INDEX IF NOT EXISTS ux_shops_public_slug ON shops(public_slug) WHERE public_slug IS NOT NULL;
 
+
+    CREATE TABLE IF NOT EXISTS shop_password_reset_requests(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      email text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      requested_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      completed_by uuid
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shop_password_reset_status ON shop_password_reset_requests(status,requested_at DESC);
+
+    CREATE TABLE IF NOT EXISTS shop_bootstrap_state(
+      key text PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    );
+
     CREATE INDEX IF NOT EXISTS idx_shop_customers_org_shop ON shop_customers(organisation_id,shop_id);
     CREATE INDEX IF NOT EXISTS idx_shop_orders_org_created ON shop_orders(organisation_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_shop_payments_org_created ON shop_payments(organisation_id,created_at DESC);
