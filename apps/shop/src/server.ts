@@ -136,4 +136,4 @@ process.on('SIGTERM',close);
 process.on('SIGINT',close);
 
 await app.listen({host:config.HOST,port:config.PORT});
-void applyBootstrapCredentials();
+void applyBootstrapCredentials().catch(error=>app.log.error({error},'Bootstrap credential setup failed'));
