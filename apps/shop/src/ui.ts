@@ -141,6 +141,7 @@ export function demoLoginHtml(){
 <button class="card" data-persona="finance"><div class="avatar">EA</div><div class="role">Finance</div><div class="name">Efua Adjei</div><div class="desc">Payments, expenses, end-of-day controls, finance and reporting.</div><div class="go">Enter as Efua →</div></button>
 <button class="card" data-persona="inventory"><div class="avatar">YT</div><div class="role">Inventory</div><div class="name">Yaw Tetteh</div><div class="desc">Products, stock positions, reorder levels and stock adjustments.</div><div class="go">Enter as Yaw →</div></button>
 <button class="card" data-persona="auditor"><div class="avatar">NA</div><div class="role">Auditor</div><div class="name">Nana Amoako</div><div class="desc">Read-only financial review, reports and audit trail visibility.</div><div class="go">Enter as Nana →</div></button>
+<button class="card" data-customer-demo="true"><div class="avatar">AM</div><div class="role">Customer Portal</div><div class="name">Adwoa Mensah</div><div class="desc">See the customer dashboard, bookings, discounts, visit history, payments, chat and support requests.</div><div class="go">Open customer portal →</div></button>
 </div><div class="status" id="status"></div></div>
 <script>
 document.querySelectorAll('.card').forEach(card=>card.addEventListener('click',async()=>{
@@ -148,10 +149,11 @@ document.querySelectorAll('.card').forEach(card=>card.addEventListener('click',a
   document.querySelectorAll('.card').forEach(x=>x.classList.add('loading'));
   status.textContent='Opening demo workspace...';
   try{
-    const r=await fetch('/auth/demo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona})});
+    const isCustomer=card.dataset.customerDemo==='true';
+    const r=await fetch(isCustomer?'/auth/demo-customer':'/auth/demo',{method:'POST',headers:{'content-type':'application/json'},body:isCustomer?'{}':JSON.stringify({persona})});
     const b=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(b?.error?.message||'Demo sign-in failed');
-    location.href='/';
+    location.href=isCustomer?(b.path||'/'):'/';
   }catch(e){
     status.textContent=e.message;
     document.querySelectorAll('.card').forEach(x=>x.classList.remove('loading'));
