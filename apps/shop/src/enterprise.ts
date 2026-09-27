@@ -335,7 +335,7 @@ async function customerContext(db:Db,request:FastifyRequest){
 
 export async function createApprovalRequest(
   db:Db,
-  input:{organisationId:string;shopId:string;branchId?:string|null;actionKey:string;targetType:string;targetId?:string|null;title:string;reason?:string|null;payload:any;requestedBy:string}
+  input:{organisationId:string;shopId?:string|null;branchId?:string|null;actionKey:string;targetType:string;targetId?:string|null;title:string;reason?:string|null;payload:any;requestedBy:string}
 ){
   const r=await db.query(`
     INSERT INTO shop_approval_requests(
@@ -343,7 +343,7 @@ export async function createApprovalRequest(
     )
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending',$10)
     RETURNING *`,
-    [input.organisationId,input.shopId,input.branchId||null,input.actionKey,input.targetType,input.targetId||null,input.title,input.reason||null,JSON.stringify(input.payload||{}),input.requestedBy]
+    [input.organisationId,input.shopId||null,input.branchId||null,input.actionKey,input.targetType,input.targetId||null,input.title,input.reason||null,JSON.stringify(input.payload||{}),input.requestedBy]
   );
   return r.rows[0];
 }
