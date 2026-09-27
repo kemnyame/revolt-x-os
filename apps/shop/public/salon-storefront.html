@@ -25,7 +25,7 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
   <div class="brand">REVOLT-X SHOP</div>
   <h1 id="shopName">Professional grooming, booked your way.</h1>
   <p id="shopInfo">Choose your branch, service, barber and an available time. Your appointment is confirmed directly in the salon system.</p>
-  <div class="cta"><button class="btn gold" onclick="document.getElementById('booking').scrollIntoView()">Book appointment</button><button class="btn" onclick="document.getElementById('services').scrollIntoView()">Explore services</button></div>
+  <div class="cta"><button class="btn gold" onclick="document.getElementById('booking').scrollIntoView()">Book appointment</button><button class="btn" onclick="document.getElementById('services').scrollIntoView()">Explore services</button><a class="btn light" id="customerPortalLink">Customer portal</a></div>
 </section>
 
 <div class="wrap" id="services">
@@ -107,6 +107,7 @@ async function loadStore(){
   if(!r.ok)throw new Error(x?.error?.message||'Salon could not be loaded');
   data=x;
   document.title=x.shop.name+' · Book appointment';
+  customerPortalLink.href='/customer/'+encodeURIComponent(slug);
   shopName.textContent=x.shop.name;
   shopInfo.textContent=[x.shop.address,x.shop.phone].filter(Boolean).join(' · ')||'Book your grooming appointment online.';
   serviceGrid.innerHTML=x.services.length?x.services.map(s=>'<article class="card service" data-service="'+s.id+'"><h3>'+esc(s.name)+'</h3><p class="muted">'+esc(s.description||'Professional grooming service')+'</p><div class="price">'+money(s.price)+'</div><div class="meta"><span>'+Number(s.duration_minutes||0)+' min</span><span>'+Number(s.deposit_percent||0)+'% deposit</span></div></article>').join(''):'<div class="card muted">No services are currently published.</div>';
