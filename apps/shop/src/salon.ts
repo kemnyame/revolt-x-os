@@ -106,6 +106,33 @@ export async function ensureSalonSchema(db:Db){
       UNIQUE(shop_id,customer_id)
     );
 
+    CREATE TABLE IF NOT EXISTS salon_settings(
+      shop_id uuid PRIMARY KEY REFERENCES shops(id) ON DELETE CASCADE,
+      organisation_id uuid NOT NULL,
+      timezone text NOT NULL DEFAULT 'Africa/Accra',
+      booking_interval_minutes integer NOT NULL DEFAULT 15,
+      allow_online_booking boolean NOT NULL DEFAULT true,
+      allow_walkins boolean NOT NULL DEFAULT true,
+      tax_percent numeric(6,2) NOT NULL DEFAULT 0,
+      receipt_footer text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS salon_business_hours(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organisation_id uuid NOT NULL,
+      shop_id uuid NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      branch_id uuid NOT NULL REFERENCES shop_branches(id) ON DELETE CASCADE,
+      day_of_week integer NOT NULL CHECK(day_of_week BETWEEN 0 AND 6),
+      open_time time NOT NULL,
+      close_time time NOT NULL,
+      is_closed boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(branch_id,day_of_week)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_salon_staff_shop ON salon_staff(organisation_id,shop_id,status);
     CREATE INDEX IF NOT EXISTS idx_salon_chairs_shop ON salon_chairs(organisation_id,shop_id,status);
     CREATE INDEX IF NOT EXISTS idx_salon_commissions_staff ON salon_commission_entries(organisation_id,staff_id,earned_at DESC);
