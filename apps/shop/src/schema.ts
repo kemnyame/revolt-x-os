@@ -19,6 +19,7 @@ export async function ensureShopSchema(db:Db){
       organisation_id uuid NOT NULL,
       name text NOT NULL,
       slug text NOT NULL,
+      public_slug text,
       business_type text NOT NULL DEFAULT 'general_service',
       currency text NOT NULL DEFAULT 'GHS',
       phone text,
@@ -257,6 +258,9 @@ export async function ensureShopSchema(db:Db){
       metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE shops ADD COLUMN IF NOT EXISTS public_slug text;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shops_public_slug ON shops(public_slug) WHERE public_slug IS NOT NULL;
 
     CREATE INDEX IF NOT EXISTS idx_shop_customers_org_shop ON shop_customers(organisation_id,shop_id);
     CREATE INDEX IF NOT EXISTS idx_shop_orders_org_created ON shop_orders(organisation_id,created_at DESC);
