@@ -478,6 +478,115 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     return{shop,services:services.rows,products:products.rows,branches:branches.rows,barbers:barbers.rows};
   });
 
+  app.get('/api/public/store/:slug/availability',async(req,reply)=>{
+    const slug=z.string().min(2).parse((req.params as any).slug);
+    const q=z.object({
+      date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      branchId:uuid.optional(),
+      serviceId:uuid,
+      staffId:uuid.optional()
+    }).parse(req.query);
+
+    const shop=await maybeOne<any>(db,`
+      SELECT s.id,s.organisation_id,
+             coalesce(ss.allow_online_booking,true) allow_online_booking,
+             coalesce(ss.timezone,'Africa/Accra') timezone,
+             greatest(5,coalesce(ss.booking_interval_minutes,15)) booking_interval_minutes
+      FROM shops s
+      LEFT JOIN salon_settings ss ON ss.shop_id=s.id
+      WHERE s.public_slug=$1 AND s.status='active' LIMIT 1`,[slug]);
+    if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
+    if(shop.allow_online_booking===false)return reply.code(403).send({error:{message:'Online booking is currently disabled for this salon.'}});
+
+    let branchId=q.branchId||null;
+    if(!branchId){
+      const primary=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY created_at LIMIT 1",[shop.id]);
+      branchId=primary?.id||null;
+    }
+    if(!branchId)return{date:q.date,branchId:null,slots:[]};
+
+    const service=await maybeOne<any>(db,"SELECT id,duration_minutes FROM shop_services WHERE id=$1 AND shop_id=$2 AND active=true",[q.serviceId,shop.id]);
+    if(!service)return reply.code(400).send({error:{message:'Selected service is not available.'}});
+    if(q.staffId){
+      const staff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND role='barber' AND status='active' AND (branch_id=$3 OR branch_id IS NULL)",[q.staffId,shop.id,branchId]);
+      if(!staff)return reply.code(400).send({error:{message:'Selected barber is not available at this branch.'}});
+    }
+
+    const hours=await maybeOne<any>(db,`
+      SELECT h.open_time,h.close_time,h.is_closed
+      FROM salon_business_hours h
+      WHERE h.shop_id=$1 AND h.branch_id=$2
+        AND h.day_of_week=EXTRACT(DOW FROM $3::date)::int
+      LIMIT 1`,[shop.id,branchId,q.date]);
+    if(!hours||hours.is_closed){
+      return{date:q.date,branchId,timezone:shop.timezone,capacity:0,slots:[]};
+    }
+
+    const capacityRow=await maybeOne<any>(db,`
+      SELECT
+        (SELECT count(*)::int FROM salon_chairs
+         WHERE shop_id=$1 AND branch_id=$2 AND status<>'maintenance') chairs,
+        (SELECT count(*)::int FROM salon_staff
+         WHERE shop_id=$1 AND (branch_id=$2 OR branch_id IS NULL)
+           AND role='barber' AND status='active') barbers`,
+      [shop.id,branchId]
+    );
+    const chairs=Math.max(0,Number(capacityRow?.chairs||0));
+    const barbers=Math.max(0,Number(capacityRow?.barbers||0));
+    const capacity=chairs>0&&barbers>0?Math.min(chairs,barbers):Math.max(chairs,barbers,1);
+    const duration=Math.max(5,Number(service.duration_minutes||30));
+    const interval=Math.max(5,Number(shop.booking_interval_minutes||15));
+
+    const slots=await db.query(`
+      WITH slots AS (
+        SELECT (g AT TIME ZONE $6) AS starts_at
+        FROM generate_series(
+          ($1::date + $2::time)::timestamp,
+          (($1::date + $3::time)::timestamp - make_interval(mins=>$4::int)),
+          make_interval(mins=>$5::int)
+        ) g
+      )
+      SELECT s.starts_at,
+        (
+          SELECT count(*)::int
+          FROM shop_bookings b
+          LEFT JOIN shop_services existing_service ON existing_service.id=b.service_id
+          WHERE b.organisation_id=$7 AND b.shop_id=$8 AND b.branch_id=$9
+            AND b.status NOT IN ('cancelled','no_show','completed')
+            AND b.booked_for < (s.starts_at + make_interval(mins=>$4::int))
+            AND (b.booked_for + make_interval(mins=>coalesce(existing_service.duration_minutes,30))) > s.starts_at
+        ) busy,
+        (
+          SELECT count(*)::int
+          FROM shop_bookings b
+          LEFT JOIN shop_services existing_service ON existing_service.id=b.service_id
+          WHERE $10::uuid IS NOT NULL
+            AND b.organisation_id=$7 AND b.shop_id=$8 AND b.branch_id=$9
+            AND b.salon_staff_id=$10
+            AND b.status NOT IN ('cancelled','no_show','completed')
+            AND b.booked_for < (s.starts_at + make_interval(mins=>$4::int))
+            AND (b.booked_for + make_interval(mins=>coalesce(existing_service.duration_minutes,30))) > s.starts_at
+        ) staff_busy
+      FROM slots s
+      ORDER BY s.starts_at`,
+      [
+        q.date,String(hours.open_time),String(hours.close_time),duration,interval,shop.timezone,
+        shop.organisation_id,shop.id,branchId,q.staffId||null
+      ]
+    );
+
+    const now=Date.now()+5*60*1000;
+    const available=slots.rows
+      .filter((row:any)=>new Date(row.starts_at).getTime()>=now)
+      .filter((row:any)=>q.staffId?Number(row.staff_busy||0)===0:Number(row.busy||0)<capacity)
+      .map((row:any)=>({startsAt:row.starts_at}));
+
+    return{
+      date:q.date,branchId,timezone:shop.timezone,durationMinutes:duration,
+      bookingIntervalMinutes:interval,capacity,slots:available
+    };
+  });
+
   app.post('/api/public/store/:slug/bookings',async(req,reply)=>{
     const slug=z.string().min(2).parse((req.params as any).slug);
     const shop=await maybeOne<any>(db,`
