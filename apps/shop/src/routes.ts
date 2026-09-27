@@ -262,18 +262,26 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   app.post('/api/orders',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'sales.manage');
     const b=z.object({
-      shopId:uuid,branchId:uuid.optional(),customerId:uuid.optional(),jobId:uuid.optional(),
-      discount:money.default(0),tax:money.default(0),notes:z.string().optional(),
+      shopId:uuid,branchId:uuid.optional(),customerId:uuid.optional(),jobId:uuid.optional(),bookingId:uuid.optional(),
+      discount:money.default(0),notes:z.string().optional(),
       lines:z.array(z.object({itemType:z.enum(['service','product','other']),itemId:uuid.optional(),description:z.string().min(1),quantity:positive,unitPrice:money})).min(1)
     }).parse(req.body);
     const subtotal=b.lines.reduce((s,l)=>s+(l.quantity*l.unitPrice),0);
-    const total=Math.max(0,subtotal-b.discount+b.tax);
+    const taxable=Math.max(0,subtotal-b.discount);
+    const salonSettings=await maybeOne<any>(db,'SELECT tax_percent FROM salon_settings WHERE shop_id=$1 AND organisation_id=$2',[b.shopId,a.core.organisation_id]);
+    const taxRate=Math.max(0,Number(salonSettings?.tax_percent||0));
+    const tax=Math.round((taxable*taxRate/100)*100)/100;
+    const total=Math.max(0,taxable+tax);
+    if(b.bookingId){
+      const already=await maybeOne<any>(db,'SELECT id,order_no FROM shop_orders WHERE booking_id=$1 AND organisation_id=$2',[b.bookingId,a.core.organisation_id]);
+      if(already)return reply.code(409).send({error:{message:'This appointment has already been billed as '+already.order_no}});
+    }
     const orderNo=code('INV');
     const order=await tx(db,async c=>{
       const r=await c.query(
-        `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,job_id,order_no,subtotal,discount,tax,total,balance,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12) RETURNING *`,
-        [a.core.organisation_id,b.shopId,b.branchId||null,b.customerId||null,b.jobId||null,orderNo,subtotal,b.discount,b.tax,total,b.notes||null,a.core.id]
+        `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,job_id,booking_id,order_no,subtotal,discount,tax,total,balance,notes,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13) RETURNING *`,
+        [a.core.organisation_id,b.shopId,b.branchId||null,b.customerId||null,b.jobId||null,b.bookingId||null,orderNo,subtotal,b.discount,tax,total,b.notes||null,a.core.id]
       );
       for(const l of b.lines){
         await c.query(
@@ -299,10 +307,13 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   app.post('/api/orders/:id/payments/manual',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'payments.create');
     const orderId=uuid.parse((req.params as any).id);
-    const b=z.object({method:z.enum(['cash','bank_transfer','credit','other']),amount:positive,reference:z.string().optional()}).parse(req.body);
+    const b=z.object({method:z.enum(['cash','bank_transfer','mobile_money','card','other']),amount:positive,reference:z.string().optional()}).parse(req.body);
     const payment=await tx(db,async c=>{
       const o=await c.query('SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[orderId,a.core.organisation_id]);
       if(!o.rowCount)return null;
+      const outstanding=Number(o.rows[0].balance||0);
+      if(outstanding<=0)throw Object.assign(new Error('Invoice is already fully paid'),{statusCode:409});
+      if(b.amount>outstanding+0.001)throw Object.assign(new Error('Payment cannot exceed the outstanding balance'),{statusCode:400});
       const ref=b.reference?.trim()||code('PAY');
       const p=await c.query(
         `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at)
