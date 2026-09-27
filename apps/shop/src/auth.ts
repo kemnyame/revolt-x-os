@@ -24,11 +24,11 @@ export type ShopRole='shop_admin'|'manager'|'cashier'|'finance'|'service'|'inven
 
 const caps:Record<ShopRole,string[]>={
   shop_admin:['*'],
-  manager:['dashboard.read','shops.manage','customers.manage','services.manage','jobs.manage','sales.manage','payments.read','inventory.manage','reports.read','bookings.manage'],
+  manager:['dashboard.read','shops.manage','customers.manage','services.manage','jobs.manage','sales.manage','payments.create','payments.read','inventory.manage','reports.read','bookings.manage'],
   cashier:['dashboard.read','customers.manage','sales.manage','payments.create','payments.read','bookings.manage'],
   finance:['dashboard.read','payments.create','payments.read','finance.manage','reports.read','customers.read'],
   service:['dashboard.read','customers.read','services.read','jobs.manage','bookings.manage'],
-  inventory:['dashboard.read','inventory.manage','products.manage','reports.read'],
+  inventory:['dashboard.read','inventory.manage','products.manage'],
   auditor:['dashboard.read','customers.read','services.read','jobs.read','payments.read','finance.read','reports.read','audit.read']
 };
 
