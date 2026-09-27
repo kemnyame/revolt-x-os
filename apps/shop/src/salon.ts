@@ -183,7 +183,7 @@ export async function seedSalonDemo(db:Db,config:ShopConfig){
 
     const barbers=await c.query("SELECT id,staff_no FROM salon_staff WHERE shop_id=$1 AND role='barber' ORDER BY staff_no",[shopId]);
     for(let i=0;i<4;i++){
-      const staffId=barbers.rows[i%Math.max(1,barbers.rowCount)]?.id??null;
+      const staffId=barbers.rows[i%Math.max(1,barbers.rowCount??0)]?.id??null;
       await c.query(
         `INSERT INTO salon_chairs(organisation_id,shop_id,branch_id,name,code,status,assigned_staff_id)
          SELECT $1,$2,$3,$4,$5,'available',$6
@@ -229,8 +229,8 @@ export async function seedSalonDemo(db:Db,config:ShopConfig){
     const cust=await c.query("SELECT id,name,phone,email FROM shop_customers WHERE shop_id=$1 ORDER BY created_at LIMIT 6",[shopId]);
     const chairs=await c.query("SELECT id FROM salon_chairs WHERE shop_id=$1 ORDER BY name",[shopId]);
     const statuses=['booked','checked_in','in_chair','completed','booked','queued'];
-    for(let i=0;i<Math.min(6,cust.rowCount);i++){
-      const customer=cust.rows[i], service=svc.rows[i%svc.rowCount], barber=barbers.rows[i%barbers.rowCount], chair=chairs.rows[i%chairs.rowCount];
+    for(let i=0;i<Math.min(6,cust.rowCount??0);i++){
+      const customer=cust.rows[i], service=svc.rows[i%Math.max(1,svc.rowCount??0)], barber=barbers.rows[i%Math.max(1,barbers.rowCount??0)], chair=chairs.rows[i%Math.max(1,chairs.rowCount??0)];
       await c.query(
         `INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,booked_for,status,salon_staff_id,salon_chair_id,appointment_type,queue_number,check_in_at,service_started_at,service_completed_at,estimated_wait_minutes,source,notes)
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE + time '09:00' + ($9::int * interval '75 minutes'),$10,$11,$12,$13,$14,
