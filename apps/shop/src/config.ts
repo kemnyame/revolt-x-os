@@ -2,6 +2,7 @@ import { z } from 'zod';
 import 'dotenv/config';
 
 const emptyToUndefined=(v:unknown)=>typeof v==='string'&&v.trim()===''?undefined:v;
+const bool=z.enum(['true','false']).default('false').transform(v=>v==='true');
 
 const schema=z.object({
   NODE_ENV:z.enum(['development','test','production']).default('development'),
@@ -13,7 +14,8 @@ const schema=z.object({
   DB_POOL_MAX:z.coerce.number().int().min(1).max(30).default(10),
   PUBLIC_BASE_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
   PAYSTACK_SECRET_KEY:z.preprocess(emptyToUndefined,z.string().optional()),
-  PAYSTACK_CURRENCY:z.string().length(3).default('GHS')
+  PAYSTACK_CURRENCY:z.string().length(3).default('GHS'),
+  ENABLE_DEMO_LOGIN:bool
 });
 
 export type ShopConfig=z.infer<typeof schema>;
