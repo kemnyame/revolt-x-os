@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { randomUUID, createHmac } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from './db.js';
 import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
-import { authorize } from './auth.js';
+import { authorize, resetCorePasswordAsSystem } from './auth.js';
 
 const money=z.coerce.number().finite().min(0);
 const positive=z.coerce.number().finite().positive();
@@ -44,6 +44,37 @@ async function updateOrderPaid(client:any,orderId:string){
 
 export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:ShopConfig}){
   const {db,config}=opts;
+
+
+  app.post('/auth/password-reset/request',async(req,reply)=>{
+    const b=z.object({email:z.string().trim().toLowerCase().email()}).parse(req.body);
+    const existing=await maybeOne<{id:string}>(db,"SELECT id FROM revolt_x_os.users WHERE email=$1 AND status='active'",[b.email]).catch(()=>null);
+    if(existing){
+      await db.query("INSERT INTO shop_password_reset_requests(email,status) VALUES($1,'pending')",[b.email]);
+    }
+    return reply.send({accepted:true,message:'If the account is active, the reset request has been sent to a Revolt-X administrator.'});
+  });
+
+  app.get('/api/admin/password-reset-requests',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply);
+    if(a.role!=='shop_admin')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
+    const rows=await db.query("SELECT id,email,status,requested_at,completed_at FROM shop_password_reset_requests ORDER BY requested_at DESC LIMIT 200");
+    return rows.rows;
+  });
+
+  app.post('/api/admin/password-reset-requests/:id/complete',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply);
+    if(a.role!=='shop_admin')return reply.code(403).send({error:{message:'Shop administrator access is required'}});
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({password:z.string().min(8).max(128).optional()}).parse(req.body);
+    const rr=await maybeOne<any>(db,"SELECT * FROM shop_password_reset_requests WHERE id=$1 AND status='pending'",[id]);
+    if(!rr)return reply.code(404).send({error:{message:'Pending reset request not found'}});
+    const generated=b.password||('Rx!'+randomBytes(9).toString('base64url')+'9a');
+    await resetCorePasswordAsSystem(config,rr.email,generated);
+    await db.query("UPDATE shop_password_reset_requests SET status='completed',completed_at=now(),completed_by=$2 WHERE id=$1",[id,a.core.id]);
+    await audit(db,a.core.organisation_id,a.core.id,'password_reset.completed','user',undefined,undefined,{email:rr.email});
+    return{reset:true,email:rr.email,temporaryPassword:generated};
+  });
 
   app.get('/api/me',async(req,reply)=>{
     const a=await authorize(db,config,req,reply);
