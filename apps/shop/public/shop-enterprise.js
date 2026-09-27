@@ -69,6 +69,7 @@ document.body.insertAdjacentHTML('beforeend',`
 <div class="modal-backdrop" id="ticketModal"><div class="modal"><div class="modal-head"><h3>Create ticket</h3><button class="xbtn" onclick="closeModal('ticketModal')">×</button></div><form id="ticketFormAdmin" class="form-grid"><div class="field"><label>Customer</label><select id="ticketCustomer"></select></div><div class="field"><label>Category</label><select id="ticketCategory"><option value="general">General</option><option value="appointment">Appointment</option><option value="payment">Payment</option><option value="service">Service</option><option value="complaint">Complaint</option></select></div><div class="field"><label>Priority</label><select id="ticketPriority"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></div><div class="field wide"><label>Subject</label><input id="ticketSubject" required></div><div class="field wide"><label>Description</label><textarea id="ticketDescription" required></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create ticket</button></div></form></div></div>
 <div class="modal-backdrop" id="posDeviceModal"><div class="modal"><div class="modal-head"><h3>Register POS device</h3><button class="xbtn" onclick="closeModal('posDeviceModal')">×</button></div><form id="posDeviceForm" class="form-grid"><div class="field"><label>Device name</label><input name="deviceName" required></div><div class="field"><label>Device code</label><input name="deviceCode" required placeholder="POS-FRONT-01"></div><div class="field"><label>Provider</label><input name="provider" placeholder="Optional"></div><div class="field"><label>Terminal ID</label><input name="terminalId"></div><div class="field wide"><button class="btn primary" style="width:100%">Register device</button></div></form></div></div>
 <div class="modal-backdrop" id="roleModal"><div class="modal"><div class="modal-head"><h3>Create custom Shop role</h3><button class="xbtn" onclick="closeModal('roleModal')">×</button></div><form id="roleForm" class="form-grid"><div class="field"><label>Role key</label><input name="key" required placeholder="supervisor"></div><div class="field"><label>Role name</label><input name="name" required placeholder="Salon Supervisor"></div><div class="field wide"><label>Description</label><textarea name="description"></textarea></div><div class="field wide"><button class="btn primary" style="width:100%">Create role</button></div></form></div></div>
+<div class="modal-backdrop" id="actionPromptModal"><div class="modal"><div class="modal-head"><h3 id="actionPromptTitle">Confirm action</h3><button class="xbtn" onclick="closeModal('actionPromptModal')">×</button></div><form id="actionPromptForm" class="form-grid"><div class="field wide"><div id="actionPromptNotice" class="notice"></div></div><div class="field wide" id="actionPromptSelectWrap" style="display:none"><label id="actionPromptSelectLabel">Select</label><select id="actionPromptSelect"></select></div><div class="field wide"><label id="actionPromptInputLabel">Comment</label><textarea id="actionPromptInput"></textarea></div><div class="field wide"><button class="btn primary" id="actionPromptSubmit" style="width:100%">Continue</button></div></form></div></div>
 <div class="modal-backdrop" id="financeEntryModal"><div class="modal" style="width:min(760px,97vw)"><div class="modal-head"><h3 id="financeEntryTitle">Finance entry</h3><button class="xbtn" onclick="closeModal('financeEntryModal')">×</button></div><div id="financeEntryBody"></div></div></div>
 `);
 
@@ -265,14 +266,14 @@ function renderServiceApprovalActions(){
 }
 window.openServiceEdit=function(id){const s=(base.services||[]).find(x=>x.id===id);if(!s)return;editServiceId.value=s.id;editServiceName.value=s.name;editServiceCategory.value=s.category||'';editServicePrice.value=s.price;editServiceDuration.value=s.duration_minutes||30;editServiceDeposit.value=s.deposit_percent||0;editServiceDescription.value=s.description||'';editServiceReason.value='';openModal('serviceEditModal')};
 serviceEditForm.onsubmit=async e=>{e.preventDefault();try{await api('/api/services/'+editServiceId.value,{method:'PATCH',body:JSON.stringify({name:editServiceName.value,category:editServiceCategory.value||undefined,description:editServiceDescription.value||undefined,price:Number(editServicePrice.value),durationMinutes:Number(editServiceDuration.value),depositPercent:Number(editServiceDeposit.value||0),reason:editServiceReason.value})});closeModal('serviceEditModal');showToast('Service change submitted for approval');await loadApprovals()}catch(err){showToast(err.message)}};
-window.requestServiceDelete=async function(id){const reason=prompt('Reason for deactivating this service?');if(!reason)return;try{await api('/api/services/'+id,{method:'DELETE',body:JSON.stringify({reason})});showToast('Service deactivation submitted for approval');await loadApprovals()}catch(e){showToast(e.message)}};
+window.requestServiceDelete=function(id){openActionPrompt({title:'Deactivate service',notice:'The service will remain live until the change is approved.',label:'Reason for deactivation',required:true,button:'Submit for approval',onSubmit:async({text})=>{await api('/api/services/'+id,{method:'DELETE',body:JSON.stringify({reason:text})});showToast('Service deactivation submitted for approval');await loadApprovals()}})};
 
 window.loadApprovals=async function(){
   try{const rows=await api('/api/approvals?status=pending');approvalTable.innerHTML=table([
     ['Request',x=>'<b>'+esc(x.request_title)+'</b><br><small class="muted">'+esc(x.action_key)+'</small>'],['Reason',x=>esc(x.reason||'—')],['Requested',x=>new Date(x.requested_at).toLocaleString()],['Approvals',x=>Number(x.approvals||0)],['Action',x=>'<div class="toolbar"><button class="btn sm primary" onclick="reviewApproval(\''+x.id+'\',\'approve\')">Approve</button><button class="btn sm danger" onclick="reviewApproval(\''+x.id+'\',\'reject\')">Reject</button></div>']
   ],rows)}catch(e){approvalTable.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
-window.reviewApproval=async function(id,action){const comment=prompt(action==='approve'?'Approval comment (optional)':'Reason for rejection')||'';if(action==='reject'&&!comment)return;try{await api('/api/approvals/'+id+'/review',{method:'POST',body:JSON.stringify({action,comment:comment||undefined})});showToast('Approval '+action+'d');await Promise.all([loadApprovals(),reloadAll()])}catch(e){showToast(e.message)}};
+window.reviewApproval=function(id,action){openActionPrompt({title:action==='approve'?'Approve request':'Reject request',notice:action==='approve'?'Confirm that this controlled change can be applied to the live system.':'Rejecting prevents this request from changing the live system.',label:action==='approve'?'Approval comment':'Reason for rejection',required:action==='reject',button:action==='approve'?'Approve':'Reject',onSubmit:async({text})=>{await api('/api/approvals/'+id+'/review',{method:'POST',body:JSON.stringify({action,comment:text||undefined})});showToast(action==='approve'?'Request approved':'Request rejected');await Promise.all([loadApprovals(),reloadAll()])}})};
 
 let enterpriseFinance=null;
 window.loadEnterpriseFinance=async function(){
@@ -360,6 +361,34 @@ window.loadPaymentOperations=async function(){
 };
 window.reconcilePayment=async function(id){try{await api('/api/payments/'+id+'/reconcile',{method:'PATCH',body:JSON.stringify({note:'Reconciled from Shop payment operations'})});showToast('Payment reconciled');await Promise.all([reloadAll(),loadPaymentOperations()])}catch(e){showToast(e.message)}};
 
+let actionPromptHandler=null;
+window.openActionPrompt=function(opts){
+  actionPromptTitle.textContent=opts.title||'Confirm action';
+  actionPromptNotice.textContent=opts.notice||'';
+  actionPromptInputLabel.textContent=opts.label||'Comment';
+  actionPromptInput.value='';
+  actionPromptInput.required=Boolean(opts.required);
+  actionPromptSubmit.textContent=opts.button||'Continue';
+  if(opts.options?.length){
+    actionPromptSelectWrap.style.display='';
+    actionPromptSelectLabel.textContent=opts.selectLabel||'Select';
+    actionPromptSelect.innerHTML=opts.options.map(x=>'<option value="'+esc(x[0])+'">'+esc(x[1])+'</option>').join('');
+  }else{
+    actionPromptSelectWrap.style.display='none';
+    actionPromptSelect.innerHTML='';
+  }
+  actionPromptHandler=opts.onSubmit||null;
+  openModal('actionPromptModal');
+};
+actionPromptForm.onsubmit=async e=>{
+  e.preventDefault();
+  const handler=actionPromptHandler;if(!handler)return;
+  actionPromptSubmit.disabled=true;
+  try{await handler({text:actionPromptInput.value.trim(),value:actionPromptSelect.value});closeModal('actionPromptModal')}
+  catch(err){showToast(err.message)}
+  finally{actionPromptSubmit.disabled=false}
+};
+
 let procurementData=null;
 window.loadProcurement=async function(){
   if(!selectedShopId)return;
@@ -406,7 +435,7 @@ window.loadTickets=async function(){
   ],rows);ticketCustomer.innerHTML='<option value="">Internal / no customer</option>'+filtered(base.customers).map(x=>'<option value="'+x.id+'">'+esc(x.name)+'</option>').join('')}catch(e){ticketTable.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
 ticketFormAdmin.onsubmit=async e=>{e.preventDefault();try{await api('/api/tickets',{method:'POST',body:JSON.stringify({shopId:selectedShopId,branchId:selectedBranchId||undefined,customerId:ticketCustomer.value||undefined,category:ticketCategory.value,subject:ticketSubject.value,description:ticketDescription.value,priority:ticketPriority.value})});ticketFormAdmin.reset();closeModal('ticketModal');showToast('Ticket created');await loadTickets()}catch(err){showToast(err.message)}};
-window.advanceTicket=async function(id){const status=prompt('New status: in_progress, waiting_customer, resolved or closed','in_progress');if(!status)return;try{await api('/api/tickets/'+id,{method:'PATCH',body:JSON.stringify({status})});await loadTickets()}catch(e){showToast(e.message)}};
+window.advanceTicket=function(id){openActionPrompt({title:'Update ticket status',notice:'Choose the next support status for this ticket.',selectLabel:'Status',options:[['in_progress','In progress'],['waiting_customer','Waiting for customer'],['resolved','Resolved'],['closed','Closed']],label:'Internal note (optional)',required:false,button:'Update ticket',onSubmit:async({text,value})=>{await api('/api/tickets/'+id,{method:'PATCH',body:JSON.stringify({status:value})});await loadTickets();showToast('Ticket updated')}})};
 
 window.loadPosDevices=async function(){
   try{const rows=await api('/api/pos/devices?shopId='+encodeURIComponent(selectedShopId));posDeviceTable.innerHTML=table([
