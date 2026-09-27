@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Db } from './db.js';
 import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
+import { assertSalonBookingAvailability } from './salon.js';
 import { authorize, resetCorePasswordAsSystem } from './auth.js';
 
 const money=z.coerce.number().finite().min(0);
