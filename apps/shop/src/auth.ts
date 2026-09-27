@@ -143,6 +143,22 @@ export async function resolveCoreContext(request:FastifyRequest,reply:FastifyRep
   }
 }
 
+export async function hasShopCapability(db:Db,organisationId:string,role:string,capability:string){
+  const builtIn=caps[role]||[];
+  if(builtIn.includes('*'))return true;
+  let allowed=builtIn.includes(capability);
+  try{
+    const override=await maybeOne<{allowed:boolean}>(db,
+      'SELECT allowed FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2 AND capability_key=$3',
+      [organisationId,role,capability]
+    );
+    if(override)allowed=override.allowed;
+  }catch(e:any){
+    if(e?.code!=='42P01')throw e;
+  }
+  return allowed;
+}
+
 export async function authorize(db:Db,config:ShopConfig,request:FastifyRequest,reply:FastifyReply,capability?:string){
   const core=await resolveCoreContext(request,reply,config);
   let membership=await maybeOne<{role:ShopRole;status:string}>(db,
@@ -162,22 +178,9 @@ export async function authorize(db:Db,config:ShopConfig,request:FastifyRequest,r
     const e:any=new Error('Revolt-X Shop access is not active for this user');e.statusCode=403;throw e;
   }
   if(capability){
-    const builtIn=caps[membership.role]||[];
-    if(!builtIn.includes('*')){
-      let allowed=builtIn.includes(capability);
-      try{
-        const override=await maybeOne<{allowed:boolean}>(db,
-          'SELECT allowed FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2 AND capability_key=$3',
-          [core.organisation_id,membership.role,capability]
-        );
-        if(override)allowed=override.allowed;
-      }catch(e:any){
-        // The enterprise access schema may not exist during the first startup migration.
-        if(e?.code!=='42P01')throw e;
-      }
-      if(!allowed){
-        const e:any=new Error('Shop permission required: '+capability);e.statusCode=403;throw e;
-      }
+    const allowed=await hasShopCapability(db,core.organisation_id,membership.role,capability);
+    if(!allowed){
+      const e:any=new Error('Shop permission required: '+capability);e.statusCode=403;throw e;
     }
   }
   return{core,role:membership.role};
