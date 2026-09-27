@@ -296,7 +296,24 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       lines:z.array(z.object({itemType:z.enum(['service','product','other']),itemId:uuid.optional(),description:z.string().min(1),quantity:positive,unitPrice:money})).min(1)
     }).parse(req.body);
     const subtotal=b.lines.reduce((s,l)=>s+(l.quantity*l.unitPrice),0);
-    const taxable=Math.max(0,subtotal-b.discount);
+    let appliedDiscount=b.discount;
+    let automaticDiscount:any=null;
+    if(b.customerId&&appliedDiscount<=0){
+      automaticDiscount=await maybeOne<any>(db,`
+        SELECT * FROM shop_customer_discounts
+        WHERE organisation_id=$1 AND shop_id=$2 AND customer_id=$3
+          AND status='active' AND (expires_at IS NULL OR expires_at>now())
+        ORDER BY CASE WHEN reason='Customer portal registration' THEN 0 ELSE 1 END,created_at
+        LIMIT 1`,
+        [a.core.organisation_id,b.shopId,b.customerId]
+      );
+      if(automaticDiscount){
+        appliedDiscount=automaticDiscount.discount_type==='percent'
+          ? Math.round((subtotal*Number(automaticDiscount.discount_value)/100)*100)/100
+          : Math.min(subtotal,Number(automaticDiscount.discount_value));
+      }
+    }
+    const taxable=Math.max(0,subtotal-appliedDiscount);
     const salonSettings=await maybeOne<any>(db,'SELECT tax_percent FROM salon_settings WHERE shop_id=$1 AND organisation_id=$2',[b.shopId,a.core.organisation_id]);
     const taxRate=Math.max(0,Number(salonSettings?.tax_percent||0));
     const tax=Math.round((taxable*taxRate/100)*100)/100;
@@ -310,7 +327,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       const r=await c.query(
         `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,job_id,booking_id,order_no,subtotal,discount,tax,total,balance,notes,created_by)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13) RETURNING *`,
-        [a.core.organisation_id,b.shopId,b.branchId||null,b.customerId||null,b.jobId||null,b.bookingId||null,orderNo,subtotal,b.discount,tax,total,b.notes||null,a.core.id]
+        [a.core.organisation_id,b.shopId,b.branchId||null,b.customerId||null,b.jobId||null,b.bookingId||null,orderNo,subtotal,appliedDiscount,tax,total,b.notes||null,a.core.id]
       );
       for(const l of b.lines){
         await c.query(
@@ -327,9 +344,16 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
             VALUES($1,$2,$3,$4,'sale',$5,'order',$6,$7)`,[a.core.organisation_id,b.shopId,b.branchId||null,l.itemId,-l.quantity,r.rows[0].id,orderNo]);
         }
       }
+      if(automaticDiscount){
+        await c.query(
+          `UPDATE shop_customer_discounts SET status='redeemed',redeemed_order_id=$1,redeemed_at=now()
+           WHERE id=$2 AND status='active'`,
+          [r.rows[0].id,automaticDiscount.id]
+        );
+      }
       return r.rows[0];
     });
-    await audit(db,a.core.organisation_id,a.core.id,'order.created','order',order.id,b.shopId,{orderNo,total});
+    await audit(db,a.core.organisation_id,a.core.id,'order.created','order',order.id,b.shopId,{orderNo,total,discount:appliedDiscount,automaticDiscountId:automaticDiscount?.id||null});
     return reply.code(201).send(order);
   });
 
