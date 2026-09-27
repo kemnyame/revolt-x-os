@@ -22,9 +22,9 @@ export type CoreContext={
 type CoreTokens={accessToken:string;refreshToken:string;expiresIn:number;organisationId?:string};
 export type DemoPersona='shop_admin'|'manager'|'cashier'|'service'|'finance'|'inventory'|'auditor';
 export type DemoTokens=CoreTokens&{demo:true;persona:DemoPersona;userId:string;email:string;firstName:string;lastName:string;jobTitle:string};
-export type ShopRole='shop_admin'|'manager'|'cashier'|'finance'|'service'|'inventory'|'auditor';
+export type ShopRole=string;
 
-const caps:Record<ShopRole,string[]>={
+const caps:Record<string,string[]>={
   shop_admin:['*'],
   manager:['dashboard.read','shops.manage','customers.manage','services.manage','jobs.manage','sales.manage','payments.create','payments.read','inventory.manage','reports.read','bookings.manage'],
   cashier:['dashboard.read','customers.manage','sales.manage','payments.create','payments.read','bookings.manage'],
@@ -162,9 +162,22 @@ export async function authorize(db:Db,config:ShopConfig,request:FastifyRequest,r
     const e:any=new Error('Revolt-X Shop access is not active for this user');e.statusCode=403;throw e;
   }
   if(capability){
-    const allowed=caps[membership.role]||[];
-    if(!allowed.includes('*')&&!allowed.includes(capability)){
-      const e:any=new Error('Shop permission required: '+capability);e.statusCode=403;throw e;
+    const builtIn=caps[membership.role]||[];
+    if(!builtIn.includes('*')){
+      let allowed=builtIn.includes(capability);
+      try{
+        const override=await maybeOne<{allowed:boolean}>(db,
+          'SELECT allowed FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2 AND capability_key=$3',
+          [core.organisation_id,membership.role,capability]
+        );
+        if(override)allowed=override.allowed;
+      }catch(e:any){
+        // The enterprise access schema may not exist during the first startup migration.
+        if(e?.code!=='42P01')throw e;
+      }
+      if(!allowed){
+        const e:any=new Error('Shop permission required: '+capability);e.statusCode=403;throw e;
+      }
     }
   }
   return{core,role:membership.role};
