@@ -18,7 +18,9 @@ const schema=z.object({
   SHOP_BOOTSTRAP_PASSWORD:z.preprocess(emptyToUndefined,z.string().min(8).optional()),
   OS_BOOTSTRAP_EMAIL:z.preprocess(emptyToUndefined,z.string().email().optional()),
   OS_BOOTSTRAP_PASSWORD:z.preprocess(emptyToUndefined,z.string().min(8).optional()),
-  BOOTSTRAP_CREDENTIALS_VERSION:z.string().default('v1')
+  BOOTSTRAP_CREDENTIALS_VERSION:z.string().default('v1'),
+  SALON_DEMO_SEED:z.coerce.boolean().default(false),
+  SALON_DEMO_VERSION:z.string().default('v1')
 });
 
 export type ShopConfig=z.infer<typeof schema>;
