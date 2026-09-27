@@ -407,6 +407,19 @@ async function applyApprovedRequest(db:Db,request:any,approvedBy?:string|null){
        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status=EXCLUDED.status`,
       [request.organisation_id,request.target_id,p.role,p.status||'active']
     );
+  }else if(request.action_key==='access.role_capabilities_change'){
+    const valid=(await db.query('SELECT key FROM shop_capabilities')).rows.map((x:any)=>x.key);
+    const selected=new Set((p.capabilities||[]).filter((x:string)=>valid.includes(x)));
+    await tx(db,async client=>{
+      await client.query('DELETE FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2',[request.organisation_id,p.role]);
+      for(const key of valid){
+        await client.query(
+          `INSERT INTO shop_role_capabilities(organisation_id,role,capability_key,allowed)
+           VALUES($1,$2,$3,$4)`,
+          [request.organisation_id,p.role,key,selected.has(key)]
+        );
+      }
+    });
   }else if(request.action_key==='purchase_order.approve'){
     await db.query(
       `UPDATE shop_purchase_orders SET status='approved',approved_by=$1,approved_at=now(),updated_at=now()
@@ -758,21 +771,18 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
   app.put('/api/access/roles/:role/capabilities',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'roles.manage');
     const role=z.string().min(2).max(60).parse((req.params as any).role);
-    const b=z.object({capabilities:z.array(z.string().min(2)).max(200)}).parse(req.body);
+    const b=z.object({capabilities:z.array(z.string().min(2)).max(200),reason:z.string().trim().min(3).max(1000).default('Change Shop role privileges')}).parse(req.body);
+    const roleRow=await maybeOne<any>(db,'SELECT * FROM shop_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,role]);
+    if(!roleRow)return reply.code(404).send({error:{message:'Shop role not found'}});
     const valid=(await db.query('SELECT key FROM shop_capabilities')).rows.map((x:any)=>x.key);
-    const selected=new Set(b.capabilities.filter(x=>valid.includes(x)));
-    await tx(db,async c=>{
-      await c.query('DELETE FROM shop_role_capabilities WHERE organisation_id=$1 AND role=$2',[a.core.organisation_id,role]);
-      for(const key of valid){
-        await c.query(
-          `INSERT INTO shop_role_capabilities(organisation_id,role,capability_key,allowed)
-           VALUES($1,$2,$3,$4)`,
-          [a.core.organisation_id,role,key,selected.has(key)]
-        );
-      }
+    const selected=[...new Set(b.capabilities.filter(x=>valid.includes(x)))];
+    const shop=await maybeOne<any>(db,'SELECT id FROM shops WHERE organisation_id=$1 ORDER BY created_at LIMIT 1',[a.core.organisation_id]);
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId:shop?.id||null,actionKey:'access.role_capabilities_change',
+      targetType:'shop_role',targetId:roleRow.id,title:'Change privileges for '+roleRow.name,reason:b.reason,
+      payload:{role,capabilities:selected},requestedBy:a.core.id
     });
-    await audit(db,a.core.organisation_id,a.core.id,'access.role_capabilities_changed','role',null,null,null,{role,capabilities:[...selected]});
-    return{updated:true,role,capabilities:[...selected]};
+    return reply.code(202).send({approvalRequired:true,request});
   });
 
   app.get('/api/finance/overview',async(req,reply)=>{
