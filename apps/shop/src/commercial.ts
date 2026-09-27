@@ -94,4 +94,54 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
     const hours=(await db.query('SELECT * FROM salon_business_hours WHERE shop_id=$1 AND organisation_id=$2 ORDER BY day_of_week',[shopId,a.core.organisation_id])).rows;
     return{settings,hours};
   });
+
+  app.patch('/api/salon/settings/:shopId',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'shops.manage');
+    const shopId=z.string().uuid().parse((req.params as any).shopId);
+    const b=z.object({
+      timezone:z.string().min(2).max(80).optional(),
+      bookingIntervalMinutes:z.coerce.number().int().min(5).max(120).optional(),
+      allowOnlineBooking:z.boolean().optional(),
+      allowWalkins:z.boolean().optional(),
+      taxPercent:z.coerce.number().min(0).max(100).optional(),
+      receiptFooter:z.string().max(1000).optional().nullable(),
+      branchId:z.string().uuid().optional(),
+      hours:z.array(z.object({
+        dayOfWeek:z.coerce.number().int().min(0).max(6),
+        openTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/),
+        closeTime:z.string().regex(/^([01]\\d|2[0-3]):[0-5]\\d$/),
+        isClosed:z.boolean().default(false)
+      })).max(7).optional()
+    }).parse(req.body);
+    const owns=await maybeOne<any>(db,'SELECT id FROM shops WHERE id=$1 AND organisation_id=$2',[shopId,a.core.organisation_id]);
+    if(!owns)return reply.code(404).send({error:{message:'Shop not found'}});
+    await tx(db,async client=>{
+      await client.query(
+        `INSERT INTO salon_settings(shop_id,organisation_id,timezone,booking_interval_minutes,allow_online_booking,allow_walkins,tax_percent,receipt_footer)
+         VALUES($1,$2,coalesce($3,'Africa/Accra'),coalesce($4,15),coalesce($5,true),coalesce($6,true),coalesce($7,0),$8)
+         ON CONFLICT(shop_id) DO UPDATE SET
+           timezone=coalesce($3,salon_settings.timezone),
+           booking_interval_minutes=coalesce($4,salon_settings.booking_interval_minutes),
+           allow_online_booking=coalesce($5,salon_settings.allow_online_booking),
+           allow_walkins=coalesce($6,salon_settings.allow_walkins),
+           tax_percent=coalesce($7,salon_settings.tax_percent),
+           receipt_footer=CASE WHEN $9 THEN $8 ELSE salon_settings.receipt_footer END,
+           updated_at=now()`,
+        [shopId,a.core.organisation_id,b.timezone??null,b.bookingIntervalMinutes??null,b.allowOnlineBooking??null,b.allowWalkins??null,b.taxPercent??null,b.receiptFooter??null,Object.prototype.hasOwnProperty.call(b,'receiptFooter')]
+      );
+      if(b.branchId&&b.hours){
+        const branch=await maybeOne<any>(client,'SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3',[b.branchId,shopId,a.core.organisation_id]);
+        if(!branch)throw Object.assign(new Error('Branch not found'),{statusCode:404});
+        for(const h of b.hours){
+          await client.query(
+            `INSERT INTO salon_business_hours(organisation_id,shop_id,branch_id,day_of_week,open_time,close_time,is_closed)
+             VALUES($1,$2,$3,$4,$5::time,$6::time,$7)
+             ON CONFLICT(branch_id,day_of_week) DO UPDATE SET open_time=EXCLUDED.open_time,close_time=EXCLUDED.close_time,is_closed=EXCLUDED.is_closed,updated_at=now()`,
+            [a.core.organisation_id,shopId,b.branchId,h.dayOfWeek,h.openTime,h.closeTime,h.isClosed]
+          );
+        }
+      }
+    });
+    return{updated:true};
+  });
 }
