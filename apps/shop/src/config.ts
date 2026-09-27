@@ -13,7 +13,12 @@ const schema=z.object({
   DB_POOL_MAX:z.coerce.number().int().min(1).max(30).default(5),
   PUBLIC_BASE_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
   PAYSTACK_SECRET_KEY:z.preprocess(emptyToUndefined,z.string().optional()),
-  PAYSTACK_CURRENCY:z.string().default('GHS')
+  PAYSTACK_CURRENCY:z.string().default('GHS'),
+  SHOP_BOOTSTRAP_EMAIL:z.preprocess(emptyToUndefined,z.string().email().optional()),
+  SHOP_BOOTSTRAP_PASSWORD:z.preprocess(emptyToUndefined,z.string().min(8).optional()),
+  OS_BOOTSTRAP_EMAIL:z.preprocess(emptyToUndefined,z.string().email().optional()),
+  OS_BOOTSTRAP_PASSWORD:z.preprocess(emptyToUndefined,z.string().min(8).optional()),
+  BOOTSTRAP_CREDENTIALS_VERSION:z.string().default('v1')
 });
 
 export type ShopConfig=z.infer<typeof schema>;
