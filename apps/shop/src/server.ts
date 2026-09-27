@@ -7,11 +7,13 @@ import { readFileSync } from 'node:fs';
 import { loadConfig } from './config.js';
 import { createDb, ensureShopNamespace } from './db.js';
 import { ensureShopSchema } from './schema.js';
+import { ensureEnterpriseShopSchema } from './enterprise-schema.js';
 import { clearAuthCookies, loginDemoToCore, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
+import { registerEnterpriseShopRoutes, runShopAutomations } from './enterprise.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
 import { ensureDemoWorkspace } from './demo.js';
 import { demoLoginHtml, loginHtml, resetHtml } from './ui.js';
@@ -21,6 +23,7 @@ const db=createDb(config);
 const app=Fastify({logger:true,trustProxy:true});
 const salonHtml=readFileSync(new URL('../public/salon.html',import.meta.url),'utf8');
 const salonStorefrontHtml=readFileSync(new URL('../public/salon-storefront.html',import.meta.url),'utf8');
+const customerPortalHtml=readFileSync(new URL('../public/customer-portal.html',import.meta.url),'utf8');
 
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{
@@ -42,6 +45,7 @@ app.setErrorHandler((error,request,reply)=>{
 await ensureShopNamespace(db);
 await ensureShopSchema(db);
 await ensureSalonSchema(db);
+await ensureEnterpriseShopSchema(db);
 const cleanup=await purgeLegacyShopDemoData(db);
 if(cleanup.removedShops>0)app.log.info(cleanup,'Legacy demo salon data removed');
 
@@ -90,6 +94,10 @@ app.get('/store/:slug',async(req,reply)=>{
   z.string().min(2).max(100).parse((req.params as any).slug);
   return reply.type('text/html; charset=utf-8').send(salonStorefrontHtml);
 });
+app.get('/customer/:slug',async(req,reply)=>{
+  z.string().min(2).max(100).parse((req.params as any).slug);
+  return reply.type('text/html; charset=utf-8').send(customerPortalHtml);
+});
 app.get('/payments/callback',async(req,reply)=>{
   const ref=String((req.query as any)?.reference||'');
   return reply.type('text/html; charset=utf-8').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment received</title><style>body{font-family:system-ui;background:#f4f7fb;display:grid;place-items:center;min-height:100vh;margin:0}.c{background:white;border:1px solid #dfe7f1;border-radius:18px;padding:30px;max-width:520px;text-align:center}a{color:#2563eb}</style></head><body><div class="c"><h1>Payment submitted</h1><p>Your payment reference is <b>${ref.replace(/[<>&"]/g,'')}</b>.</p><p>The final status is confirmed by the payment provider and reflected in the salon payment monitor.</p><a href="/">Return to Revolt-X Shop</a></div></body></html>`);
@@ -99,6 +107,11 @@ await registerShopApi(app,{db,config});
 await registerSalonRoutes(app,{db,config});
 await registerCommercialSalonRoutes(app,{db,config});
 await registerPaymentWebhook(app,{db,config});
+await registerEnterpriseShopRoutes(app,{db,config});
+
+const automationRun=()=>runShopAutomations(db,config).catch(error=>app.log.error({error},'Shop automation run failed'));
+setTimeout(automationRun,5000).unref();
+setInterval(automationRun,10*60*1000).unref();
 
 const close=async()=>{await app.close();await db.end();process.exit(0)};
 process.on('SIGTERM',close);
