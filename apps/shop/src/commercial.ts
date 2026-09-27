@@ -325,16 +325,30 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
   });
 
   app.get('/api/integrations/status',async(req,reply)=>{
-    await authorize(db,config,req,reply,'dashboard.read');
+    const a=await authorize(db,config,req,reply,'dashboard.read');
+    const [deviceCount,customerPortals]=await Promise.all([
+      db.query('SELECT count(*)::int c FROM shop_pos_devices WHERE organisation_id=$1 AND status<>\'disabled\'',[a.core.organisation_id]),
+      db.query('SELECT count(*)::int c FROM shop_customer_portal_accounts WHERE organisation_id=$1 AND status=\'active\'',[a.core.organisation_id])
+    ]);
     return{
       coreOs:{configured:Boolean(config.CORE_OS_URL),status:'connected'},
+      database:{configured:Boolean(config.SHOP_DATABASE_URL),status:'connected'},
       onlinePayments:{
         provider:'paystack',
         configured:Boolean(config.PAYSTACK_SECRET_KEY&&config.PUBLIC_BASE_URL),
         secretConfigured:Boolean(config.PAYSTACK_SECRET_KEY),
         callbackConfigured:Boolean(config.PUBLIC_BASE_URL),
         webhookUrl:config.PUBLIC_BASE_URL?config.PUBLIC_BASE_URL.replace(/\/$/,'')+'/api/webhooks/paystack':null
-      }
+      },
+      messaging:{
+        sms:{configured:Boolean(config.SMS_WEBHOOK_URL),provider:config.SMS_WEBHOOK_URL?'webhook':'not configured'},
+        whatsapp:{configured:Boolean(config.WHATSAPP_API_URL),provider:config.WHATSAPP_API_URL?'api':'not configured'}
+      },
+      customerPortal:{configured:true,activeAccounts:Number(customerPortals.rows[0]?.c||0)},
+      pos:{registeredDevices:Number(deviceCount.rows[0]?.c||0),ready:true},
+      ticketing:{ready:true},
+      approvals:{ready:true},
+      finance:{ready:true}
     };
   });
 
