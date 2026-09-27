@@ -571,7 +571,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   });
 
   app.get('/api/orders/:id/full',async(req,reply)=>{
-    const a=await authorize(db,config,req,reply,'dashboard.read');
+    const a=await authorize(db,config,req,reply);
+    if(!['shop_admin','manager','cashier','finance','auditor'].includes(a.role)){
+      return reply.code(403).send({error:{message:'Invoice access is not available for this Shop role'}});
+    }
     const id=uuid.parse((req.params as any).id);
     const order=await maybeOne<any>(db,'SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     if(!order)return reply.code(404).send({error:{message:'Invoice not found'}});
