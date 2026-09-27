@@ -1301,18 +1301,23 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
   app.get('/api/pos/devices',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'sales.manage');
     const shopId=(req.query as any)?.shopId||null;
-    return (await db.query('SELECT * FROM shop_pos_devices WHERE organisation_id=$1 AND ($2::uuid IS NULL OR shop_id=$2) ORDER BY device_name',[a.core.organisation_id,shopId])).rows;
+    return (await db.query('SELECT id,organisation_id,shop_id,branch_id,device_name,device_code,provider,terminal_id,status,capabilities,last_seen_at,firmware_version,last_ip,created_at FROM shop_pos_devices WHERE organisation_id=$1 AND ($2::uuid IS NULL OR shop_id=$2) ORDER BY device_name',[a.core.organisation_id,shopId])).rows;
   });
 
   app.post('/api/pos/devices',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'settings.manage');
     const b=z.object({shopId:uuid,branchId:uuid.optional(),deviceName:z.string().min(2).max(160),deviceCode:z.string().min(2).max(100),provider:z.string().max(100).optional(),terminalId:z.string().max(150).optional(),capabilities:z.record(z.string(),z.any()).optional()}).parse(req.body);
+    const deviceToken='rxpos_'+randomBytes(32).toString('base64url');
     const r=await db.query(`
-      INSERT INTO shop_pos_devices(organisation_id,shop_id,branch_id,device_name,device_code,provider,terminal_id,capabilities)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *`,
-      [a.core.organisation_id,b.shopId,b.branchId||null,b.deviceName,b.deviceCode,b.provider||null,b.terminalId||null,JSON.stringify(b.capabilities||{})]
+      INSERT INTO shop_pos_devices(
+        organisation_id,shop_id,branch_id,device_name,device_code,provider,terminal_id,capabilities,device_token_hash,registered_by
+      )
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
+      RETURNING id,organisation_id,shop_id,branch_id,device_name,device_code,provider,terminal_id,status,capabilities,created_at`,
+      [a.core.organisation_id,b.shopId,b.branchId||null,b.deviceName,b.deviceCode,b.provider||null,b.terminalId||null,JSON.stringify(b.capabilities||{}),sha(deviceToken),a.core.id]
     );
-    return reply.code(201).send(r.rows[0]);
+    await audit(db,a.core.organisation_id,a.core.id,'pos.device_registered','pos_device',r.rows[0].id,b.shopId,b.branchId||null,{deviceCode:b.deviceCode});
+    return reply.code(201).send({...r.rows[0],deviceToken});
   });
 
   app.post('/api/pos/devices/:id/heartbeat',async(req,reply)=>{
@@ -1321,6 +1326,97 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     const r=await db.query("UPDATE shop_pos_devices SET status='online',last_seen_at=now() WHERE id=$1 AND organisation_id=$2 RETURNING *",[id,a.core.organisation_id]);
     if(!r.rowCount)return reply.code(404).send({error:{message:'POS device not found'}});
     return r.rows[0];
+  });
+
+  async function posDeviceAuth(request:FastifyRequest){
+    const auth=String(request.headers.authorization||'');
+    const token=auth.startsWith('Bearer ')?auth.slice(7).trim():'';
+    if(!token){const e:any=new Error('POS device token required');e.statusCode=401;throw e;}
+    const device=await maybeOne<any>(db,
+      `SELECT * FROM shop_pos_devices WHERE device_token_hash=$1 AND status<>'disabled' LIMIT 1`,
+      [sha(token)]
+    );
+    if(!device){const e:any=new Error('Invalid POS device token');e.statusCode=401;throw e;}
+    return device;
+  }
+
+  app.post('/api/pos-device/heartbeat',async(req,reply)=>{
+    const device=await posDeviceAuth(req);
+    const b=z.object({firmwareVersion:z.string().max(100).optional(),capabilities:z.record(z.string(),z.any()).optional()}).parse(req.body||{});
+    const r=await db.query(
+      `UPDATE shop_pos_devices SET status='online',last_seen_at=now(),last_ip=$1,
+       firmware_version=coalesce($2,firmware_version),
+       capabilities=CASE WHEN $3::jsonb='{}'::jsonb THEN capabilities ELSE capabilities||$3::jsonb END
+       WHERE id=$4
+       RETURNING id,device_name,device_code,status,last_seen_at,firmware_version`,
+      [req.ip,b.firmwareVersion||null,JSON.stringify(b.capabilities||{}),device.id]
+    );
+    return r.rows[0];
+  });
+
+  app.get('/api/pos-device/payment-intents/next',async(req,reply)=>{
+    const device=await posDeviceAuth(req);
+    const intent=await maybeOne<any>(db,`
+      SELECT i.id,i.order_id,i.idempotency_key,i.method,i.amount,i.currency,i.status,i.expires_at,
+             o.order_no,o.total,o.balance
+      FROM shop_payment_intents i
+      JOIN shop_orders o ON o.id=i.order_id
+      WHERE i.pos_device_id=$1 AND i.status='pending' AND (i.expires_at IS NULL OR i.expires_at>now())
+      ORDER BY i.created_at LIMIT 1`,[device.id]);
+    await db.query("UPDATE shop_pos_devices SET status='online',last_seen_at=now(),last_ip=$1 WHERE id=$2",[req.ip,device.id]);
+    return{intent};
+  });
+
+  app.patch('/api/pos-device/payment-intents/:id/status',async(req,reply)=>{
+    const device=await posDeviceAuth(req);
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({
+      status:z.enum(['authorized','successful','failed','cancelled','review_required']),
+      providerReference:z.string().max(200).optional(),
+      metadata:z.record(z.string(),z.any()).optional()
+    }).parse(req.body);
+    const result=await tx(db,async client=>{
+      const ir=await client.query(
+        'SELECT * FROM shop_payment_intents WHERE id=$1 AND pos_device_id=$2 FOR UPDATE',
+        [id,device.id]
+      );
+      if(!ir.rowCount)return null;
+      const intent=ir.rows[0];
+      if(['successful','failed','cancelled'].includes(intent.status))return intent;
+      if(intent.expires_at&&new Date(intent.expires_at)<new Date()&&b.status==='successful')throw Object.assign(new Error('Payment intent has expired'),{statusCode:409});
+      await client.query(
+        `UPDATE shop_payment_intents SET status=$1,provider_reference=coalesce($2,provider_reference),
+         metadata=metadata||$3::jsonb,updated_at=now() WHERE id=$4`,
+        [b.status,b.providerReference||null,JSON.stringify(b.metadata||{}),id]
+      );
+      if(b.status==='successful'){
+        let payment=await maybeOne<any>(client,'SELECT * FROM shop_payments WHERE payment_intent_id=$1 LIMIT 1',[id]);
+        if(!payment){
+          payment=(await client.query(`
+            INSERT INTO shop_payments(
+              organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,provider_reference,method,
+              amount,currency,status,paid_at,pos_device_id,payment_intent_id,source,reconciliation_status,raw_json
+            )
+            VALUES($1,$2,$3,$4,$5,$6,'pos_device',$7,$8,$9,$10,'successful',now(),$11,$12,'pos','unreconciled',$13::jsonb)
+            RETURNING *`,
+            [intent.organisation_id,intent.shop_id,intent.branch_id,intent.order_id,intent.customer_id,code('POSPAY'),b.providerReference||intent.provider_reference,intent.method,intent.amount,intent.currency,device.id,id,JSON.stringify(b.metadata||{})]
+          )).rows[0];
+          await client.query(`
+            INSERT INTO shop_ledger_entries(
+              organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,source_type,source_id,reference,description
+            )
+            VALUES($1,$2,$3,'1000','Cash / Settlement',$4,0,'payment',$5,$6,'POS customer receipt'),
+                  ($1,$2,$3,'4000','Sales Revenue',0,$4,'payment',$5,$6,'POS customer receipt')`,
+            [intent.organisation_id,intent.shop_id,intent.branch_id,intent.amount,payment.id,payment.reference]
+          );
+          if(intent.order_id)await updateOrderPaymentStatus(client,intent.order_id);
+        }
+      }
+      await client.query("UPDATE shop_pos_devices SET status='online',last_seen_at=now(),last_ip=$1 WHERE id=$2",[req.ip,device.id]);
+      return maybeOne<any>(client,'SELECT id,status,provider_reference,updated_at FROM shop_payment_intents WHERE id=$1',[id]);
+    });
+    if(!result)return reply.code(404).send({error:{message:'Payment intent is not assigned to this device'}});
+    return result;
   });
 
   app.get('/api/automation/settings/:shopId',async(req,reply)=>{
