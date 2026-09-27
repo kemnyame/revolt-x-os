@@ -292,29 +292,99 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     const a=await authorize(db,config,req,reply,'bookings.manage');
     const b=z.object({
       shopId:uuid,branchId:uuid.optional(),serviceId:uuid.optional(),customerId:uuid.optional(),
-      customerName:z.string().min(2),phone:z.string().optional(),email:z.string().email().optional().or(z.literal('')),
+      customerName:z.string().trim().min(2),phone:z.string().trim().optional(),email:z.string().email().optional().or(z.literal('')),
       bookedFor:z.coerce.date(),staffId:uuid.optional(),chairId:uuid.optional(),
-      appointmentType:z.enum(['appointment','walk_in']).default('appointment'),notes:z.string().optional()
+      appointmentType:z.enum(['appointment','walk_in']).default('appointment'),notes:z.string().max(2000).optional()
     }).parse(req.body);
-    let queueNo:null|number=null;
-    let status='booked';
+
+    let branchId=b.branchId||null;
+    if(!branchId){
+      const primary=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE organisation_id=$1 AND shop_id=$2 AND status='active' ORDER BY created_at LIMIT 1",[a.core.organisation_id,b.shopId]);
+      branchId=primary?.id||null;
+    }
+    if(!branchId)return reply.code(409).send({error:{message:'Create an active salon branch before adding appointments.'}});
+
+    const branch=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status='active'",[branchId,b.shopId,a.core.organisation_id]);
+    if(!branch)return reply.code(400).send({error:{message:'Selected branch is not available.'}});
+    if(b.serviceId){
+      const service=await maybeOne<any>(db,"SELECT id FROM shop_services WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND active=true",[b.serviceId,b.shopId,a.core.organisation_id]);
+      if(!service)return reply.code(400).send({error:{message:'Selected service is not available.'}});
+    }
+    if(b.staffId){
+      const staff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status='active' AND (branch_id=$4 OR branch_id IS NULL)",[b.staffId,b.shopId,a.core.organisation_id,branchId]);
+      if(!staff)return reply.code(400).send({error:{message:'Selected staff member is not available at this branch.'}});
+    }
+    if(b.chairId){
+      const chair=await maybeOne<any>(db,"SELECT id FROM salon_chairs WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND branch_id=$4 AND status<>'maintenance'",[b.chairId,b.shopId,a.core.organisation_id,branchId]);
+      if(!chair)return reply.code(400).send({error:{message:'Selected chair is not available at this branch.'}});
+    }
+
     await assertSalonBookingAvailability(db,{
       organisationId:a.core.organisation_id,
       shopId:b.shopId,
-      branchId:b.branchId||null,
+      branchId,
       bookedFor:b.bookedFor,
       serviceId:b.serviceId||null,
       staffId:b.staffId||null,
       chairId:b.chairId||null
     });
-    if(b.appointmentType==='walk_in'){
-      const q=await db.query("SELECT queue_number FROM shop_bookings WHERE organisation_id=$1 AND shop_id=$2 AND booked_for::date=CURRENT_DATE AND appointment_type='walk_in'",[a.core.organisation_id,b.shopId]);
-      queueNo=nextQueue(q.rows);status='queued';
-    }
-    const r=await db.query(`INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,booked_for,notes,status,salon_staff_id,salon_chair_id,appointment_type,queue_number,check_in_at,estimated_wait_minutes,source)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CASE WHEN $14='walk_in' THEN now() ELSE NULL END,CASE WHEN $14='walk_in' THEN 15 ELSE 0 END,'staff') RETURNING *`,
-      [a.core.organisation_id,b.shopId,b.branchId||null,b.serviceId||null,b.customerId||null,b.customerName,b.phone||null,b.email||null,b.bookedFor,b.notes||null,status,b.staffId||null,b.chairId||null,b.appointmentType,queueNo]);
-    return reply.code(201).send(r.rows[0]);
+
+    const appointment=await tx(db,async client=>{
+      let customerId=b.customerId||null;
+      if(customerId){
+        const owns=await maybeOne<any>(client,'SELECT id FROM shop_customers WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status=\'active\'',[customerId,b.shopId,a.core.organisation_id]);
+        if(!owns)throw Object.assign(new Error('Selected customer is not active for this shop.'),{statusCode:400});
+      }else if((b.phone&&b.phone.length>=6)||b.email){
+        const existing=await maybeOne<any>(client,`
+          SELECT id FROM shop_customers
+          WHERE shop_id=$1 AND organisation_id=$2 AND status='active'
+            AND (($3<>'' AND phone=$3) OR ($4<>'' AND lower(email)=lower($4)))
+          ORDER BY created_at LIMIT 1`,
+          [b.shopId,a.core.organisation_id,b.phone||'',b.email||'']
+        );
+        if(existing)customerId=existing.id;
+        else{
+          const created=await client.query(`
+            INSERT INTO shop_customers(organisation_id,shop_id,branch_id,customer_no,name,phone,email,customer_type,status)
+            VALUES($1,$2,$3,'CUS-'||upper(substr(replace(gen_random_uuid()::text,'-',''),1,10)),$4,$5,$6,'retail','active')
+            RETURNING id`,
+            [a.core.organisation_id,b.shopId,branchId,b.customerName,b.phone||null,b.email||null]
+          );
+          customerId=created.rows[0].id;
+        }
+      }
+
+      let queueNo:null|number=null;
+      let status='booked';
+      if(b.appointmentType==='walk_in'){
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",['salon-queue:'+b.shopId+':'+branchId]);
+        const q=await client.query(`
+          SELECT coalesce(max(queue_number),0)::int+1 next_no
+          FROM shop_bookings
+          WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+            AND booked_for::date=CURRENT_DATE AND appointment_type='walk_in'`,
+          [a.core.organisation_id,b.shopId,branchId]
+        );
+        queueNo=Number(q.rows[0]?.next_no||1);
+        status='queued';
+      }
+
+      const r=await client.query(`
+        INSERT INTO shop_bookings(
+          organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,
+          booked_for,notes,status,salon_staff_id,salon_chair_id,appointment_type,queue_number,
+          check_in_at,estimated_wait_minutes,source
+        )
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+          CASE WHEN $14='walk_in' THEN now() ELSE NULL END,
+          CASE WHEN $14='walk_in' THEN 15 ELSE 0 END,'staff')
+        RETURNING *`,
+        [a.core.organisation_id,b.shopId,branchId,b.serviceId||null,customerId,b.customerName,b.phone||null,b.email||null,b.bookedFor,b.notes||null,status,b.staffId||null,b.chairId||null,b.appointmentType,queueNo]
+      );
+      return r.rows[0];
+    });
+
+    return reply.code(201).send(appointment);
   });
 
   app.patch('/api/salon/appointments/:id/status',async(req,reply)=>{
