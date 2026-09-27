@@ -114,6 +114,10 @@ function installEnterprisePanels(){
   if(access&&!document.getElementById('roleCapabilityPanel')){
     access.insertAdjacentHTML('beforeend','<div class="card" id="roleCapabilityPanel" style="margin-top:16px"><div class="card-head"><div><h3>Roles & Privileges</h3><small>School-style granular module access for Shop</small></div><button class="btn sm primary" onclick="openModal(\'roleModal\')">+ Custom role</button></div><div id="roleCapabilityBody"><div class="empty">Open Access & Roles to load privilege controls.</div></div></div>');
   }
+  const audit=document.getElementById('audit');
+  if(audit&&!document.getElementById('systemDiagnosticsPanel')){
+    audit.insertAdjacentHTML('afterbegin',`<div class="card" id="systemDiagnosticsPanel" style="margin-bottom:16px"><div class="card-head"><div><h3>System & Integration Diagnostics</h3><small>Core OS, database, payment, messaging, portal, POS and control services</small></div><button class="btn sm" onclick="loadSystemDiagnostics()">Run checks</button></div><div id="systemDiagnosticsBody"><div class="empty">Run checks to view current integration status.</div></div></div>`);
+  }
   const settings=document.getElementById('settings');
   if(settings&&!document.getElementById('automationPanel')){
     settings.insertAdjacentHTML('beforeend',`<div class="card" id="automationPanel" style="margin-top:16px"><div class="card-head"><div><h3>Automation & Customer Controls</h3><small>Inactive customer threshold, welcome discount, reorder alerts and automated end-of-day close</small></div><button class="btn sm" onclick="loadAutomationSettings()">Reload</button></div><form id="automationForm" class="form-grid"><div class="field"><label>Inactive after (days)</label><input name="inactivityDays" type="number" min="30" value="90"></div><div class="field"><label>Customer registration discount %</label><input name="welcomeDiscountPercent" type="number" min="0" max="100" value="10"></div><div class="field"><label>Automatic EOD close</label><select name="autoEodEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div><div class="field"><label>Automatic EOD time</label><input name="autoEodTime" type="time" value="21:00"></div><div class="field"><label>Reorder alerts</label><select name="reorderAlertsEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div><div class="field wide"><div class="notice">Automatic cash close creates a system EOD snapshot from recorded transactions and marks it for physical cash review.</div></div><div class="field wide"><button class="btn primary" style="width:100%">Save automation settings</button></div></form><div id="portalLinks" style="margin-top:14px"></div></div>`);
@@ -145,6 +149,7 @@ window.loadEnterprisePage=async function(page){
   if(page==='posdevices')return loadPosDevices();
   if(page==='approvals')return loadApprovals();
   if(page==='payments')return loadPaymentOperations();
+  if(page==='audit')return loadSystemDiagnostics();
   if(page==='finance')return loadEnterpriseFinance();
   if(page==='access')return loadRoleCapabilities();
   if(page==='settings'){await loadAutomationSettings();return}
@@ -323,6 +328,28 @@ function renderRoleCapabilities(){
   saveRoleCaps.onclick=async()=>{const caps=[...roleCapabilityBody.querySelectorAll('[data-cap]:checked')].map(x=>x.dataset.cap);try{await api('/api/access/roles/'+encodeURIComponent(role.key)+'/capabilities',{method:'PUT',body:JSON.stringify({capabilities:caps})});showToast('Role privileges updated');await loadRoleCapabilities()}catch(e){showToast(e.message)}};
 }
 roleForm.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(roleForm));try{await api('/api/access/roles',{method:'POST',body:JSON.stringify(f)});roleForm.reset();closeModal('roleModal');showToast('Custom role created');selectedRoleKey=f.key;await loadRoleCapabilities()}catch(err){showToast(err.message)}};
+
+window.loadSystemDiagnostics=async function(){
+  const el=document.getElementById('systemDiagnosticsBody');if(!el)return;
+  try{
+    const d=await api('/api/integrations/status');
+    const cards=[
+      ['Core Revolt-X OS',d.coreOs?.status||'unknown',d.coreOs?.configured],
+      ['Railway Database',d.database?.status||'unknown',d.database?.configured],
+      ['Online Payments',d.onlinePayments?.configured?'ready':'setup required',d.onlinePayments?.configured],
+      ['SMS',d.messaging?.sms?.configured?'configured':'not configured',d.messaging?.sms?.configured],
+      ['WhatsApp API',d.messaging?.whatsapp?.configured?'configured':'not configured',d.messaging?.whatsapp?.configured],
+      ['Customer Portal',(d.customerPortal?.activeAccounts||0)+' active',d.customerPortal?.configured],
+      ['POS Devices',(d.pos?.registeredDevices||0)+' registered',d.pos?.ready],
+      ['Ticketing',d.ticketing?.ready?'ready':'unavailable',d.ticketing?.ready],
+      ['Approvals',d.approvals?.ready?'ready':'unavailable',d.approvals?.ready],
+      ['Finance & Accounts',d.finance?.ready?'ready':'unavailable',d.finance?.ready]
+    ];
+    el.innerHTML='<div class="enterprise-grid three">'+cards.map(x=>'<div class="card" style="box-shadow:none"><small class="muted">'+esc(x[0])+'</small><div style="margin-top:8px">'+tag(String(x[1]).replaceAll('_',' '))+'</div></div>').join('')+'</div>'+
+      (d.onlinePayments?.webhookUrl?'<div class="notice" style="margin-top:12px"><b>Payment webhook</b><br>'+esc(d.onlinePayments.webhookUrl)+'</div>':'')+
+      ((!d.messaging?.sms?.configured||!d.messaging?.whatsapp?.configured)?'<div class="notice" style="margin-top:10px">SMS and WhatsApp business delivery remain queued until provider credentials are configured. In-app chat and WhatsApp hand-off links continue to work.</div>':'');
+  }catch(e){el.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
+};
 
 window.loadPaymentOperations=async function(){
   if(!selectedShopId||!document.getElementById('paymentOperationsBody'))return;
