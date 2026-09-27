@@ -75,17 +75,28 @@ document.body.insertAdjacentHTML('beforeend',`
 
 const oldAllowed=allowedPages;
 allowedPages=function(role){
-  const basePages=oldAllowed(role);
-  const extra={
-    shop_admin:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
-    manager:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
-    cashier:['communications','tickets','posdevices'],
-    finance:[],
-    service:[],
-    inventory:['assets','procurement'],
-    auditor:[]
-  }[role]||[];
-  return [...new Set([...basePages,...extra])];
+  const caps=new Set(base?.shopCapabilities||[]);
+  if(caps.has('*'))return['overview','appointments','queue','customers','team','services','checkout','inventory','payments','finance','reports','retention','communications','assets','procurement','tickets','posdevices','approvals','access','audit','settings'];
+  if(!caps.size){
+    const basePages=oldAllowed(role);
+    const extra={
+      shop_admin:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
+      manager:['retention','communications','assets','procurement','tickets','posdevices','approvals'],
+      cashier:['communications','tickets','posdevices'],
+      inventory:['assets','procurement']
+    }[role]||[];
+    return [...new Set([...basePages,...extra])];
+  }
+  const pageCaps={
+    overview:['dashboard.read'],appointments:['appointments.manage'],queue:['appointments.manage'],
+    customers:['customers.read'],team:['appointments.manage'],services:['services.read'],
+    checkout:['sales.manage'],inventory:['inventory.read'],payments:['payments.read'],
+    finance:['finance.read','finance.manage'],reports:['reports.read'],retention:['retention.manage'],
+    communications:['communications.manage'],assets:['assets.manage'],procurement:['procurement.manage'],
+    tickets:['tickets.manage'],posdevices:['sales.manage'],approvals:['approvals.review'],
+    access:['access.manage','roles.manage'],audit:['audit.read','system.read'],settings:['settings.manage']
+  };
+  return Object.entries(pageCaps).filter(([,required])=>required.some(x=>caps.has(x))).map(([page])=>page);
 };
 
 const oldRenderAll=renderAll;
