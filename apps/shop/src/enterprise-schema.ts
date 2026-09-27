@@ -460,6 +460,64 @@ export async function ensureEnterpriseShopSchema(db:Db){
       UNIQUE(organisation_id,provider,settlement_reference)
     );
 
+    CREATE TABLE IF NOT EXISTS shop_purchase_orders(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organisation_id uuid NOT NULL,
+      shop_id uuid NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      branch_id uuid REFERENCES shop_branches(id) ON DELETE SET NULL,
+      vendor_id uuid REFERENCES shop_finance_vendors(id) ON DELETE SET NULL,
+      po_no text NOT NULL,
+      order_date date NOT NULL DEFAULT CURRENT_DATE,
+      expected_date date,
+      status text NOT NULL DEFAULT 'draft' CHECK(status IN('draft','pending_approval','approved','part_received','received','cancelled')),
+      subtotal numeric(14,2) NOT NULL DEFAULT 0,
+      tax numeric(14,2) NOT NULL DEFAULT 0,
+      total numeric(14,2) NOT NULL DEFAULT 0,
+      notes text,
+      requested_by uuid,
+      approved_by uuid,
+      approved_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(organisation_id,po_no)
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_purchase_order_lines(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      purchase_order_id uuid NOT NULL REFERENCES shop_purchase_orders(id) ON DELETE CASCADE,
+      product_id uuid REFERENCES shop_products(id) ON DELETE SET NULL,
+      description text NOT NULL,
+      ordered_quantity numeric(14,3) NOT NULL CHECK(ordered_quantity>0),
+      received_quantity numeric(14,3) NOT NULL DEFAULT 0 CHECK(received_quantity>=0),
+      unit_cost numeric(14,2) NOT NULL CHECK(unit_cost>=0),
+      line_total numeric(14,2) NOT NULL CHECK(line_total>=0)
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_goods_receipts(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organisation_id uuid NOT NULL,
+      shop_id uuid NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      branch_id uuid REFERENCES shop_branches(id) ON DELETE SET NULL,
+      purchase_order_id uuid NOT NULL REFERENCES shop_purchase_orders(id) ON DELETE RESTRICT,
+      grn_no text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(),
+      received_by uuid,
+      notes text,
+      total_cost numeric(14,2) NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(organisation_id,grn_no)
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_goods_receipt_lines(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      goods_receipt_id uuid NOT NULL REFERENCES shop_goods_receipts(id) ON DELETE CASCADE,
+      purchase_order_line_id uuid NOT NULL REFERENCES shop_purchase_order_lines(id) ON DELETE RESTRICT,
+      product_id uuid REFERENCES shop_products(id) ON DELETE SET NULL,
+      quantity numeric(14,3) NOT NULL CHECK(quantity>0),
+      unit_cost numeric(14,2) NOT NULL CHECK(unit_cost>=0),
+      line_total numeric(14,2) NOT NULL CHECK(line_total>=0)
+    );
+
     CREATE TABLE IF NOT EXISTS shop_automation_settings(
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       organisation_id uuid NOT NULL,
@@ -493,6 +551,8 @@ export async function ensureEnterpriseShopSchema(db:Db){
     CREATE INDEX IF NOT EXISTS idx_shop_assets_due ON shop_assets(organisation_id,status,next_service_date);
     CREATE INDEX IF NOT EXISTS idx_shop_tickets_status ON shop_tickets(organisation_id,shop_id,status,priority,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_shop_finance_journal_date ON shop_finance_journal_entries(organisation_id,entry_date,status);
+    CREATE INDEX IF NOT EXISTS idx_shop_purchase_orders_status ON shop_purchase_orders(organisation_id,shop_id,status,order_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_shop_goods_receipts_po ON shop_goods_receipts(purchase_order_id,received_at DESC);
   `);
 
   await seedCapabilities(db);
@@ -511,6 +571,7 @@ async function seedCapabilities(db:Db){
     ['approvals.review','Review Approvals','Controls','Approve or reject controlled changes',50],
     ['inventory.read','View Inventory','Inventory','View products, equipment and stock alerts',60],
     ['inventory.manage','Manage Inventory','Inventory','Manage products, stock and equipment',61],
+    ['procurement.manage','Procurement','Inventory','Manage suppliers, purchase orders and goods receiving',62],
     ['sales.manage','Sales / POS','Commerce','Create invoices and manage POS checkout',70],
     ['payments.read','View Payments','Commerce','View payment transactions',71],
     ['payments.create','Take Payments','Commerce','Initiate and record payments',72],
