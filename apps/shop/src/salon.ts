@@ -387,6 +387,85 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     return reply.code(201).send(appointment);
   });
 
+  app.patch('/api/salon/appointments/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'bookings.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({
+      branchId:uuid.optional(),
+      serviceId:uuid.optional().nullable(),
+      staffId:uuid.optional().nullable(),
+      chairId:uuid.optional().nullable(),
+      bookedFor:z.coerce.date().optional(),
+      customerName:z.string().trim().min(2).optional(),
+      phone:z.string().trim().optional().nullable(),
+      email:z.string().email().optional().or(z.literal('')).nullable(),
+      notes:z.string().max(2000).optional().nullable()
+    }).parse(req.body);
+
+    const current=await maybeOne<any>(db,'SELECT * FROM shop_bookings WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!current)return reply.code(404).send({error:{message:'Appointment not found'}});
+    if(['in_chair','completed','cancelled','no_show'].includes(current.status)){
+      return reply.code(409).send({error:{message:'This appointment can no longer be rescheduled or edited.'}});
+    }
+
+    const branchId=b.branchId??current.branch_id;
+    const serviceId=Object.prototype.hasOwnProperty.call(b,'serviceId')?b.serviceId:current.service_id;
+    const staffId=Object.prototype.hasOwnProperty.call(b,'staffId')?b.staffId:current.salon_staff_id;
+    const chairId=Object.prototype.hasOwnProperty.call(b,'chairId')?b.chairId:current.salon_chair_id;
+    const bookedFor=b.bookedFor??new Date(current.booked_for);
+
+    if(branchId){
+      const branch=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status='active'",[branchId,current.shop_id,a.core.organisation_id]);
+      if(!branch)return reply.code(400).send({error:{message:'Selected branch is not available.'}});
+    }
+    if(serviceId){
+      const service=await maybeOne<any>(db,"SELECT id FROM shop_services WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND active=true",[serviceId,current.shop_id,a.core.organisation_id]);
+      if(!service)return reply.code(400).send({error:{message:'Selected service is not available.'}});
+    }
+    if(staffId){
+      const staff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND status='active' AND ($4::uuid IS NULL OR branch_id=$4 OR branch_id IS NULL)",[staffId,current.shop_id,a.core.organisation_id,branchId]);
+      if(!staff)return reply.code(400).send({error:{message:'Selected staff member is not available at this branch.'}});
+    }
+    if(chairId){
+      const chair=await maybeOne<any>(db,"SELECT id FROM salon_chairs WHERE id=$1 AND shop_id=$2 AND organisation_id=$3 AND ($4::uuid IS NULL OR branch_id=$4) AND status<>'maintenance'",[chairId,current.shop_id,a.core.organisation_id,branchId]);
+      if(!chair)return reply.code(400).send({error:{message:'Selected chair is not available at this branch.'}});
+    }
+
+    await assertSalonBookingAvailability(db,{
+      organisationId:a.core.organisation_id,
+      shopId:current.shop_id,
+      branchId:branchId||null,
+      bookedFor,
+      serviceId:serviceId||null,
+      staffId:staffId||null,
+      chairId:chairId||null,
+      ignoreBookingId:id
+    });
+
+    const r=await db.query(`
+      UPDATE shop_bookings SET
+        branch_id=$1,
+        service_id=$2,
+        salon_staff_id=$3,
+        salon_chair_id=$4,
+        booked_for=$5,
+        customer_name=coalesce($6,customer_name),
+        phone=CASE WHEN $7 THEN $8 ELSE phone END,
+        email=CASE WHEN $9 THEN $10 ELSE email END,
+        notes=CASE WHEN $11 THEN $12 ELSE notes END
+      WHERE id=$13 AND organisation_id=$14
+      RETURNING *`,
+      [
+        branchId||null,serviceId||null,staffId||null,chairId||null,bookedFor,
+        b.customerName??null,Object.prototype.hasOwnProperty.call(b,'phone'),b.phone??null,
+        Object.prototype.hasOwnProperty.call(b,'email'),b.email||null,
+        Object.prototype.hasOwnProperty.call(b,'notes'),b.notes??null,
+        id,a.core.organisation_id
+      ]
+    );
+    return r.rows[0];
+  });
+
   app.patch('/api/salon/appointments/:id/status',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'bookings.manage');
     const id=uuid.parse((req.params as any).id);
