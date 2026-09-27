@@ -20,6 +20,8 @@ export type CoreContext={
 };
 
 type CoreTokens={accessToken:string;refreshToken:string;expiresIn:number;organisationId?:string};
+export type DemoPersona='shop_admin'|'manager'|'cashier'|'service'|'finance'|'inventory'|'auditor';
+export type DemoTokens=CoreTokens&{demo:true;persona:DemoPersona;userId:string;email:string;firstName:string;lastName:string;jobTitle:string};
 export type ShopRole='shop_admin'|'manager'|'cashier'|'finance'|'service'|'inventory'|'auditor';
 
 const caps:Record<ShopRole,string[]>={
@@ -79,6 +81,14 @@ export async function loginToCore(config:ShopConfig,email:string,password:string
     headers:{'content-type':'application/json'},
     body:JSON.stringify({email,password,...(organisationId?{organisationId}:{})})
   }) as Promise<CoreTokens>;
+}
+
+export async function loginDemoToCore(config:ShopConfig,persona:DemoPersona){
+  return coreJson(config,'/v1/auth/shop-demo',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({persona})
+  }) as Promise<DemoTokens>;
 }
 
 async function contextForToken(config:ShopConfig,token:string){
