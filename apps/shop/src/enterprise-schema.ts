@@ -533,6 +533,14 @@ export async function ensureEnterpriseShopSchema(db:Db){
       UNIQUE(shop_id,branch_id)
     );
 
+    DELETE FROM shop_automation_settings a
+    USING shop_automation_settings b
+    WHERE a.shop_id=b.shop_id
+      AND a.branch_id IS NOT DISTINCT FROM b.branch_id
+      AND (a.created_at,a.id::text)>(b.created_at,b.id::text);
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shop_automation_settings_scope
+      ON shop_automation_settings(shop_id,COALESCE(branch_id,'00000000-0000-0000-0000-000000000000'::uuid));
+
     ALTER TABLE salon_eod_closures ADD COLUMN IF NOT EXISTS close_mode text NOT NULL DEFAULT 'manual';
     ALTER TABLE salon_eod_closures ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'confirmed';
     ALTER TABLE salon_eod_closures ADD COLUMN IF NOT EXISTS reviewed_by uuid;
