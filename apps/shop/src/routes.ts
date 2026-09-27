@@ -337,11 +337,13 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   app.post('/api/payments/initialize',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'payments.create');
     if(!config.PAYSTACK_SECRET_KEY)return reply.code(503).send({error:{message:'Online payment provider is not configured'}});
-    const b=z.object({orderId:uuid,method:z.enum(['mobile_money','card']),email:z.string().email(),phone:z.string().optional()}).parse(req.body);
+    const b=z.object({orderId:uuid,method:z.enum(['mobile_money','card']),email:z.string().email(),phone:z.string().optional(),amount:positive.optional()}).parse(req.body);
     const o=await maybeOne<any>(db,'SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2',[b.orderId,a.core.organisation_id]);
     if(!o)return reply.code(404).send({error:{message:'Order not found'}});
-    const amount=Math.max(0,Number(o.total)-Number(o.amount_paid));
-    if(amount<=0)return reply.code(400).send({error:{message:'Order is already fully paid'}});
+    const outstanding=Math.max(0,Number(o.total)-Number(o.amount_paid));
+    if(outstanding<=0)return reply.code(400).send({error:{message:'Order is already fully paid'}});
+    const amount=b.amount??outstanding;
+    if(amount>outstanding+0.001)return reply.code(400).send({error:{message:'Payment cannot exceed the outstanding balance'}});
     const reference=code('RXS');
     const callback=(config.PUBLIC_BASE_URL||'').replace(/\/$/,'')+'/payments/callback?reference='+encodeURIComponent(reference);
     const ps=await fetch('https://api.paystack.co/transaction/initialize',{
