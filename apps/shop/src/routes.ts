@@ -411,6 +411,22 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     return reply.code(201).send(expense);
   });
 
+  app.get('/api/orders/:id/full',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'dashboard.read');
+    const id=uuid.parse((req.params as any).id);
+    const order=await maybeOne<any>(db,'SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!order)return reply.code(404).send({error:{message:'Invoice not found'}});
+    const [lines,payments,customer,shop,branch,settings]=await Promise.all([
+      db.query('SELECT * FROM shop_order_lines WHERE order_id=$1 ORDER BY id',[id]),
+      db.query('SELECT * FROM shop_payments WHERE order_id=$1 AND organisation_id=$2 ORDER BY created_at',[id,a.core.organisation_id]),
+      order.customer_id?maybeOne<any>(db,'SELECT * FROM shop_customers WHERE id=$1 AND organisation_id=$2',[order.customer_id,a.core.organisation_id]):Promise.resolve(null),
+      maybeOne<any>(db,'SELECT * FROM shops WHERE id=$1 AND organisation_id=$2',[order.shop_id,a.core.organisation_id]),
+      order.branch_id?maybeOne<any>(db,'SELECT * FROM shop_branches WHERE id=$1 AND organisation_id=$2',[order.branch_id,a.core.organisation_id]):Promise.resolve(null),
+      maybeOne<any>(db,'SELECT * FROM salon_settings WHERE shop_id=$1 AND organisation_id=$2',[order.shop_id,a.core.organisation_id])
+    ]);
+    return{order,lines:lines.rows,payments:payments.rows,customer,shop,branch,settings};
+  });
+
   app.get('/api/reports/finance',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'reports.read');
     const shopId=(req.query as any)?.shopId;
