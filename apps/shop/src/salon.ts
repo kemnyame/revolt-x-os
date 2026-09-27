@@ -155,14 +155,15 @@ export async function assertSalonBookingAvailability(
   if(input.branchId&&settings){
     const hours=await maybeOne<any>(db,`
       SELECT h.open_time,h.close_time,h.is_closed,
-             ($3::timestamptz AT TIME ZONE s.timezone)::time AS local_time
+             ($3::timestamptz AT TIME ZONE s.timezone)::time AS local_time,
+             ($4::timestamptz AT TIME ZONE s.timezone)::time AS local_end_time
       FROM salon_settings s
       JOIN salon_business_hours h ON h.shop_id=s.shop_id AND h.branch_id=$2
        AND h.day_of_week=EXTRACT(DOW FROM ($3::timestamptz AT TIME ZONE s.timezone))::int
       WHERE s.shop_id=$1
-    `,[input.shopId,input.branchId,input.bookedFor.toISOString()]);
-    if(hours&&(hours.is_closed||String(hours.local_time)<String(hours.open_time)||String(hours.local_time)>=String(hours.close_time))){
-      const e:any=new Error('The salon is closed at the selected time.');e.statusCode=409;throw e;
+    `,[input.shopId,input.branchId,input.bookedFor.toISOString(),endAt.toISOString()]);
+    if(hours&&(hours.is_closed||String(hours.local_time)<String(hours.open_time)||String(hours.local_end_time)>String(hours.close_time))){
+      const e:any=new Error('The selected service does not fit within the salon\'s business hours.');e.statusCode=409;throw e;
     }
   }
 
