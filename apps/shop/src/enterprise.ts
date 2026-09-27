@@ -387,7 +387,7 @@ export async function createApprovalRequest(
   return r.rows[0];
 }
 
-async function applyApprovedRequest(db:Db,request:any){
+async function applyApprovedRequest(db:Db,request:any,approvedBy?:string|null){
   const p=request.payload||{};
   if(request.action_key==='service.update'){
     await db.query(
@@ -411,7 +411,7 @@ async function applyApprovedRequest(db:Db,request:any){
     await db.query(
       `UPDATE shop_purchase_orders SET status='approved',approved_by=$1,approved_at=now(),updated_at=now()
        WHERE id=$2 AND organisation_id=$3 AND status='pending_approval'`,
-      [request.requested_by===null?null:request.payload?.approvedBy||null,request.target_id,request.organisation_id]
+      [approvedBy||null,request.target_id,request.organisation_id]
     );
   }else if(request.action_key==='settings.automation_change'){
     await ensureAutomationSetting(db,request.organisation_id,request.shop_id,p.branchId||null);
@@ -720,7 +720,7 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     const needed=Number(policy?.minimum_approvals||1);
     if(Number(votes.rows[0]?.c||0)>=needed){
       try{
-        await applyApprovedRequest(db,request);
+        await applyApprovedRequest(db,request,a.core.id);
         await db.query("UPDATE shop_approval_requests SET status='applied',resolved_at=now(),applied_at=now() WHERE id=$1",[id]);
         await audit(db,a.core.organisation_id,a.core.id,'approval.applied','approval',id,request.shop_id,request.branch_id,{actionKey:request.action_key});
         return{status:'applied'};
@@ -1038,6 +1038,163 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
       [a.core.organisation_id,b.shopId,b.provider,b.settlementReference,b.settlementDate||null,b.grossAmount,b.fees,b.netAmount]
     );
     return reply.code(201).send(r.rows[0]);
+  });
+
+  app.get('/api/procurement',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'inventory.read');
+    const shopId=uuid.parse(String((req.query as any)?.shopId||''));
+    const [vendors,orders,receipts]=await Promise.all([
+      db.query("SELECT * FROM shop_finance_vendors WHERE organisation_id=$1 AND shop_id=$2 AND is_active=true ORDER BY name",[a.core.organisation_id,shopId]),
+      db.query(`
+        SELECT po.*,v.name vendor_name,
+          coalesce((SELECT jsonb_agg(jsonb_build_object(
+            'id',l.id,'product_id',l.product_id,'description',l.description,
+            'ordered_quantity',l.ordered_quantity,'received_quantity',l.received_quantity,
+            'unit_cost',l.unit_cost,'line_total',l.line_total
+          ) ORDER BY l.id) FROM shop_purchase_order_lines l WHERE l.purchase_order_id=po.id),'[]'::jsonb) lines
+        FROM shop_purchase_orders po
+        LEFT JOIN shop_finance_vendors v ON v.id=po.vendor_id
+        WHERE po.organisation_id=$1 AND po.shop_id=$2
+        ORDER BY po.order_date DESC,po.created_at DESC LIMIT 200`,[a.core.organisation_id,shopId]),
+      db.query(`
+        SELECT gr.*,po.po_no,v.name vendor_name
+        FROM shop_goods_receipts gr
+        JOIN shop_purchase_orders po ON po.id=gr.purchase_order_id
+        LEFT JOIN shop_finance_vendors v ON v.id=po.vendor_id
+        WHERE gr.organisation_id=$1 AND gr.shop_id=$2
+        ORDER BY gr.received_at DESC LIMIT 150`,[a.core.organisation_id,shopId])
+    ]);
+    return{vendors:vendors.rows,orders:orders.rows,receipts:receipts.rows};
+  });
+
+  app.post('/api/procurement/purchase-orders',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'procurement.manage');
+    const b=z.object({
+      shopId:uuid,branchId:uuid.optional(),vendorId:uuid.optional(),expectedDate:z.string().optional(),
+      tax:money.default(0),notes:z.string().max(2000).optional(),
+      lines:z.array(z.object({productId:uuid.optional(),description:z.string().trim().min(2).max(500),quantity:positive,unitCost:money})).min(1).max(200)
+    }).parse(req.body);
+    if(b.vendorId){
+      const vendor=await maybeOne<any>(db,'SELECT id FROM shop_finance_vendors WHERE id=$1 AND organisation_id=$2 AND shop_id=$3 AND is_active=true',[b.vendorId,a.core.organisation_id,b.shopId]);
+      if(!vendor)return reply.code(400).send({error:{message:'Supplier is not active for this shop'}});
+    }
+    const subtotal=b.lines.reduce((sum,l)=>sum+l.quantity*l.unitCost,0);
+    const total=subtotal+b.tax;
+    const po=await tx(db,async client=>{
+      const p=(await client.query(`
+        INSERT INTO shop_purchase_orders(
+          organisation_id,shop_id,branch_id,vendor_id,po_no,expected_date,status,subtotal,tax,total,notes,requested_by
+        ) VALUES($1,$2,$3,$4,$5,$6,'draft',$7,$8,$9,$10,$11) RETURNING *`,
+        [a.core.organisation_id,b.shopId,b.branchId||null,b.vendorId||null,code('PO'),b.expectedDate||null,subtotal,b.tax,total,b.notes||null,a.core.id]
+      )).rows[0];
+      for(const line of b.lines){
+        if(line.productId){
+          const product=await maybeOne<any>(client,'SELECT id FROM shop_products WHERE id=$1 AND organisation_id=$2 AND shop_id=$3 AND active=true',[line.productId,a.core.organisation_id,b.shopId]);
+          if(!product)throw Object.assign(new Error('Purchase order product is not active for this shop'),{statusCode:400});
+        }
+        await client.query(`
+          INSERT INTO shop_purchase_order_lines(purchase_order_id,product_id,description,ordered_quantity,unit_cost,line_total)
+          VALUES($1,$2,$3,$4,$5,$6)`,
+          [p.id,line.productId||null,line.description,line.quantity,line.unitCost,line.quantity*line.unitCost]
+        );
+      }
+      return p;
+    });
+    await audit(db,a.core.organisation_id,a.core.id,'purchase_order.created','purchase_order',po.id,b.shopId,b.branchId||null,{poNo:po.po_no,total});
+    return reply.code(201).send(po);
+  });
+
+  app.post('/api/procurement/purchase-orders/:id/submit',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'procurement.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({reason:z.string().trim().min(3).max(1000).default('Purchase order approval')}).parse(req.body||{});
+    const po=await maybeOne<any>(db,'SELECT * FROM shop_purchase_orders WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    if(!po)return reply.code(404).send({error:{message:'Purchase order not found'}});
+    if(po.status!=='draft')return reply.code(409).send({error:{message:'Only draft purchase orders can be submitted'}});
+    await db.query("UPDATE shop_purchase_orders SET status='pending_approval',updated_at=now() WHERE id=$1",[id]);
+    const request=await createApprovalRequest(db,{
+      organisationId:a.core.organisation_id,shopId:po.shop_id,branchId:po.branch_id,actionKey:'purchase_order.approve',
+      targetType:'purchase_order',targetId:id,title:'Approve purchase order '+po.po_no,reason:b.reason,
+      payload:{poNo:po.po_no,total:po.total},requestedBy:a.core.id
+    });
+    return reply.code(202).send({approvalRequired:true,request});
+  });
+
+  app.post('/api/procurement/purchase-orders/:id/receive',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'procurement.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({
+      notes:z.string().max(2000).optional(),
+      lines:z.array(z.object({lineId:uuid,quantity:positive})).min(1).max(200)
+    }).parse(req.body);
+    const receipt=await tx(db,async client=>{
+      const por=await client.query('SELECT * FROM shop_purchase_orders WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+      if(!por.rowCount)return null;
+      const po=por.rows[0];
+      if(!['approved','part_received'].includes(po.status))throw Object.assign(new Error('Purchase order must be approved before goods can be received'),{statusCode:409});
+      const gr=(await client.query(`
+        INSERT INTO shop_goods_receipts(organisation_id,shop_id,branch_id,purchase_order_id,grn_no,received_by,notes)
+        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [a.core.organisation_id,po.shop_id,po.branch_id,id,code('GRN'),a.core.id,b.notes||null]
+      )).rows[0];
+      let totalCost=0;
+      for(const input of b.lines){
+        const lr=await client.query(
+          'SELECT * FROM shop_purchase_order_lines WHERE id=$1 AND purchase_order_id=$2 FOR UPDATE',
+          [input.lineId,id]
+        );
+        if(!lr.rowCount)throw Object.assign(new Error('Purchase order line not found'),{statusCode:400});
+        const line=lr.rows[0];
+        const remaining=Number(line.ordered_quantity)-Number(line.received_quantity);
+        if(input.quantity>remaining+0.0001)throw Object.assign(new Error('Received quantity exceeds the outstanding purchase order quantity for '+line.description),{statusCode:400});
+        const lineTotal=input.quantity*Number(line.unit_cost);
+        totalCost+=lineTotal;
+        await client.query(
+          `INSERT INTO shop_goods_receipt_lines(goods_receipt_id,purchase_order_line_id,product_id,quantity,unit_cost,line_total)
+           VALUES($1,$2,$3,$4,$5,$6)`,
+          [gr.id,line.id,line.product_id,input.quantity,line.unit_cost,lineTotal]
+        );
+        await client.query('UPDATE shop_purchase_order_lines SET received_quantity=received_quantity+$1 WHERE id=$2',[input.quantity,line.id]);
+        if(line.product_id){
+          await client.query('UPDATE shop_products SET stock_quantity=stock_quantity+$1,cost_price=$2 WHERE id=$3',[input.quantity,line.unit_cost,line.product_id]);
+          await client.query(`
+            INSERT INTO shop_stock_movements(organisation_id,shop_id,branch_id,product_id,movement_type,quantity,source_type,source_id,note)
+            VALUES($1,$2,$3,$4,'purchase_receipt',$5,'goods_receipt',$6,$7)`,
+            [a.core.organisation_id,po.shop_id,po.branch_id,line.product_id,input.quantity,gr.id,gr.grn_no+' / '+po.po_no]
+          );
+        }
+      }
+      await client.query('UPDATE shop_goods_receipts SET total_cost=$1 WHERE id=$2',[totalCost,gr.id]);
+      const pending=await client.query(
+        'SELECT 1 FROM shop_purchase_order_lines WHERE purchase_order_id=$1 AND received_quantity<ordered_quantity LIMIT 1',[id]
+      );
+      await client.query(
+        "UPDATE shop_purchase_orders SET status=$1,updated_at=now() WHERE id=$2",
+        [pending.rowCount?'part_received':'received',id]
+      );
+      if(totalCost>0){
+        await ensureFinanceDefaults(client,a.core.organisation_id,po.shop_id);
+        const inventory=await maybeOne<any>(client,"SELECT * FROM shop_finance_accounts WHERE organisation_id=$1 AND shop_id=$2 AND code='1200'",[a.core.organisation_id,po.shop_id]);
+        const payable=await maybeOne<any>(client,"SELECT * FROM shop_finance_accounts WHERE organisation_id=$1 AND shop_id=$2 AND code='2000'",[a.core.organisation_id,po.shop_id]);
+        if(inventory&&payable){
+          const journal=(await client.query(`
+            INSERT INTO shop_finance_journal_entries(
+              organisation_id,shop_id,branch_id,entry_no,entry_date,description,source_type,source_id,status,created_by,posted_at
+            ) VALUES($1,$2,$3,$4,CURRENT_DATE,$5,'goods_receipt',$6,'posted',$7,now()) RETURNING *`,
+            [a.core.organisation_id,po.shop_id,po.branch_id,code('JRN'),'Goods receipt '+gr.grn_no,gr.id,a.core.id]
+          )).rows[0];
+          await client.query(
+            `INSERT INTO shop_finance_journal_lines(journal_entry_id,account_id,description,debit,credit)
+             VALUES($1,$2,$3,$4,0),($1,$5,$3,0,$4)`,
+            [journal.id,inventory.id,'Inventory received '+gr.grn_no,totalCost,payable.id]
+          );
+        }
+      }
+      return{...gr,total_cost:totalCost};
+    });
+    if(!receipt)return reply.code(404).send({error:{message:'Purchase order not found'}});
+    await audit(db,a.core.organisation_id,a.core.id,'goods.received','goods_receipt',receipt.id,receipt.shop_id,receipt.branch_id,{purchaseOrderId:id,totalCost:receipt.total_cost});
+    return reply.code(201).send(receipt);
   });
 
   app.get('/api/tickets',async(req,reply)=>{
