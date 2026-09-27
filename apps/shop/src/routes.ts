@@ -307,7 +307,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
   app.post('/api/orders/:id/payments/manual',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'payments.create');
     const orderId=uuid.parse((req.params as any).id);
-    const b=z.object({method:z.enum(['cash','bank_transfer','mobile_money','card','other']),amount:positive,reference:z.string().optional()}).parse(req.body);
+    const b=z.object({method:z.enum(['cash','bank_transfer','other']),amount:positive,reference:z.string().optional()}).parse(req.body);
     const payment=await tx(db,async c=>{
       const o=await c.query('SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[orderId,a.core.organisation_id]);
       if(!o.rowCount)return null;
