@@ -144,4 +144,96 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
     });
     return{updated:true};
   });
+
+  app.patch('/api/shops/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'shops.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),address:z.string().max(500).optional(),status:z.enum(['active','inactive']).optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE shops SET name=coalesce($1,name),phone=coalesce($2,phone),email=coalesce($3,email),address=coalesce($4,address),status=coalesce($5,status),updated_at=now()
+       WHERE id=$6 AND organisation_id=$7 RETURNING *`,
+      [b.name??null,b.phone??null,b.email===undefined?null:b.email||null,b.address??null,b.status??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Shop not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/branches/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'shops.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),code:z.string().max(40).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),address:z.string().max(500).optional(),status:z.enum(['active','inactive']).optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE shop_branches SET name=coalesce($1,name),code=coalesce($2,code),phone=coalesce($3,phone),email=coalesce($4,email),address=coalesce($5,address),status=coalesce($6,status)
+       WHERE id=$7 AND organisation_id=$8 RETURNING *`,
+      [b.name??null,b.code??null,b.phone??null,b.email===undefined?null:b.email||null,b.address??null,b.status??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Branch not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/customers/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'customers.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),address:z.string().max(500).optional(),customerType:z.string().max(60).optional(),creditLimit:money.optional(),notes:z.string().max(2000).optional(),status:z.enum(['active','inactive']).optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE shop_customers SET name=coalesce($1,name),phone=coalesce($2,phone),email=coalesce($3,email),address=coalesce($4,address),customer_type=coalesce($5,customer_type),credit_limit=coalesce($6,credit_limit),notes=coalesce($7,notes),status=coalesce($8,status)
+       WHERE id=$9 AND organisation_id=$10 RETURNING *`,
+      [b.name??null,b.phone??null,b.email===undefined?null:b.email||null,b.address??null,b.customerType??null,b.creditLimit??null,b.notes??null,b.status??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Customer not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/services/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'services.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),category:z.string().max(100).optional(),description:z.string().max(2000).optional(),price:money.optional(),durationMinutes:z.coerce.number().int().min(5).max(480).optional(),depositPercent:z.coerce.number().min(0).max(100).optional(),active:z.boolean().optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE shop_services SET name=coalesce($1,name),category=coalesce($2,category),description=coalesce($3,description),price=coalesce($4,price),duration_minutes=coalesce($5,duration_minutes),deposit_percent=coalesce($6,deposit_percent),active=coalesce($7,active)
+       WHERE id=$8 AND organisation_id=$9 RETURNING *`,
+      [b.name??null,b.category??null,b.description??null,b.price??null,b.durationMinutes??null,b.depositPercent??null,b.active??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Service not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/products/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'inventory.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),sku:z.string().max(100).optional(),category:z.string().max(100).optional(),costPrice:money.optional(),sellingPrice:money.optional(),reorderLevel:z.coerce.number().min(0).optional(),active:z.boolean().optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE shop_products SET name=coalesce($1,name),sku=coalesce($2,sku),category=coalesce($3,category),cost_price=coalesce($4,cost_price),selling_price=coalesce($5,selling_price),reorder_level=coalesce($6,reorder_level),active=coalesce($7,active)
+       WHERE id=$8 AND organisation_id=$9 RETURNING *`,
+      [b.name??null,b.sku??null,b.category??null,b.costPrice??null,b.sellingPrice??null,b.reorderLevel??null,b.active??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Product not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/salon/staff/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'shops.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({fullName:z.string().trim().min(2).max(160).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),role:z.enum(['barber','receptionist','manager','assistant']).optional(),specialty:z.string().max(300).optional(),commissionPercent:z.coerce.number().min(0).max(100).optional(),status:z.enum(['active','inactive','leave']).optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE salon_staff SET full_name=coalesce($1,full_name),phone=coalesce($2,phone),email=coalesce($3,email),role=coalesce($4,role),specialty=coalesce($5,specialty),commission_percent=coalesce($6,commission_percent),status=coalesce($7,status)
+       WHERE id=$8 AND organisation_id=$9 RETURNING *`,
+      [b.fullName??null,b.phone??null,b.email===undefined?null:b.email||null,b.role??null,b.specialty??null,b.commissionPercent??null,b.status??null,id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Staff member not found'}});
+    return r.rows[0];
+  });
+
+  app.patch('/api/salon/chairs/:id',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'shops.manage');
+    const id=z.string().uuid().parse((req.params as any).id);
+    const b=z.object({name:z.string().trim().min(2).max(160).optional(),code:z.string().max(40).optional(),assignedStaffId:z.string().uuid().nullable().optional(),status:z.enum(['available','maintenance','inactive']).optional()}).parse(req.body);
+    const r=await db.query(
+      `UPDATE salon_chairs SET name=coalesce($1,name),code=coalesce($2,code),assigned_staff_id=CASE WHEN $5 THEN $3 ELSE assigned_staff_id END,status=coalesce($4,status)
+       WHERE id=$6 AND organisation_id=$7 RETURNING *`,
+      [b.name??null,b.code??null,b.assignedStaffId??null,b.status??null,Object.prototype.hasOwnProperty.call(b,'assignedStaffId'),id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Chair not found'}});
+    return r.rows[0];
+  });
+
 }
