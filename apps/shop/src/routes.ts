@@ -591,15 +591,51 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
 
   app.get('/api/reports/finance',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'reports.read');
-    const shopId=(req.query as any)?.shopId;
-    const params:any[]=[a.core.organisation_id];
-    let filter='';
-    if(shopId){params.push(shopId);filter=' AND shop_id=$2';}
+    const q=z.object({
+      shopId:uuid.optional(),
+      branchId:uuid.optional(),
+      from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    }).parse(req.query);
+    const params=[a.core.organisation_id,q.shopId||null,q.branchId||null,q.from||null,q.to||null];
+
     const [sales,payments,expenses,ledger]=await Promise.all([
-      db.query('SELECT date_trunc(\'day\',created_at)::date day,sum(total) total FROM shop_orders WHERE organisation_id=$1'+filter+' GROUP BY 1 ORDER BY 1 DESC LIMIT 90',params),
-      db.query('SELECT method,status,count(*)::int transactions,sum(amount) amount FROM shop_payments WHERE organisation_id=$1'+filter+' GROUP BY method,status ORDER BY method,status',params),
-      db.query('SELECT category,sum(amount) amount FROM shop_expenses WHERE organisation_id=$1'+filter+' GROUP BY category ORDER BY amount DESC',params),
-      db.query('SELECT account_code,account_name,sum(debit) debit,sum(credit) credit FROM shop_ledger_entries WHERE organisation_id=$1'+filter+' GROUP BY account_code,account_name ORDER BY account_code',params)
+      db.query(`
+        SELECT date_trunc('day',x.created_at)::date day,sum(x.total) total
+        FROM shop_orders x
+        WHERE x.organisation_id=$1
+          AND ($2::uuid IS NULL OR x.shop_id=$2)
+          AND ($3::uuid IS NULL OR x.branch_id=$3)
+          AND ($4::date IS NULL OR x.created_at::date>=$4::date)
+          AND ($5::date IS NULL OR x.created_at::date<=$5::date)
+        GROUP BY 1 ORDER BY 1 DESC LIMIT 366`,params),
+      db.query(`
+        SELECT x.method,x.status,count(*)::int transactions,sum(x.amount) amount
+        FROM shop_payments x
+        WHERE x.organisation_id=$1
+          AND ($2::uuid IS NULL OR x.shop_id=$2)
+          AND ($3::uuid IS NULL OR x.branch_id=$3)
+          AND ($4::date IS NULL OR x.created_at::date>=$4::date)
+          AND ($5::date IS NULL OR x.created_at::date<=$5::date)
+        GROUP BY x.method,x.status ORDER BY x.method,x.status`,params),
+      db.query(`
+        SELECT x.category,sum(x.amount) amount
+        FROM shop_expenses x
+        WHERE x.organisation_id=$1
+          AND ($2::uuid IS NULL OR x.shop_id=$2)
+          AND ($3::uuid IS NULL OR x.branch_id=$3)
+          AND ($4::date IS NULL OR x.expense_date>=$4::date)
+          AND ($5::date IS NULL OR x.expense_date<=$5::date)
+        GROUP BY x.category ORDER BY amount DESC`,params),
+      db.query(`
+        SELECT x.account_code,x.account_name,sum(x.debit) debit,sum(x.credit) credit
+        FROM shop_ledger_entries x
+        WHERE x.organisation_id=$1
+          AND ($2::uuid IS NULL OR x.shop_id=$2)
+          AND ($3::uuid IS NULL OR x.branch_id=$3)
+          AND ($4::date IS NULL OR x.entry_date>=$4::date)
+          AND ($5::date IS NULL OR x.entry_date<=$5::date)
+        GROUP BY x.account_code,x.account_name ORDER BY x.account_code`,params)
     ]);
     return{sales:sales.rows,payments:payments.rows,expenses:expenses.rows,ledger:ledger.rows};
   });
