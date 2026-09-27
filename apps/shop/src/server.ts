@@ -27,7 +27,7 @@ app.setErrorHandler((error,request,reply)=>{
     return reply.code(400).send({error:{code:'VALIDATION_ERROR',message:'Please check the information entered.',details:error.issues}});
   }
   const status=(error as any).statusCode||500;
-  const message=status>=500?'The request could not be completed. Please try again.':error.message;
+  const message=status>=500?'The request could not be completed. Please try again.':(error as Error).message;
   return reply.code(status).send({error:{code:status===401?'UNAUTHENTICATED':status===403?'FORBIDDEN':'REQUEST_ERROR',message}});
 });
 
