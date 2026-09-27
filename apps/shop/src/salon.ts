@@ -279,7 +279,12 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     }
     if(!canFinance)stats.commissions_today=null;
 
-    return{staff:staff.rows,chairs:chairs.rows,appointments:appointments.rows,commissions:commissions.rows,eod:eod.rows,stats};
+    const canSeeCommission=['shop_admin','manager','finance','auditor'].includes(a.role);
+    const staffRows=canSeeCommission
+      ? staff.rows
+      : staff.rows.map((row:any)=>({...row,commission_percent:null}));
+
+    return{staff:staffRows,chairs:chairs.rows,appointments:appointments.rows,commissions:commissions.rows,eod:eod.rows,stats};
   });
 
   app.post('/api/salon/staff',async(req,reply)=>{
