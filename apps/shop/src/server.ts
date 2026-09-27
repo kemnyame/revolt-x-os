@@ -24,6 +24,7 @@ const app=Fastify({logger:true,trustProxy:true});
 const salonHtml=readFileSync(new URL('../public/salon.html',import.meta.url),'utf8');
 const salonStorefrontHtml=readFileSync(new URL('../public/salon-storefront.html',import.meta.url),'utf8');
 const customerPortalHtml=readFileSync(new URL('../public/customer-portal.html',import.meta.url),'utf8');
+const shopEnterpriseJs=readFileSync(new URL('../public/shop-enterprise.js',import.meta.url),'utf8');
 
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{
@@ -60,6 +61,7 @@ app.get('/health/ready',async(_req,reply)=>{
   }
 });
 
+app.get('/assets/shop-enterprise.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopEnterpriseJs));
 app.get('/login',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(loginHtml()));
 app.get('/demo-login',async(_req,reply)=>{
   if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).type('text/plain').send('Demo access is disabled');
