@@ -245,6 +245,76 @@ export async function seedSalonDemo(db:Db,config:ShopConfig){
       );
     }
 
+    const sampleCustomer=cust.rows[0];
+    const sampleService=svc.rows[0];
+    if(sampleCustomer&&sampleService){
+      const existingOrder=await c.query("SELECT id FROM shop_orders WHERE organisation_id=$1 AND order_no='INV-SALON-DEMO-001' LIMIT 1",[org.id]);
+      if(!existingOrder.rowCount){
+        const o=await c.query(
+          `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,order_no,status,subtotal,discount,tax,total,amount_paid,balance,notes)
+           VALUES($1,$2,$3,$4,'INV-SALON-DEMO-001','paid',100,0,0,100,100,0,'Demo salon service sale') RETURNING id`,
+          [org.id,shopId,branchId,sampleCustomer.id]
+        );
+        await c.query(
+          `INSERT INTO shop_order_lines(order_id,item_type,item_id,description,quantity,unit_price,line_total)
+           VALUES($1,'service',$2,$3,1,100,100)`,
+          [o.rows[0].id,sampleService.id,sampleService.name]
+        );
+        await c.query(
+          `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at)
+           VALUES($1,$2,$3,$4,$5,'PAY-SALON-DEMO-001','manual','mobile_money',100,'GHS','successful',now()-interval '45 minutes')`,
+          [org.id,shopId,branchId,o.rows[0].id,sampleCustomer.id]
+        );
+        await c.query(
+          `INSERT INTO shop_ledger_entries(organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,source_type,source_id,reference,description)
+           VALUES($1,$2,$3,'1010','Mobile Money Settlement',100,0,'payment',$4,'PAY-SALON-DEMO-001','Demo salon receipt'),
+                 ($1,$2,$3,'4000','Sales Revenue',0,100,'payment',$4,'PAY-SALON-DEMO-001','Demo salon receipt')`,
+          [org.id,shopId,branchId,o.rows[0].id]
+        );
+      }
+
+      const secondOrder=await c.query("SELECT id FROM shop_orders WHERE organisation_id=$1 AND order_no='INV-SALON-DEMO-002' LIMIT 1",[org.id]);
+      if(!secondOrder.rowCount){
+        const o=await c.query(
+          `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,order_no,status,subtotal,discount,tax,total,amount_paid,balance,notes,created_at)
+           VALUES($1,$2,$3,$4,'INV-SALON-DEMO-002','paid',130,0,0,130,130,0,'Haircut and beard combo',now()-interval '1 day') RETURNING id`,
+          [org.id,shopId,branchId,cust.rows[1]?.id??sampleCustomer.id]
+        );
+        await c.query(
+          `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at,created_at)
+           VALUES($1,$2,$3,$4,$5,'PAY-SALON-DEMO-002','manual','cash',130,'GHS','successful',now()-interval '1 day',now()-interval '1 day')`,
+          [org.id,shopId,branchId,o.rows[0].id,cust.rows[1]?.id??sampleCustomer.id]
+        );
+      }
+
+      const thirdOrder=await c.query("SELECT id FROM shop_orders WHERE organisation_id=$1 AND order_no='INV-SALON-DEMO-003' LIMIT 1",[org.id]);
+      if(!thirdOrder.rowCount){
+        const o=await c.query(
+          `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,order_no,status,subtotal,discount,tax,total,amount_paid,balance,notes,created_at)
+           VALUES($1,$2,$3,$4,'INV-SALON-DEMO-003','paid',180,0,0,180,180,0,'VIP grooming experience',now()-interval '2 day') RETURNING id`,
+          [org.id,shopId,branchId,cust.rows[2]?.id??sampleCustomer.id]
+        );
+        await c.query(
+          `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at,created_at)
+           VALUES($1,$2,$3,$4,$5,'PAY-SALON-DEMO-003','manual','card',180,'GHS','successful',now()-interval '2 day',now()-interval '2 day')`,
+          [org.id,shopId,branchId,o.rows[0].id,cust.rows[2]?.id??sampleCustomer.id]
+        );
+      }
+    }
+
+    await c.query(
+      `INSERT INTO shop_expenses(organisation_id,shop_id,branch_id,category,description,amount,payment_method,reference,expense_date)
+       SELECT $1,$2,$3,'Salon Supplies','Disinfectant, neck strips and cleaning supplies',85,'cash','EXP-SALON-DEMO-001',CURRENT_DATE
+       WHERE NOT EXISTS(SELECT 1 FROM shop_expenses WHERE shop_id=$2 AND reference='EXP-SALON-DEMO-001')`,
+      [org.id,shopId,branchId]
+    );
+    await c.query(
+      `INSERT INTO shop_expenses(organisation_id,shop_id,branch_id,category,description,amount,payment_method,reference,expense_date)
+       SELECT $1,$2,$3,'Utilities','Electricity and water contribution',120,'mobile_money','EXP-SALON-DEMO-002',CURRENT_DATE
+       WHERE NOT EXISTS(SELECT 1 FROM shop_expenses WHERE shop_id=$2 AND reference='EXP-SALON-DEMO-002')`,
+      [org.id,shopId,branchId]
+    );
+
     await c.query('INSERT INTO shop_bootstrap_state(key) VALUES($1) ON CONFLICT DO NOTHING',[key]);
   });
 }
