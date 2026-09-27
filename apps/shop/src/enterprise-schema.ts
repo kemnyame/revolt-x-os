@@ -538,6 +538,12 @@ export async function ensureEnterpriseShopSchema(db:Db){
     ALTER TABLE salon_eod_closures ADD COLUMN IF NOT EXISTS reviewed_by uuid;
     ALTER TABLE salon_eod_closures ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 
+    ALTER TABLE shop_pos_devices ADD COLUMN IF NOT EXISTS device_token_hash text;
+    ALTER TABLE shop_pos_devices ADD COLUMN IF NOT EXISTS registered_by uuid;
+    ALTER TABLE shop_pos_devices ADD COLUMN IF NOT EXISTS firmware_version text;
+    ALTER TABLE shop_pos_devices ADD COLUMN IF NOT EXISTS last_ip text;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_shop_pos_device_token_hash ON shop_pos_devices(device_token_hash) WHERE device_token_hash IS NOT NULL;
+
     ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS pos_device_id uuid;
     ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS payment_intent_id uuid;
     ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS reconciliation_status text NOT NULL DEFAULT 'unreconciled';
