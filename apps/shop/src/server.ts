@@ -15,7 +15,7 @@ import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
 import { registerEnterpriseShopRoutes, runShopAutomations } from './enterprise.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
-import { ensureDemoWorkspace } from './demo.js';
+import { createDemoCustomerSession, ensureDemoWorkspace } from './demo.js';
 import { demoLoginHtml, loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
@@ -85,6 +85,13 @@ app.post('/auth/demo',async(req,reply)=>{
   });
   setAuthCookies(reply,tokens,config);
   return{ok:true,persona:b.persona,user:{firstName:tokens.firstName,lastName:tokens.lastName,jobTitle:tokens.jobTitle}};
+});
+app.post('/auth/demo-customer',async(_req,reply)=>{
+  if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).send({error:{message:'Demo access is disabled'}});
+  const session=await createDemoCustomerSession(db);
+  const secure=config.NODE_ENV==='production';
+  reply.header('Set-Cookie','rx_customer_session='+encodeURIComponent(session.token)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(30*86400)+(secure?'; Secure':''));
+  return{ok:true,path:session.path,customer:session.customer};
 });
 app.post('/auth/logout',async(_req,reply)=>{
   clearAuthCookies(reply,config);
