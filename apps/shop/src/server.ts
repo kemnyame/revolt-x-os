@@ -11,6 +11,7 @@ import { clearAuthCookies, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
+import { registerPaymentWebhook } from './payments.js';
 import { loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
@@ -77,6 +78,7 @@ app.get('/payments/callback',async(req,reply)=>{
 await registerShopApi(app,{db,config});
 await registerSalonRoutes(app,{db,config});
 await registerCommercialSalonRoutes(app,{db,config});
+await registerPaymentWebhook(app,{db,config});
 
 const close=async()=>{await app.close();await db.end();process.exit(0)};
 process.on('SIGTERM',close);
