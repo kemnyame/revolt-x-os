@@ -488,42 +488,175 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
   app.patch('/api/salon/appointments/:id/status',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'bookings.manage');
     const id=uuid.parse((req.params as any).id);
-    const b=z.object({status:z.enum(['booked','queued','checked_in','in_chair','completed','cancelled','no_show']),staffId:uuid.optional(),chairId:uuid.optional()}).parse(req.body);
-    const r=await tx(db,async c=>{
-      const old=await c.query('SELECT * FROM shop_bookings WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+    const b=z.object({
+      status:z.enum(['booked','queued','checked_in','in_chair','completed','cancelled','no_show']),
+      staffId:uuid.optional(),
+      chairId:uuid.optional()
+    }).parse(req.body);
+
+    const result=await tx(db,async client=>{
+      const old=await client.query(
+        'SELECT * FROM shop_bookings WHERE id=$1 AND organisation_id=$2 FOR UPDATE',
+        [id,a.core.organisation_id]
+      );
       if(!old.rowCount)return null;
       const row=old.rows[0];
-      const upd=await c.query(`UPDATE shop_bookings SET status=$1,
-        salon_staff_id=coalesce($2,salon_staff_id),salon_chair_id=coalesce($3,salon_chair_id),
-        check_in_at=CASE WHEN $1='checked_in' AND check_in_at IS NULL THEN now() ELSE check_in_at END,
-        service_started_at=CASE WHEN $1='in_chair' AND service_started_at IS NULL THEN now() ELSE service_started_at END,
-        service_completed_at=CASE WHEN $1='completed' AND service_completed_at IS NULL THEN now() ELSE service_completed_at END
-        WHERE id=$4 RETURNING *`,[b.status,b.staffId||null,b.chairId||null,id]);
-      if(b.status==='in_chair'&&upd.rows[0].salon_chair_id){
-        await c.query("UPDATE salon_chairs SET status='occupied',assigned_staff_id=coalesce($1,assigned_staff_id) WHERE id=$2",[upd.rows[0].salon_staff_id,upd.rows[0].salon_chair_id]);
+      if(row.status===b.status)return row;
+
+      const transitions:Record<string,string[]>={
+        booked:['checked_in','in_chair','cancelled','no_show'],
+        queued:['checked_in','in_chair','cancelled','no_show'],
+        checked_in:['in_chair','cancelled','no_show'],
+        in_chair:['completed','cancelled'],
+        completed:[],
+        cancelled:[],
+        no_show:[]
+      };
+      if(!(transitions[row.status]||[]).includes(b.status)){
+        throw Object.assign(new Error('Invalid appointment status transition from '+row.status+' to '+b.status+'.'),{statusCode:409});
       }
-      if(['completed','cancelled','no_show'].includes(b.status)&&upd.rows[0].salon_chair_id){
-        await c.query("UPDATE salon_chairs SET status='available' WHERE id=$1",[upd.rows[0].salon_chair_id]);
-      }
-      if(b.status==='completed'&&upd.rows[0].salon_staff_id){
-        const service=await maybeOne<any>(c,'SELECT price FROM shop_services WHERE id=$1',[upd.rows[0].service_id]);
-        const staff=await maybeOne<any>(c,'SELECT commission_percent FROM salon_staff WHERE id=$1',[upd.rows[0].salon_staff_id]);
-        const gross=Number(service?.price||0), pct=Number(staff?.commission_percent||0);
-        await c.query(`INSERT INTO salon_commission_entries(organisation_id,shop_id,branch_id,staff_id,booking_id,gross_amount,commission_percent,commission_amount,status,note)
-          SELECT $1,$2,$3,$4,$5,$6,$7,$8,'earned','Service completion'
-          WHERE NOT EXISTS(SELECT 1 FROM salon_commission_entries WHERE booking_id=$5)`,
-          [a.core.organisation_id,upd.rows[0].shop_id,upd.rows[0].branch_id,upd.rows[0].salon_staff_id,id,gross,pct,gross*pct/100]);
-        if(upd.rows[0].customer_id){
-          await c.query(`INSERT INTO salon_customer_preferences(organisation_id,shop_id,customer_id,preferred_staff_id,preferred_service_id,last_visit_at,visit_count)
-            VALUES($1,$2,$3,$4,$5,now(),1)
-            ON CONFLICT(shop_id,customer_id) DO UPDATE SET preferred_staff_id=EXCLUDED.preferred_staff_id,preferred_service_id=EXCLUDED.preferred_service_id,last_visit_at=now(),visit_count=salon_customer_preferences.visit_count+1,updated_at=now()`,
-            [a.core.organisation_id,upd.rows[0].shop_id,upd.rows[0].customer_id,upd.rows[0].salon_staff_id,upd.rows[0].service_id]);
+
+      let staffId=b.staffId||row.salon_staff_id||null;
+      let chairId=b.chairId||row.salon_chair_id||null;
+
+      if(b.status==='in_chair'){
+        if(staffId){
+          const staff=await client.query(
+            `SELECT * FROM salon_staff
+             WHERE id=$1 AND organisation_id=$2 AND shop_id=$3
+               AND status='active' AND role='barber'
+               AND (branch_id=$4 OR branch_id IS NULL)
+             FOR UPDATE`,
+            [staffId,a.core.organisation_id,row.shop_id,row.branch_id]
+          );
+          if(!staff.rowCount)throw Object.assign(new Error('Selected barber is not available for this branch.'),{statusCode:409});
+          const busy=await client.query(
+            "SELECT 1 FROM shop_bookings WHERE organisation_id=$1 AND shop_id=$2 AND id<>$3 AND salon_staff_id=$4 AND status='in_chair' LIMIT 1",
+            [a.core.organisation_id,row.shop_id,id,staffId]
+          );
+          if(busy.rowCount)throw Object.assign(new Error('Selected barber is currently serving another customer.'),{statusCode:409});
+        }else{
+          const staff=await client.query(
+            `SELECT st.id
+             FROM salon_staff st
+             WHERE st.organisation_id=$1 AND st.shop_id=$2
+               AND st.status='active' AND st.role='barber'
+               AND (st.branch_id=$3 OR st.branch_id IS NULL)
+               AND NOT EXISTS(
+                 SELECT 1 FROM shop_bookings b
+                 WHERE b.organisation_id=$1 AND b.shop_id=$2
+                   AND b.salon_staff_id=st.id AND b.status='in_chair'
+               )
+             ORDER BY st.full_name
+             FOR UPDATE OF st SKIP LOCKED
+             LIMIT 1`,
+            [a.core.organisation_id,row.shop_id,row.branch_id]
+          );
+          if(!staff.rowCount)throw Object.assign(new Error('No barber is currently available to start this service.'),{statusCode:409});
+          staffId=staff.rows[0].id;
+        }
+
+        if(chairId){
+          const chair=await client.query(
+            `SELECT * FROM salon_chairs
+             WHERE id=$1 AND organisation_id=$2 AND shop_id=$3 AND branch_id=$4
+             FOR UPDATE`,
+            [chairId,a.core.organisation_id,row.shop_id,row.branch_id]
+          );
+          if(!chair.rowCount||!['available','occupied'].includes(chair.rows[0].status)){
+            throw Object.assign(new Error('Selected chair is not available.'),{statusCode:409});
+          }
+          if(chair.rows[0].status==='occupied'){
+            const occupiedByOther=await client.query(
+              "SELECT 1 FROM shop_bookings WHERE organisation_id=$1 AND shop_id=$2 AND id<>$3 AND salon_chair_id=$4 AND status='in_chair' LIMIT 1",
+              [a.core.organisation_id,row.shop_id,id,chairId]
+            );
+            if(occupiedByOther.rowCount)throw Object.assign(new Error('Selected chair is currently occupied.'),{statusCode:409});
+          }
+        }else{
+          const chair=await client.query(
+            `SELECT ch.id
+             FROM salon_chairs ch
+             WHERE ch.organisation_id=$1 AND ch.shop_id=$2 AND ch.branch_id=$3
+               AND ch.status='available'
+             ORDER BY ch.name
+             FOR UPDATE OF ch SKIP LOCKED
+             LIMIT 1`,
+            [a.core.organisation_id,row.shop_id,row.branch_id]
+          );
+          if(!chair.rowCount)throw Object.assign(new Error('No barber chair is currently available.'),{statusCode:409});
+          chairId=chair.rows[0].id;
         }
       }
-      return upd.rows[0];
+
+      const upd=await client.query(`
+        UPDATE shop_bookings SET
+          status=$1,
+          salon_staff_id=coalesce($2,salon_staff_id),
+          salon_chair_id=coalesce($3,salon_chair_id),
+          check_in_at=CASE WHEN $1='checked_in' AND check_in_at IS NULL THEN now() ELSE check_in_at END,
+          service_started_at=CASE WHEN $1='in_chair' AND service_started_at IS NULL THEN now() ELSE service_started_at END,
+          service_completed_at=CASE WHEN $1='completed' AND service_completed_at IS NULL THEN now() ELSE service_completed_at END
+        WHERE id=$4
+        RETURNING *`,
+        [b.status,staffId,chairId,id]
+      );
+      const current=upd.rows[0];
+
+      if(b.status==='in_chair'&&current.salon_chair_id){
+        await client.query("UPDATE salon_chairs SET status='occupied' WHERE id=$1",[current.salon_chair_id]);
+      }
+      if(['completed','cancelled','no_show'].includes(b.status)&&current.salon_chair_id){
+        await client.query(
+          `UPDATE salon_chairs SET status='available'
+           WHERE id=$1 AND status='occupied'`,
+          [current.salon_chair_id]
+        );
+      }
+
+      if(b.status==='completed'&&current.salon_staff_id){
+        const service=await maybeOne<any>(client,'SELECT price FROM shop_services WHERE id=$1',[current.service_id]);
+        const staff=await maybeOne<any>(client,'SELECT commission_percent FROM salon_staff WHERE id=$1',[current.salon_staff_id]);
+        const gross=Number(service?.price||0);
+        const pct=Number(staff?.commission_percent||0);
+        await client.query(`
+          INSERT INTO salon_commission_entries(
+            organisation_id,shop_id,branch_id,staff_id,booking_id,gross_amount,
+            commission_percent,commission_amount,status,note
+          )
+          SELECT $1,$2,$3,$4,$5,$6,$7,$8,'earned','Service completion'
+          WHERE NOT EXISTS(SELECT 1 FROM salon_commission_entries WHERE booking_id=$5)`,
+          [a.core.organisation_id,current.shop_id,current.branch_id,current.salon_staff_id,id,gross,pct,gross*pct/100]
+        );
+        if(current.customer_id){
+          await client.query(`
+            INSERT INTO salon_customer_preferences(
+              organisation_id,shop_id,customer_id,preferred_staff_id,preferred_service_id,last_visit_at,visit_count
+            )
+            VALUES($1,$2,$3,$4,$5,now(),1)
+            ON CONFLICT(shop_id,customer_id) DO UPDATE SET
+              preferred_staff_id=EXCLUDED.preferred_staff_id,
+              preferred_service_id=EXCLUDED.preferred_service_id,
+              last_visit_at=now(),
+              visit_count=salon_customer_preferences.visit_count+1,
+              updated_at=now()`,
+            [a.core.organisation_id,current.shop_id,current.customer_id,current.salon_staff_id,current.service_id]
+          );
+        }
+      }
+
+      await client.query(
+        `INSERT INTO shop_audit_logs(
+          organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata
+        )
+        VALUES($1,$2,'appointment.status_changed','booking',$3,$4,$5,$6)`,
+        [a.core.organisation_id,a.core.id,id,current.shop_id,current.branch_id,JSON.stringify({from:row.status,to:b.status,staffId:current.salon_staff_id,chairId:current.salon_chair_id})]
+      );
+      return current;
     });
-    if(!r)return reply.code(404).send({error:{message:'Appointment not found'}});
-    return r;
+
+    if(!result)return reply.code(404).send({error:{message:'Appointment not found'}});
+    return result;
   });
 
   app.post('/api/salon/eod',async(req,reply)=>{
