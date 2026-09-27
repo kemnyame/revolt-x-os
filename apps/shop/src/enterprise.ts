@@ -72,6 +72,16 @@ const defaultRoles=[
   ['auditor','Auditor','Read-only finance, reporting and audit review']
 ] as const;
 
+const defaultRoleCapabilities:Record<string,string[]>={
+  shop_admin:['*'],
+  manager:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','inventory.read','inventory.manage','sales.manage','payments.read','payments.create','reports.read','tickets.manage','assets.manage'],
+  cashier:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','services.read','sales.manage','payments.read','payments.create','tickets.manage'],
+  finance:['dashboard.read','customers.read','payments.read','payments.create','finance.read','finance.manage','reports.read'],
+  service:['dashboard.read','appointments.manage','customers.read','services.read'],
+  inventory:['dashboard.read','inventory.read','inventory.manage','assets.manage'],
+  auditor:['dashboard.read','customers.read','services.read','payments.read','finance.read','reports.read','audit.read','system.read']
+};
+
 async function ensureDefaultRoles(db:Db,orgId:string){
   for(const [key,name,description] of defaultRoles){
     await db.query(
@@ -80,6 +90,18 @@ async function ensureDefaultRoles(db:Db,orgId:string){
        ON CONFLICT(organisation_id,key) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,is_active=true,updated_at=now()`,
       [orgId,key,name,description]
     );
+  }
+  const capabilities=(await db.query('SELECT key FROM shop_capabilities')).rows.map((x:any)=>x.key);
+  for(const [role] of defaultRoles){
+    const allowed=defaultRoleCapabilities[role]||[];
+    for(const cap of capabilities){
+      await db.query(
+        `INSERT INTO shop_role_capabilities(organisation_id,role,capability_key,allowed)
+         VALUES($1,$2,$3,$4)
+         ON CONFLICT(organisation_id,role,capability_key) DO NOTHING`,
+        [orgId,role,cap,allowed.includes('*')||allowed.includes(cap)]
+      );
+    }
   }
 }
 
