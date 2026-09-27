@@ -73,16 +73,20 @@ export async function ensureDemoWorkspace(
       `INSERT INTO shop_automation_settings(
         organisation_id,shop_id,branch_id,auto_eod_enabled,auto_eod_time,inactivity_days,welcome_discount_percent,reorder_alerts_enabled
       )
-      VALUES($1,$2,NULL,true,'21:00',90,10,true)
-      ON CONFLICT(shop_id,branch_id) DO NOTHING`,
+      SELECT $1,$2,NULL,true,'21:00',90,10,true
+      WHERE NOT EXISTS(
+        SELECT 1 FROM shop_automation_settings WHERE shop_id=$2 AND branch_id IS NULL
+      )`,
       [input.organisationId,shop.id]
     );
     await client.query(
       `INSERT INTO shop_automation_settings(
         organisation_id,shop_id,branch_id,auto_eod_enabled,auto_eod_time,inactivity_days,welcome_discount_percent,reorder_alerts_enabled
       )
-      VALUES($1,$2,$3,true,'21:00',90,10,true)
-      ON CONFLICT(shop_id,branch_id) DO NOTHING`,
+      SELECT $1,$2,$3,true,'21:00',90,10,true
+      WHERE NOT EXISTS(
+        SELECT 1 FROM shop_automation_settings WHERE shop_id=$2 AND branch_id=$3
+      )`,
       [input.organisationId,shop.id,branch.id]
     );
 
