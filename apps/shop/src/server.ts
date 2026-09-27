@@ -88,12 +88,12 @@ async function ensureCoreOwnerAccount(email:string,password:string,firstName:str
     );
     const userId=user.rows[0].id;
     const membership=await db.query(
-      `INSERT INTO revolt_x_os.organisation_memberships(organisation_id,user_id,job_title,status)
-       VALUES($1,$2,$3,'active')
+      `INSERT INTO revolt_x_os.organisation_memberships(organisation_id,user_id,job_title,employee_number,status)
+       VALUES($1,$2,$3,$4,'active')
        ON CONFLICT(organisation_id,user_id) DO UPDATE
-       SET job_title=EXCLUDED.job_title,status='active'
+       SET job_title=EXCLUDED.job_title,employee_number=EXCLUDED.employee_number,status='active'
        RETURNING id`,
-      [organisationId,userId,'Revolt-X Administrator']
+      [organisationId,userId,'Revolt-X Administrator','BOOT-'+email.toLowerCase().replace(/[^a-z0-9]/g,'-').slice(0,60)]
     );
     const membershipId=membership.rows[0].id;
     await db.query(
