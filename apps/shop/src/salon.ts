@@ -735,17 +735,24 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
 
   app.get('/api/salon/commission-summary',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'reports.read');
-    const shopId=(req.query as any)?.shopId;
-    const params:any[]=[a.core.organisation_id];let f='';
-    if(shopId){params.push(shopId);f=' AND ce.shop_id=$2';}
-    const r=await db.query(`SELECT st.id,st.full_name,st.staff_no,st.commission_percent,
-      count(ce.id)::int services,
-      coalesce(sum(ce.gross_amount),0) gross_service_value,
-      coalesce(sum(ce.commission_amount),0) commission_earned
+    const q=z.object({shopId:uuid.optional(),branchId:uuid.optional()}).parse(req.query);
+    const params=[a.core.organisation_id,q.shopId||null,q.branchId||null];
+    const r=await db.query(`
+      SELECT st.id,st.full_name,st.staff_no,st.commission_percent,
+        count(ce.id)::int services,
+        coalesce(sum(ce.gross_amount),0) gross_service_value,
+        coalesce(sum(ce.commission_amount),0) commission_earned
       FROM salon_staff st
-      LEFT JOIN salon_commission_entries ce ON ce.staff_id=st.id AND ce.earned_at::date>=date_trunc('month',CURRENT_DATE)
-      WHERE st.organisation_id=$1 ${shopId?' AND st.shop_id=$2':''} AND st.role='barber'
-      GROUP BY st.id ORDER BY commission_earned DESC`,params);
+      LEFT JOIN salon_commission_entries ce
+        ON ce.staff_id=st.id
+       AND ce.earned_at::date>=date_trunc('month',CURRENT_DATE)
+       AND ($3::uuid IS NULL OR ce.branch_id=$3)
+      WHERE st.organisation_id=$1
+        AND ($2::uuid IS NULL OR st.shop_id=$2)
+        AND ($3::uuid IS NULL OR st.branch_id=$3 OR st.branch_id IS NULL)
+        AND st.role='barber'
+      GROUP BY st.id
+      ORDER BY commission_earned DESC`,params);
     return r.rows;
   });
 }
