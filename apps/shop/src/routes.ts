@@ -5,7 +5,7 @@ import type { Db } from './db.js';
 import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
 import { assertSalonBookingAvailability } from './salon.js';
-import { authorize, resetCorePasswordAsSystem } from './auth.js';
+import { authorize, hasShopCapability, resetCorePasswordAsSystem } from './auth.js';
 
 const money=z.coerce.number().finite().min(0);
 const positive=z.coerce.number().finite().positive();
@@ -96,14 +96,18 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const org=a.core.organisation_id;
     const role=a.role;
     const empty=()=>Promise.resolve({rows:[]} as any);
-    const canCustomers=['shop_admin','manager','cashier','finance','service','auditor'].includes(role);
-    const canProducts=['shop_admin','manager','cashier','inventory'].includes(role);
-    const canJobs=['shop_admin','manager','service','auditor'].includes(role);
-    const canBookings=['shop_admin','manager','cashier','service'].includes(role);
-    const canSales=['shop_admin','manager','cashier','finance','auditor'].includes(role);
-    const canPayments=['shop_admin','manager','cashier','finance','auditor'].includes(role);
-    const canExpenses=['shop_admin','finance','auditor'].includes(role);
-    const canFinancialDashboard=['shop_admin','manager','cashier','finance','auditor'].includes(role);
+    const [canCustomers,canProducts,canJobs,canBookings,canSales,canPayments,canFinance,canReports]=await Promise.all([
+      hasShopCapability(db,org,role,'customers.read'),
+      hasShopCapability(db,org,role,'inventory.read'),
+      hasShopCapability(db,org,role,'jobs.read').then(v=>v||hasShopCapability(db,org,role,'jobs.manage')),
+      hasShopCapability(db,org,role,'appointments.manage').then(v=>v||hasShopCapability(db,org,role,'bookings.manage')),
+      hasShopCapability(db,org,role,'sales.manage'),
+      hasShopCapability(db,org,role,'payments.read'),
+      hasShopCapability(db,org,role,'finance.read').then(v=>v||hasShopCapability(db,org,role,'finance.manage')),
+      hasShopCapability(db,org,role,'reports.read')
+    ]);
+    const canExpenses=canFinance;
+    const canFinancialDashboard=canPayments||canFinance||canReports;
 
     const [shops,branches,customers,services,products,jobs,bookings,orders,payments,expenses,rawStats]=await Promise.all([
       db.query('SELECT * FROM shops WHERE organisation_id=$1 ORDER BY created_at DESC',[org]),
