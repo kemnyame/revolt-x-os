@@ -696,6 +696,15 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
               updated_at=now()`,
             [a.core.organisation_id,current.shop_id,current.customer_id,current.salon_staff_id,current.service_id]
           );
+          await client.query(`
+            UPDATE shop_customers
+            SET last_visit_at=now(),
+                status='active',
+                reactivation_at=CASE WHEN status='inactive' THEN now() ELSE reactivation_at END,
+                inactive_at=CASE WHEN status='inactive' THEN inactive_at ELSE inactive_at END
+            WHERE id=$1 AND organisation_id=$2`,
+            [current.customer_id,a.core.organisation_id]
+          );
         }
       }
 
