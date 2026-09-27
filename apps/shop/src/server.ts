@@ -88,6 +88,14 @@ app.post('/auth/demo',async(req,reply)=>{
 });
 app.post('/auth/demo-customer',async(_req,reply)=>{
   if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).send({error:{message:'Demo access is disabled'}});
+  // Self-provision the isolated demo organisation/workspace so customer demo access
+  // never depends on a staff persona having signed in first.
+  const demoOwner=await loginDemoToCore(config,'shop_admin');
+  await ensureDemoWorkspace(db,{
+    organisationId:demoOwner.organisationId!,
+    userId:demoOwner.userId,
+    persona:'shop_admin'
+  });
   const session=await createDemoCustomerSession(db);
   const secure=config.NODE_ENV==='production';
   reply.header('Set-Cookie','rx_customer_session='+encodeURIComponent(session.token)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(30*86400)+(secure?'; Secure':''));
