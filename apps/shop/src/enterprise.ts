@@ -38,6 +38,22 @@ function cookieValue(header:string|undefined,name:string){
 function customerCookie(value:string,maxAge:number,secure:boolean){
   return 'rx_customer_session='+encodeURIComponent(value)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+maxAge+(secure?'; Secure':'');
 }
+async function updateOrderPaymentStatus(db:Db,orderId:string){
+  await db.query(
+    `UPDATE shop_orders o SET
+      amount_paid=x.paid,
+      balance=greatest(0,o.total-x.paid),
+      status=CASE WHEN x.paid>=o.total THEN 'paid' WHEN x.paid>0 THEN 'part_paid' ELSE 'open' END,
+      updated_at=now()
+     FROM (
+       SELECT coalesce(sum(amount),0)::numeric paid
+       FROM shop_payments
+       WHERE order_id=$1 AND status='successful'
+     ) x
+     WHERE o.id=$1`,
+    [orderId]
+  );
+}
 async function audit(db:Db,orgId:string,actor:string|null,action:string,resourceType:string,resourceId:string|null,shopId:string|null,branchId:string|null,metadata:any={}){
   await db.query(
     `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
@@ -864,6 +880,134 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
       UPDATE shop_finance_tax_obligations SET amount_paid=amount_paid+$1,
        status=CASE WHEN amount_paid+$1>=amount_due THEN 'paid' ELSE 'part_paid' END,updated_at=now()
       WHERE id=$2`,[b.amount,id]);
+    return reply.code(201).send(r.rows[0]);
+  });
+
+  app.get('/api/payments/operations',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'payments.read');
+    const shopId=uuid.parse(String((req.query as any)?.shopId||''));
+    const [summary,intents,unreconciled,settlements]=await Promise.all([
+      db.query(`
+        SELECT
+          count(*) FILTER(WHERE status='successful')::int successful,
+          count(*) FILTER(WHERE status='pending')::int pending,
+          count(*) FILTER(WHERE status='failed')::int failed,
+          count(*) FILTER(WHERE status='review_required')::int review_required,
+          coalesce(sum(amount) FILTER(WHERE status='successful'),0) successful_amount,
+          coalesce(sum(amount) FILTER(WHERE status='successful' AND reconciliation_status='unreconciled'),0) unreconciled_amount
+        FROM shop_payments WHERE organisation_id=$1 AND shop_id=$2`,[a.core.organisation_id,shopId]),
+      db.query(`SELECT i.*,d.device_name,o.order_no
+                FROM shop_payment_intents i
+                LEFT JOIN shop_pos_devices d ON d.id=i.pos_device_id
+                LEFT JOIN shop_orders o ON o.id=i.order_id
+                WHERE i.organisation_id=$1 AND i.shop_id=$2
+                ORDER BY i.created_at DESC LIMIT 150`,[a.core.organisation_id,shopId]),
+      db.query(`SELECT p.*,o.order_no,c.name customer_name
+                FROM shop_payments p
+                LEFT JOIN shop_orders o ON o.id=p.order_id
+                LEFT JOIN shop_customers c ON c.id=p.customer_id
+                WHERE p.organisation_id=$1 AND p.shop_id=$2
+                  AND p.status='successful' AND p.reconciliation_status='unreconciled'
+                ORDER BY p.created_at DESC LIMIT 250`,[a.core.organisation_id,shopId]),
+      db.query('SELECT * FROM shop_payment_settlements WHERE organisation_id=$1 AND shop_id=$2 ORDER BY created_at DESC LIMIT 100',[a.core.organisation_id,shopId])
+    ]);
+    return{summary:summary.rows[0],intents:intents.rows,unreconciled:unreconciled.rows,settlements:settlements.rows};
+  });
+
+  app.post('/api/pos/payment-intents',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'payments.create');
+    const b=z.object({
+      shopId:uuid,branchId:uuid.optional(),orderId:uuid,customerId:uuid.optional(),posDeviceId:uuid.optional(),
+      idempotencyKey:z.string().trim().min(8).max(160),method:z.enum(['card','mobile_money','cash','bank_transfer','other']),
+      amount:positive,currency:z.string().length(3).default('GHS'),provider:z.string().max(100).optional(),expiresInMinutes:z.coerce.number().int().min(1).max(1440).default(15)
+    }).parse(req.body);
+    const order=await maybeOne<any>(db,'SELECT * FROM shop_orders WHERE id=$1 AND organisation_id=$2 AND shop_id=$3',[b.orderId,a.core.organisation_id,b.shopId]);
+    if(!order)return reply.code(404).send({error:{message:'Order not found'}});
+    const outstanding=Math.max(0,Number(order.balance||0));
+    if(b.amount>outstanding+0.001)return reply.code(400).send({error:{message:'Payment intent exceeds the invoice balance'}});
+    if(b.posDeviceId){
+      const device=await maybeOne<any>(db,'SELECT id FROM shop_pos_devices WHERE id=$1 AND organisation_id=$2 AND shop_id=$3',[b.posDeviceId,a.core.organisation_id,b.shopId]);
+      if(!device)return reply.code(400).send({error:{message:'POS device is not registered for this shop'}});
+    }
+    const existing=await maybeOne<any>(db,'SELECT * FROM shop_payment_intents WHERE organisation_id=$1 AND idempotency_key=$2',[a.core.organisation_id,b.idempotencyKey]);
+    if(existing)return existing;
+    const r=await db.query(`
+      INSERT INTO shop_payment_intents(
+        organisation_id,shop_id,branch_id,order_id,customer_id,pos_device_id,idempotency_key,method,amount,currency,provider,status,expires_at,created_by
+      )
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',now()+($12||' minutes')::interval,$13)
+      RETURNING *`,
+      [a.core.organisation_id,b.shopId,b.branchId||order.branch_id,b.orderId,b.customerId||order.customer_id,b.posDeviceId||null,b.idempotencyKey,b.method,b.amount,b.currency.toUpperCase(),b.provider||null,String(b.expiresInMinutes),a.core.id]
+    );
+    return reply.code(201).send(r.rows[0]);
+  });
+
+  app.patch('/api/pos/payment-intents/:id/status',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'payments.create');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({status:z.enum(['authorized','successful','failed','cancelled','review_required']),providerReference:z.string().max(200).optional(),metadata:z.record(z.string(),z.any()).optional()}).parse(req.body);
+    const out=await tx(db,async client=>{
+      const ir=await client.query('SELECT * FROM shop_payment_intents WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+      if(!ir.rowCount)return null;
+      const intent=ir.rows[0];
+      if(['successful','failed','cancelled'].includes(intent.status))return intent;
+      if(intent.expires_at&&new Date(intent.expires_at)<new Date()&&b.status==='successful')throw Object.assign(new Error('Payment intent has expired'),{statusCode:409});
+      await client.query(
+        `UPDATE shop_payment_intents SET status=$1,provider_reference=coalesce($2,provider_reference),
+         metadata=metadata||$3::jsonb,updated_at=now() WHERE id=$4`,
+        [b.status,b.providerReference||null,JSON.stringify(b.metadata||{}),id]
+      );
+      if(b.status==='successful'){
+        let payment=await maybeOne<any>(client,'SELECT * FROM shop_payments WHERE payment_intent_id=$1 LIMIT 1',[id]);
+        if(!payment){
+          const ref=code('POSPAY');
+          payment=(await client.query(`
+            INSERT INTO shop_payments(
+              organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,provider_reference,method,
+              amount,currency,status,paid_at,pos_device_id,payment_intent_id,source,reconciliation_status,raw_json
+            )
+            VALUES($1,$2,$3,$4,$5,$6,'pos_device',$7,$8,$9,$10,'successful',now(),$11,$12,'pos','unreconciled',$13::jsonb)
+            RETURNING *`,
+            [intent.organisation_id,intent.shop_id,intent.branch_id,intent.order_id,intent.customer_id,ref,b.providerReference||intent.provider_reference,intent.method,intent.amount,intent.currency,intent.pos_device_id,id,JSON.stringify(b.metadata||{})]
+          )).rows[0];
+          await client.query(`
+            INSERT INTO shop_ledger_entries(organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,source_type,source_id,reference,description)
+            VALUES($1,$2,$3,'1000','Cash / Settlement',$4,0,'payment',$5,$6,'POS customer receipt'),
+                  ($1,$2,$3,'4000','Sales Revenue',0,$4,'payment',$5,$6,'POS customer receipt')`,
+            [intent.organisation_id,intent.shop_id,intent.branch_id,intent.amount,payment.id,payment.reference]
+          );
+          if(intent.order_id)await updateOrderPaymentStatus(client,intent.order_id);
+        }
+      }
+      return maybeOne<any>(client,'SELECT * FROM shop_payment_intents WHERE id=$1',[id]);
+    });
+    if(!out)return reply.code(404).send({error:{message:'Payment intent not found'}});
+    return out;
+  });
+
+  app.patch('/api/payments/:id/reconcile',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'finance.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({reference:z.string().max(200).optional(),note:z.string().max(1000).optional()}).parse(req.body);
+    const r=await db.query(`
+      UPDATE shop_payments SET reconciliation_status='reconciled',reconciled_at=now(),
+       raw_json=raw_json||$1::jsonb
+      WHERE id=$2 AND organisation_id=$3 AND status='successful' RETURNING *`,
+      [JSON.stringify({reconciliationReference:b.reference||null,reconciliationNote:b.note||null,reconciledBy:a.core.id}),id,a.core.organisation_id]
+    );
+    if(!r.rowCount)return reply.code(404).send({error:{message:'Successful payment not found'}});
+    await audit(db,a.core.organisation_id,a.core.id,'payment.reconciled','payment',id,r.rows[0].shop_id,r.rows[0].branch_id,{reference:b.reference||null});
+    return r.rows[0];
+  });
+
+  app.post('/api/payment-settlements',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'finance.manage');
+    const b=z.object({shopId:uuid,provider:z.string().trim().min(2).max(100),settlementReference:z.string().trim().min(2).max(200),settlementDate:z.string().optional(),grossAmount:money,fees:money.default(0),netAmount:money}).parse(req.body);
+    const r=await db.query(`
+      INSERT INTO shop_payment_settlements(organisation_id,shop_id,provider,settlement_reference,settlement_date,gross_amount,fees,net_amount,status)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending') RETURNING *`,
+      [a.core.organisation_id,b.shopId,b.provider,b.settlementReference,b.settlementDate||null,b.grossAmount,b.fees,b.netAmount]
+    );
     return reply.code(201).send(r.rows[0]);
   });
 
