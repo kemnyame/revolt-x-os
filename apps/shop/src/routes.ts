@@ -413,10 +413,18 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const shop=await maybeOne<any>(db,"SELECT id,organisation_id FROM shops WHERE public_slug=$1 AND status='active' LIMIT 1",[slug]);
     if(!shop)return reply.code(404).send({error:{message:'Shop not found'}});
     const b=z.object({branchId:uuid.optional(),serviceId:uuid.optional(),customerName:z.string().trim().min(2),phone:z.string().min(6),email:z.string().email().optional().or(z.literal('')),bookedFor:z.coerce.date(),notes:z.string().optional()}).parse(req.body);
+    let branchId=b.branchId||null;
+    if(!branchId){
+      const primary=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY created_at LIMIT 1",[shop.id]);
+      branchId=primary?.id||null;
+    }
+    await assertSalonBookingAvailability(db,{
+      organisationId:shop.organisation_id,shopId:shop.id,branchId,bookedFor:b.bookedFor,serviceId:b.serviceId||null
+    });
     const r=await db.query(
-      `INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_name,phone,email,booked_for,notes)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,status,booked_for`,
-      [shop.organisation_id,shop.id,b.branchId||null,b.serviceId||null,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null]
+      `INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_name,phone,email,booked_for,notes,source,status)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'public','booked') RETURNING id,status,booked_for`,
+      [shop.organisation_id,shop.id,branchId,b.serviceId||null,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null]
     );
     return reply.code(201).send(r.rows[0]);
   });
