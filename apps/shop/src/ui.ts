@@ -13,7 +13,7 @@ button{width:100%;margin-top:20px;border:0;border-radius:12px;padding:13px 16px;
 @media(max-width:800px){.shell{grid-template-columns:1fr}.hero{display:none}.login{padding:36px 24px}}
 </style></head><body>
 <div class="shell"><section class="hero"><div class="brand">REVOLT-X <span>SHOP</span></div><h1>Run every service business from one operating system.</h1><p>Multi-shop operations, customers, services, jobs, inventory, payments, finance and transaction monitoring powered by Revolt-X OS.</p><div class="chips"><span class="chip">Multi-shop</span><span class="chip">MoMo & Card</span><span class="chip">Finance</span><span class="chip">Customer Portal</span><span class="chip">Audit Trail</span></div></section>
-<section class="login"><h2>Sign in</h2><div class="muted">Use your Revolt-X OS account.</div><form id="f"><label>Email</label><input id="email" type="email" required autocomplete="username"><label>Password</label><input id="password" type="password" required autocomplete="current-password"><button>Continue to workspace</button><div style="margin-top:14px"><a href="/reset-password" style="color:#7dd3fc;text-decoration:none">Forgot password?</a></div><div id="err" class="err"></div></form></section></div>
+<section class="login"><h2>Sign in</h2><div class="muted">Use your Revolt-X OS account.</div><form id="f"><label>Email</label><input id="email" type="email" required autocomplete="username"><label>Password</label><input id="password" type="password" required autocomplete="current-password"><button>Continue to workspace</button><div style="margin-top:14px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><a href="/reset-password" style="color:#7dd3fc;text-decoration:none">Forgot password?</a><a href="/demo-login" style="color:#fbbf24;text-decoration:none;font-weight:800">Open demo access →</a></div><div id="err" class="err"></div></form></section></div>
 <script>
 document.getElementById('f').addEventListener('submit',async(e)=>{e.preventDefault();const err=document.getElementById('err');err.textContent='Signing in...';const r=await fetch('/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});const b=await r.json().catch(()=>({}));if(!r.ok){err.textContent=b?.error?.message||'Sign in failed';return}location.href='/'});
 </script></body></html>`;
@@ -118,4 +118,44 @@ export function storefrontHtml(slug:string){
 <style>*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui;background:#f6f8fb;color:#17243a}.hero{background:linear-gradient(135deg,#071425,#123b67);color:#fff;padding:50px 7vw}.hero h1{font-size:42px;margin:8px 0}.wrap{max-width:1100px;margin:0 auto;padding:28px 20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.card{background:#fff;border:1px solid #e0e7ef;border-radius:16px;padding:18px}.price{font-size:22px;font-weight:900;color:#2563eb}.book{display:grid;grid-template-columns:1fr 1fr;gap:12px}.book input,.book select,.book textarea{width:100%;padding:11px;border:1px solid #d5deea;border-radius:10px}.wide{grid-column:1/-1}button{background:#2563eb;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer}@media(max-width:760px){.grid{grid-template-columns:1fr}.book{grid-template-columns:1fr}.wide{grid-column:auto}}</style></head><body>
 <div class="hero"><div>Powered by Revolt-X Shop</div><h1 id="name">Loading shop...</h1><div id="contact"></div></div><div class="wrap"><h2>Services</h2><div class="grid" id="services"></div><h2 style="margin-top:34px">Book a service</h2><div class="card"><form id="book" class="book"><div><label>Name</label><input name="customerName" required></div><div><label>Phone</label><input name="phone" required></div><div><label>Email</label><input name="email" type="email"></div><div><label>Service</label><select name="serviceId" id="svc"></select></div><div class="wide"><label>Date & time</label><input name="bookedFor" type="datetime-local" required></div><div class="wide"><label>Notes</label><textarea name="notes"></textarea></div><div class="wide"><button>Confirm booking</button></div></form><div id="msg"></div></div></div>
 <script>const slug=${safe};let data;fetch('/api/public/store/'+encodeURIComponent(slug)).then(r=>r.json()).then(x=>{data=x;name.textContent=x.shop.name;contact.textContent=[x.shop.phone,x.shop.email,x.shop.address].filter(Boolean).join(' · ');services.innerHTML=x.services.map(s=>'<div class="card"><b>'+s.name+'</b><p>'+(s.description||'')+'</p><div class="price">GHS '+Number(s.price).toFixed(2)+'</div><small>'+s.duration_minutes+' minutes</small></div>').join('')||'<p>No services published yet.</p>';svc.innerHTML='<option value="">Select service</option>'+x.services.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')});book.onsubmit=async e=>{e.preventDefault();const f=Object.fromEntries(new FormData(book));f.bookedFor=new Date(f.bookedFor).toISOString();if(!f.serviceId)delete f.serviceId;const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(f)});const b=await r.json();msg.textContent=r.ok?'Booking confirmed. Reference: '+b.id:(b?.error?.message||'Booking failed');if(r.ok)book.reset()}</script></body></html>`;
+}
+
+
+export function demoLoginHtml(){
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demo Access · Revolt-X Shop</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:linear-gradient(145deg,#07111f,#0b1c2f);color:#e8eef8;min-height:100vh;padding:28px}
+.wrap{max-width:1180px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:28px}.brand{font-weight:950;font-size:22px}.brand span{color:#60a5fa}.back{color:#93c5fd;text-decoration:none}
+.hero{background:linear-gradient(135deg,#0d1c31,#122c46);border:1px solid #29405e;border-radius:24px;padding:30px;margin-bottom:20px}.hero h1{font-size:clamp(30px,5vw,52px);margin:0 0 10px;letter-spacing:-.04em}.hero p{margin:0;color:#9fb0c6;max-width:760px;line-height:1.65}.notice{margin-top:16px;padding:12px 14px;border:1px solid #2f536d;background:#0a2031;border-radius:12px;color:#c4d9ea;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:#0d1929;border:1px solid #263a53;border-radius:18px;padding:20px;cursor:pointer;transition:.18s;text-align:left;color:#fff;width:100%;margin:0}.card:hover{transform:translateY(-2px);border-color:#60a5fa;background:#102138}.avatar{width:48px;height:48px;border-radius:14px;background:#183b63;display:grid;place-items:center;font-weight:950;font-size:18px;margin-bottom:14px}.role{font-size:12px;color:#fbbf24;font-weight:900;text-transform:uppercase;letter-spacing:.08em}.name{font-size:18px;font-weight:900;margin:5px 0}.desc{color:#98abc1;font-size:13px;line-height:1.5}.go{margin-top:16px;color:#7dd3fc;font-weight:900;font-size:13px}.status{min-height:26px;margin-top:18px;color:#bfdbfe;font-weight:700}.card.loading{opacity:.55;pointer-events:none}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:620px){body{padding:16px}.grid{grid-template-columns:1fr}.hero{padding:22px}.top{align-items:flex-start;flex-direction:column}}
+</style></head><body><div class="wrap">
+<div class="top"><div class="brand">REVOLT-X <span>SHOP</span></div><a class="back" href="/login">Use normal sign in</a></div>
+<section class="hero"><h1>Choose a demo user</h1><p>Select a role and Revolt-X Shop will sign you in immediately. No password is required for these demo accounts.</p><div class="notice">Demo users operate inside a separate demo organisation and do not access your live commercial salon data.</div></section>
+<div class="grid" id="users">
+<button class="card" data-persona="shop_admin"><div class="avatar">AO</div><div class="role">Shop Admin</div><div class="name">Ama Owusu</div><div class="desc">Full salon administration, settings, access control and business oversight.</div><div class="go">Enter as Ama →</div></button>
+<button class="card" data-persona="manager"><div class="avatar">KM</div><div class="role">Manager</div><div class="name">Kojo Mensah</div><div class="desc">Appointments, customers, services, sales, inventory and operational reporting.</div><div class="go">Enter as Kojo →</div></button>
+<button class="card" data-persona="cashier"><div class="avatar">AB</div><div class="role">Cashier / Reception</div><div class="name">Akosua Boateng</div><div class="desc">Customer check-in, bookings, POS, receipts and payment collection.</div><div class="go">Enter as Akosua →</div></button>
+<button class="card" data-persona="service"><div class="avatar">KA</div><div class="role">Barber</div><div class="name">Kwame Asare</div><div class="desc">Service queue, appointments, customer notes and barber workflow.</div><div class="go">Enter as Kwame →</div></button>
+<button class="card" data-persona="finance"><div class="avatar">EA</div><div class="role">Finance</div><div class="name">Efua Adjei</div><div class="desc">Payments, expenses, end-of-day controls, finance and reporting.</div><div class="go">Enter as Efua →</div></button>
+<button class="card" data-persona="inventory"><div class="avatar">YT</div><div class="role">Inventory</div><div class="name">Yaw Tetteh</div><div class="desc">Products, stock positions, reorder levels and stock adjustments.</div><div class="go">Enter as Yaw →</div></button>
+<button class="card" data-persona="auditor"><div class="avatar">NA</div><div class="role">Auditor</div><div class="name">Nana Amoako</div><div class="desc">Read-only financial review, reports and audit trail visibility.</div><div class="go">Enter as Nana →</div></button>
+</div><div class="status" id="status"></div></div>
+<script>
+document.querySelectorAll('.card').forEach(card=>card.addEventListener('click',async()=>{
+  const persona=card.dataset.persona;
+  document.querySelectorAll('.card').forEach(x=>x.classList.add('loading'));
+  status.textContent='Opening demo workspace...';
+  try{
+    const r=await fetch('/auth/demo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({persona})});
+    const b=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(b?.error?.message||'Demo sign-in failed');
+    location.href='/';
+  }catch(e){
+    status.textContent=e.message;
+    document.querySelectorAll('.card').forEach(x=>x.classList.remove('loading'));
+  }
+}));
+</script></body></html>`;
 }
