@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Db } from './db.js';
 import { tx, maybeOne } from './db.js';
 import type { ShopConfig } from './config.js';
-import { authorize } from './auth.js';
+import { authorize, hasShopCapability } from './auth.js';
 
 const uuid=z.string().uuid();
 const money=z.coerce.number().finite().min(0);
@@ -275,9 +275,12 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     }
 
     const empty=()=>Promise.resolve({rows:[]} as any);
-    const canAppointments=['shop_admin','manager','cashier','service'].includes(a.role);
-    const canFinance=['shop_admin','finance','auditor'].includes(a.role);
-    const canFinancialStats=['shop_admin','manager','cashier','finance','auditor'].includes(a.role);
+    const [canAppointments,canFinance,canReports]=await Promise.all([
+      hasShopCapability(db,a.core.organisation_id,a.role,'appointments.manage').then(v=>v||hasShopCapability(db,a.core.organisation_id,a.role,'bookings.manage')),
+      hasShopCapability(db,a.core.organisation_id,a.role,'finance.read').then(v=>v||hasShopCapability(db,a.core.organisation_id,a.role,'finance.manage')),
+      hasShopCapability(db,a.core.organisation_id,a.role,'reports.read')
+    ]);
+    const canFinancialStats=canFinance||canReports||await hasShopCapability(db,a.core.organisation_id,a.role,'payments.read');
 
     const [staff,chairs,appointments,commissions,eod,rawStats]=await Promise.all([
       db.query(
@@ -327,7 +330,7 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
     }
     if(!canFinance)stats.commissions_today=null;
 
-    const canSeeCommission=['shop_admin','manager','finance','auditor'].includes(a.role);
+    const canSeeCommission=canFinance||a.role==='manager';
     const staffRows=canSeeCommission
       ? staff.rows
       : staff.rows.map((row:any)=>({...row,commission_percent:null}));
