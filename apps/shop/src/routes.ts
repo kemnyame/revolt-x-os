@@ -334,6 +334,51 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     return reply.code(201).send(payment);
   });
 
+  app.post('/api/payments/:id/reverse',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'finance.manage');
+    const paymentId=uuid.parse((req.params as any).id);
+    const b=z.object({reason:z.string().trim().min(3).max(1000)}).parse(req.body);
+
+    const reversed=await tx(db,async client=>{
+      const p=await client.query('SELECT * FROM shop_payments WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[paymentId,a.core.organisation_id]);
+      if(!p.rowCount)return null;
+      const payment=p.rows[0];
+      if(payment.provider!=='manual')throw Object.assign(new Error('Provider-verified card and Mobile Money payments must be refunded through the payment provider.'),{statusCode:409});
+      if(payment.status==='reversed')throw Object.assign(new Error('This payment has already been reversed.'),{statusCode:409});
+      if(payment.status!=='successful')throw Object.assign(new Error('Only successful manual payments can be reversed.'),{statusCode:409});
+
+      await client.query(
+        `UPDATE shop_payments
+         SET status='reversed',reversed_at=now(),reversed_by=$1,reversal_reason=$2
+         WHERE id=$3`,
+        [a.core.id,b.reason,paymentId]
+      );
+      const posted=await client.query("SELECT 1 FROM shop_ledger_entries WHERE source_type='payment_reversal' AND source_id=$1 LIMIT 1",[paymentId]);
+      if(!posted.rowCount){
+        await client.query(
+          `INSERT INTO shop_ledger_entries(
+             organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,
+             source_type,source_id,reference,description
+           )
+           VALUES
+             ($1,$2,$3,'4000','Sales Revenue',$4,0,'payment_reversal',$5,$6,$7),
+             ($1,$2,$3,'1000','Cash / Settlement',0,$4,'payment_reversal',$5,$6,$7)`,
+          [payment.organisation_id,payment.shop_id,payment.branch_id,payment.amount,payment.id,payment.reference,'Payment reversal: '+b.reason]
+        );
+      }
+      if(payment.order_id)await updateOrderPaid(client,payment.order_id);
+      await client.query(
+        `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
+         VALUES($1,$2,'payment.reversed','payment',$3,$4,$5,$6)`,
+        [payment.organisation_id,a.core.id,payment.id,payment.shop_id,payment.branch_id,JSON.stringify({reason:b.reason,amount:payment.amount,reference:payment.reference})]
+      );
+      return{...payment,status:'reversed',reversal_reason:b.reason};
+    });
+
+    if(!reversed)return reply.code(404).send({error:{message:'Payment not found'}});
+    return reversed;
+  });
+
   app.post('/api/payments/initialize',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'payments.create');
     if(!config.PAYSTACK_SECRET_KEY)return reply.code(503).send({error:{message:'Online payment provider is not configured'}});
