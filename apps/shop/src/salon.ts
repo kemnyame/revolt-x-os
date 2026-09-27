@@ -144,6 +144,9 @@ export async function assertSalonBookingAvailability(
   db:Db,
   input:{organisationId:string;shopId:string;branchId?:string|null;bookedFor:Date;serviceId?:string|null;staffId?:string|null;chairId?:string|null;ignoreBookingId?:string|null}
 ){
+  if(input.bookedFor.getTime()<Date.now()-5*60*1000){
+    const e:any=new Error('The appointment time cannot be in the past.');e.statusCode=409;throw e;
+  }
   const settings=await maybeOne<any>(db,'SELECT * FROM salon_settings WHERE shop_id=$1 AND organisation_id=$2',[input.shopId,input.organisationId]);
   const durationRow=input.serviceId?await maybeOne<any>(db,'SELECT duration_minutes FROM shop_services WHERE id=$1 AND shop_id=$2',[input.serviceId,input.shopId]):null;
   const duration=Math.max(5,Number(durationRow?.duration_minutes||30));
