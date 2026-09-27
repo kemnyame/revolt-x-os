@@ -192,6 +192,10 @@ export async function ensureShopSchema(db:Db){
       UNIQUE(organisation_id,reference)
     );
 
+    ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS reversed_at timestamptz;
+    ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS reversed_by uuid;
+    ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS reversal_reason text;
+
     CREATE TABLE IF NOT EXISTS shop_payment_events(
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       provider text NOT NULL,
