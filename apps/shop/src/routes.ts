@@ -113,6 +113,14 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [a.core.organisation_id,b.name,b.slug,(a.core.organisation_slug+'-'+b.slug).toLowerCase(),b.businessType,b.currency.toUpperCase(),b.phone||null,b.email||null,b.address||null,a.core.id]
     );
+    if(b.businessType==='barbering_salon'){
+      await db.query(
+        `INSERT INTO salon_settings(shop_id,organisation_id,timezone,booking_interval_minutes,allow_online_booking,allow_walkins,tax_percent,receipt_footer)
+         VALUES($1,$2,'Africa/Accra',15,true,true,0,'Thank you for choosing us.')
+         ON CONFLICT(shop_id) DO NOTHING`,
+        [r.rows[0].id,a.core.organisation_id]
+      );
+    }
     await audit(db,a.core.organisation_id,a.core.id,'shop.created','shop',r.rows[0].id,r.rows[0].id,{name:b.name});
     return reply.code(201).send(r.rows[0]);
   });
@@ -126,6 +134,32 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       [a.core.organisation_id,b.shopId,b.name,b.code||null,b.phone||null,b.email||null,b.address||null]
     );
     if(!r.rowCount)return reply.code(404).send({error:{message:'Shop not found'}});
+    const shop=await maybeOne<any>(db,'SELECT business_type FROM shops WHERE id=$1 AND organisation_id=$2',[b.shopId,a.core.organisation_id]);
+    if(shop?.business_type==='barbering_salon'){
+      const template=(await db.query(
+        'SELECT day_of_week,open_time,close_time,is_closed FROM salon_business_hours WHERE shop_id=$1 ORDER BY branch_id,day_of_week LIMIT 7',
+        [b.shopId]
+      )).rows;
+      if(template.length){
+        for(const h of template){
+          await db.query(
+            `INSERT INTO salon_business_hours(organisation_id,shop_id,branch_id,day_of_week,open_time,close_time,is_closed)
+             VALUES($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT(branch_id,day_of_week) DO NOTHING`,
+            [a.core.organisation_id,b.shopId,r.rows[0].id,h.day_of_week,h.open_time,h.close_time,h.is_closed]
+          );
+        }
+      }else{
+        for(let day=0;day<=6;day++){
+          await db.query(
+            `INSERT INTO salon_business_hours(organisation_id,shop_id,branch_id,day_of_week,open_time,close_time,is_closed)
+             VALUES($1,$2,$3,$4,'08:00','20:00',$5)
+             ON CONFLICT(branch_id,day_of_week) DO NOTHING`,
+            [a.core.organisation_id,b.shopId,r.rows[0].id,day,day===0]
+          );
+        }
+      }
+    }
     await audit(db,a.core.organisation_id,a.core.id,'branch.created','branch',r.rows[0].id,b.shopId);
     return reply.code(201).send(r.rows[0]);
   });
