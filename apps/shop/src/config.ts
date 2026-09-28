@@ -21,7 +21,8 @@ const schema=z.object({
   SMS_WEBHOOK_TOKEN:z.preprocess(emptyToUndefined,z.string().optional()),
   WHATSAPP_API_URL:z.preprocess(emptyToUndefined,z.string().url().optional()),
   WHATSAPP_TOKEN:z.preprocess(emptyToUndefined,z.string().optional()),
-  WHATSAPP_PHONE:z.preprocess(emptyToUndefined,z.string().optional())
+  WHATSAPP_PHONE:z.preprocess(emptyToUndefined,z.string().optional()),
+  GOOGLE_CLIENT_ID:z.preprocess(emptyToUndefined,z.string().optional())
 });
 
 export type ShopConfig=z.infer<typeof schema>;
