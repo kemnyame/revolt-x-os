@@ -326,7 +326,12 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
         WHERE shop_id=$1 AND branch_id=$2 AND business_day_id=$3 AND status IN('handed_over','closed')
         ORDER BY ended_at DESC NULLS LAST,started_at DESC LIMIT 1`,[b.shopId,b.branchId,day?.id||'00000000-0000-0000-0000-000000000000']);
       let opening=Number(b.openingCash||0);
-      if(day&&previous&&previous.actual_cash!=null)opening=Number(previous.actual_cash);
+      if(day&&previous){
+        if(previous.handover_to_user_id&&previous.handover_to_user_id!==a.core.id&&!['shop_admin','manager'].includes(a.role)){
+          throw Object.assign(new Error('This cash position was handed over to another cashier. Ask a manager to reassign the handover or sign in as the designated cashier.'),{statusCode:409,code:'HANDOVER_ASSIGNED_TO_ANOTHER_CASHIER'});
+        }
+        if(previous.actual_cash!=null)opening=Number(previous.actual_cash);
+      }
       if(!day){
         day=(await client.query(`
           INSERT INTO shop_business_days(organisation_id,shop_id,branch_id,business_date,opening_cash,opened_by,notes)
