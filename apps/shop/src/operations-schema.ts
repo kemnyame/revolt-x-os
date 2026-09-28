@@ -145,7 +145,7 @@ export async function ensureShopOperationsSchema(db:Db){
       ON shop_bookings(organisation_id,shop_id,request_seen_at,created_at DESC)
       WHERE source IN('public','customer_portal');
 
-    CREATE OR REPLACE FUNCTION shop_notify_external_booking() RETURNS trigger AS $
+    CREATE OR REPLACE FUNCTION shop_notify_external_booking() RETURNS trigger AS $$
     BEGIN
       IF NEW.source IN ('public','customer_portal') THEN
         INSERT INTO shop_notifications(
@@ -159,7 +159,7 @@ export async function ensureShopOperationsSchema(db:Db){
       END IF;
       RETURN NEW;
     END;
-    $ LANGUAGE plpgsql;
+    $$ LANGUAGE plpgsql;
 
     DROP TRIGGER IF EXISTS trg_shop_notify_external_booking ON shop_bookings;
     CREATE TRIGGER trg_shop_notify_external_booking
