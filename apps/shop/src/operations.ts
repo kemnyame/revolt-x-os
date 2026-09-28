@@ -280,10 +280,11 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
       ORDER BY created_at DESC LIMIT 3000`,[orgId,shopId,branchId,from,to])).rows;
     case 'trial_balance': return (await db.query(`
       SELECT a.code,a.name,a.account_type,a.subtype,
-             coalesce(sum(l.debit),0) debit,coalesce(sum(l.credit),0) credit,
+             coalesce(sum(l.debit) FILTER(WHERE j.id IS NOT NULL),0) debit,
+             coalesce(sum(l.credit) FILTER(WHERE j.id IS NOT NULL),0) credit,
              CASE WHEN a.account_type IN('asset','expense')
-               THEN a.opening_balance+coalesce(sum(l.debit),0)-coalesce(sum(l.credit),0)
-               ELSE a.opening_balance+coalesce(sum(l.credit),0)-coalesce(sum(l.debit),0) END balance
+               THEN a.opening_balance+coalesce(sum(l.debit) FILTER(WHERE j.id IS NOT NULL),0)-coalesce(sum(l.credit) FILTER(WHERE j.id IS NOT NULL),0)
+               ELSE a.opening_balance+coalesce(sum(l.credit) FILTER(WHERE j.id IS NOT NULL),0)-coalesce(sum(l.debit) FILTER(WHERE j.id IS NOT NULL),0) END balance
       FROM shop_finance_accounts a
       LEFT JOIN shop_finance_journal_lines l ON l.account_id=a.id
       LEFT JOIN shop_finance_journal_entries j ON j.id=l.journal_entry_id
