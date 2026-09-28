@@ -125,6 +125,13 @@ export async function ensureShopOperationsSchema(db:Db){
     );
     CREATE INDEX IF NOT EXISTS idx_shop_gallery_public ON shop_gallery_media(shop_id,is_published,sort_order,created_at DESC);
 
+    ALTER TABLE shop_orders ADD COLUMN IF NOT EXISTS cashier_session_id uuid REFERENCES shop_cashier_sessions(id) ON DELETE SET NULL;
+    ALTER TABLE shop_payments ADD COLUMN IF NOT EXISTS cashier_session_id uuid REFERENCES shop_cashier_sessions(id) ON DELETE SET NULL;
+    ALTER TABLE shop_expenses ADD COLUMN IF NOT EXISTS cashier_session_id uuid REFERENCES shop_cashier_sessions(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_shop_orders_cashier_session ON shop_orders(cashier_session_id) WHERE cashier_session_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_shop_payments_cashier_session ON shop_payments(cashier_session_id) WHERE cashier_session_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_shop_expenses_cashier_session ON shop_expenses(cashier_session_id) WHERE cashier_session_id IS NOT NULL;
+
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS inspiration_media_id uuid REFERENCES shop_gallery_media(id) ON DELETE SET NULL;
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS request_seen_at timestamptz;
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS request_seen_by uuid;
