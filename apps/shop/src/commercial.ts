@@ -247,7 +247,7 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
   app.patch('/api/salon/staff/:id',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'shops.manage');
     const id=z.string().uuid().parse((req.params as any).id);
-    const b=z.object({fullName:z.string().trim().min(2).max(160).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),role:z.enum(['barber','receptionist','manager','assistant']).optional(),specialty:z.string().max(300).optional(),commissionPercent:z.coerce.number().min(0).max(100).optional(),status:z.enum(['active','inactive','leave']).optional()}).parse(req.body);
+    const b=z.object({fullName:z.string().trim().min(2).max(160).optional(),phone:z.string().max(40).optional(),email:z.string().email().optional().or(z.literal('')),role:z.enum(['barber','receptionist','cashier','manager','assistant']).optional(),specialty:z.string().max(300).optional(),commissionPercent:z.coerce.number().min(0).max(100).optional(),status:z.enum(['active','inactive','leave']).optional()}).parse(req.body);
     const r=await db.query(
       `UPDATE salon_staff SET full_name=coalesce($1,full_name),phone=coalesce($2,phone),email=coalesce($3,email),role=coalesce($4,role),specialty=coalesce($5,specialty),commission_percent=coalesce($6,commission_percent),status=coalesce($7,status)
        WHERE id=$8 AND organisation_id=$9 RETURNING *`,
