@@ -71,7 +71,7 @@ allowedPages=function(role){
   const caps=new Set(base?.shopCapabilities||[]);
   const all=caps.has('*');
   const add=(page,cap)=>{if(all||caps.has(cap)||(!caps.size&&page==='cashiers'&&role==='cashier'))pages.push(page)};
-  add('requests','bookings.manage');add('gallery','media.manage');add('leave','leave.manage');add('cashiers','cashier.session');
+  add('requests','appointments.manage');add('gallery','media.manage');add('leave','leave.manage');add('cashiers','cashier.session');
   return [...new Set(pages)];
 };
 
