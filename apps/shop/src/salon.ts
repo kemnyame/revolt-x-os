@@ -373,7 +373,7 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
 
   app.post('/api/salon/staff',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'shops.manage');
-    const b=z.object({shopId:uuid,branchId:uuid.optional(),fullName:z.string().min(2),phone:z.string().optional(),email:z.string().email().optional().or(z.literal('')),role:z.enum(['barber','receptionist','manager','assistant']).default('barber'),specialty:z.string().optional(),commissionPercent:z.coerce.number().min(0).max(100).default(0)}).parse(req.body);
+    const b=z.object({shopId:uuid,branchId:uuid.optional(),fullName:z.string().min(2),phone:z.string().optional(),email:z.string().email().optional().or(z.literal('')),role:z.enum(['barber','receptionist','cashier','manager','assistant']).default('barber'),specialty:z.string().optional(),commissionPercent:z.coerce.number().min(0).max(100).default(0)}).parse(req.body);
     const no='SAL-'+Date.now().toString().slice(-6);
     const r=await db.query(`INSERT INTO salon_staff(organisation_id,shop_id,branch_id,staff_no,full_name,phone,email,role,specialty,commission_percent,status,hire_date)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',CURRENT_DATE) RETURNING *`,
