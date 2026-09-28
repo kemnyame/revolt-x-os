@@ -350,6 +350,11 @@ window.loadFinanceControl=async function(){
 
 const oldShowPage=showPage;
 showPage=function(id){
+  if(base?.role==='cashier'&&!cashierState&&!['overview','cashiers','leave'].includes(id)){
+    promptCashierSession();
+    showToast('Start your cashier session before opening '+String(id).replaceAll('_',' ')+'.');
+    return;
+  }
   oldShowPage(id);
   setTimeout(()=>{
     if(id==='requests')loadExternalRequests();
