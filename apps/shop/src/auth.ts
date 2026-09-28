@@ -26,12 +26,12 @@ export type ShopRole=string;
 
 const caps:Record<string,string[]>={
   shop_admin:['*'],
-  manager:['dashboard.read','shops.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','jobs.manage','sales.manage','payments.create','payments.read','inventory.read','inventory.manage','assets.manage','tickets.manage','reports.read','bookings.manage'],
-  cashier:['dashboard.read','customers.read','customers.manage','services.read','sales.manage','payments.create','payments.read','bookings.manage','communications.manage','tickets.manage'],
-  finance:['dashboard.read','payments.create','payments.read','finance.read','finance.manage','reports.read','customers.read'],
-  service:['dashboard.read','customers.read','services.read','jobs.manage','bookings.manage'],
-  inventory:['dashboard.read','inventory.read','inventory.manage','products.manage','assets.manage'],
-  auditor:['dashboard.read','customers.read','services.read','jobs.read','payments.read','finance.read','reports.read','audit.read']
+  manager:['dashboard.read','shops.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','jobs.manage','sales.manage','payments.create','payments.read','inventory.read','inventory.manage','assets.manage','tickets.manage','reports.read','bookings.manage','cashier.session','leave.manage','leave.review','media.manage','notifications.read'],
+  cashier:['dashboard.read','customers.read','customers.manage','services.read','sales.manage','payments.create','payments.read','bookings.manage','communications.manage','tickets.manage','cashier.session','leave.manage','notifications.read'],
+  finance:['dashboard.read','payments.create','payments.read','finance.read','finance.manage','reports.read','customers.read','notifications.read'],
+  service:['dashboard.read','customers.read','services.read','jobs.manage','bookings.manage','leave.manage','notifications.read'],
+  inventory:['dashboard.read','inventory.read','inventory.manage','products.manage','assets.manage','leave.manage','notifications.read'],
+  auditor:['dashboard.read','customers.read','services.read','jobs.read','payments.read','finance.read','reports.read','audit.read','notifications.read']
 };
 
 function cookieValue(header:string|undefined,name:string){
@@ -197,8 +197,29 @@ export async function authorize(db:Db,config:ShopConfig,request:FastifyRequest,r
   if(capability){
     const allowed=await hasShopCapability(db,core.organisation_id,membership.role,capability);
     if(!allowed){
-      const e:any=new Error('Shop permission required: '+capability);e.statusCode=403;throw e;
+      const e:any=new Error('Your Shop role does not have permission to perform this action.');
+      e.statusCode=403;e.code='SHOP_PERMISSION_REQUIRED';e.capability=capability;throw e;
     }
   }
+
+  if(membership.role==='cashier'&&capability&&!['dashboard.read','cashier.session','leave.manage','notifications.read'].includes(capability)){
+    let session:any=null;
+    try{
+      session=await maybeOne<any>(db,
+        `SELECT id,shop_id,branch_id,session_no,started_at
+         FROM shop_cashier_sessions
+         WHERE organisation_id=$1 AND cashier_user_id=$2 AND status='open'
+         ORDER BY started_at DESC LIMIT 1`,
+        [core.organisation_id,core.id]
+      );
+    }catch(e:any){
+      if(e?.code!=='42P01')throw e;
+    }
+    if(!session){
+      const e:any=new Error('Start your cashier session before continuing. This protects the cash drawer, handover and end-of-day records.');
+      e.statusCode=428;e.code='CASHIER_SESSION_REQUIRED';throw e;
+    }
+  }
+
   return{core,role:membership.role};
 }
