@@ -795,31 +795,43 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     if(!service)return reply.code(400).send({error:{message:'Selected service is not available.'}});
     if(q.staffId){
       const staff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND role='barber' AND status='active' AND (branch_id=$3 OR branch_id IS NULL)",[q.staffId,shop.id,branchId]);
-      if(!staff)return reply.code(400).send({error:{message:'Selected barber is not available at this branch.'}});
+      if(!staff)return reply.code(400).send({error:{code:'BARBER_NOT_AVAILABLE',message:'The selected barber is not active at this branch. Please choose another barber.'}});
+      const leave=await maybeOne<any>(db,`
+        SELECT id FROM shop_staff_leave_requests
+        WHERE shop_id=$1 AND salon_staff_id=$2 AND status='approved'
+          AND $3::date BETWEEN start_date AND end_date LIMIT 1`,
+        [shop.id,q.staffId,q.date]);
+      if(leave)return{date:q.date,branchId,timezone:shop.timezone,capacity:0,slots:[],reason:'barber_on_leave'};
     }
 
-    const hours=await maybeOne<any>(db,`
+    const configuredHours=await maybeOne<any>(db,`
       SELECT h.open_time,h.close_time,h.is_closed
       FROM salon_business_hours h
       WHERE h.shop_id=$1 AND h.branch_id=$2
         AND h.day_of_week=EXTRACT(DOW FROM $3::date)::int
       LIMIT 1`,[shop.id,branchId,q.date]);
-    if(!hours||hours.is_closed){
-      return{date:q.date,branchId,timezone:shop.timezone,capacity:0,slots:[]};
+    const hours=configuredHours||{open_time:'08:00:00',close_time:'20:00:00',is_closed:false};
+    if(hours.is_closed){
+      return{date:q.date,branchId,timezone:shop.timezone,capacity:0,slots:[],reason:'closed'};
     }
 
     const capacityRow=await maybeOne<any>(db,`
       SELECT
         (SELECT count(*)::int FROM salon_chairs
-         WHERE shop_id=$1 AND branch_id=$2 AND status<>'maintenance') chairs,
-        (SELECT count(*)::int FROM salon_staff
-         WHERE shop_id=$1 AND (branch_id=$2 OR branch_id IS NULL)
-           AND role='barber' AND status='active') barbers`,
-      [shop.id,branchId]
+         WHERE shop_id=$1 AND branch_id=$2 AND status NOT IN('maintenance','inactive')) chairs,
+        (SELECT count(*)::int FROM salon_staff st
+         WHERE st.shop_id=$1 AND (st.branch_id=$2 OR st.branch_id IS NULL)
+           AND st.role='barber' AND st.status='active'
+           AND NOT EXISTS(
+             SELECT 1 FROM shop_staff_leave_requests lr
+             WHERE lr.shop_id=$1 AND lr.salon_staff_id=st.id AND lr.status='approved'
+               AND $3::date BETWEEN lr.start_date AND lr.end_date
+           )) barbers`,
+      [shop.id,branchId,q.date]
     );
     const chairs=Math.max(0,Number(capacityRow?.chairs||0));
     const barbers=Math.max(0,Number(capacityRow?.barbers||0));
-    const capacity=Math.min(chairs,barbers);
+    const capacity=barbers<=0?0:(chairs>0?Math.min(chairs,barbers):barbers);
     const duration=Math.max(5,Number(service.duration_minutes||30));
     const interval=Math.max(5,Number(shop.booking_interval_minutes||15));
 
@@ -869,7 +881,8 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
 
     return{
       date:q.date,branchId,timezone:shop.timezone,durationMinutes:duration,
-      bookingIntervalMinutes:interval,capacity,slots:available
+      bookingIntervalMinutes:interval,capacity,barbers,chairs,slots:available,
+      reason:capacity<=0?'no_active_barber':available.length?'available':'fully_booked'
     };
   });
 
