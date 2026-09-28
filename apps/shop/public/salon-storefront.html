@@ -16,8 +16,9 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
 .slots{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px}.slot{padding:10px 8px;border:1px solid #dfe4e1;border-radius:10px;background:#fff;color:#253236;font-weight:850;cursor:pointer;text-align:center}.slot:hover{border-color:var(--teal)}.slot.selected{background:var(--teal);border-color:var(--teal);color:#fff}.slot-empty{padding:18px;border:1px dashed #d5d0c8;border-radius:12px;color:var(--muted);text-align:center}
 .summary{position:sticky;top:18px;height:max-content}.summary h3{margin:0 0 13px}.summary-row{display:flex;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid #eee9e1;font-size:13px}.summary-row span:first-child{color:var(--muted)}.notice{padding:13px 14px;border-radius:12px;background:#eef8f6;border:1px solid #d2ebe7;color:#126d63;font-size:12px;line-height:1.55}.notice.bad{background:#fff0f0;border-color:#f1cfcf;color:#9e3434}.msg{margin-top:13px;font-weight:850;line-height:1.5}.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
 .branch-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}.branch-card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:14px}.branch-card b{display:block}.branch-card small{display:block;color:var(--muted);margin-top:5px;line-height:1.45}
+.gallery-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.gallery-card{background:#fff;border:1px solid var(--line);border-radius:17px;overflow:hidden;cursor:pointer;transition:.2s;box-shadow:0 12px 32px rgba(20,35,32,.06)}.gallery-card:hover,.gallery-card.selected{transform:translateY(-2px);border-color:#58a99f;box-shadow:0 18px 42px rgba(20,80,70,.12)}.gallery-media{height:280px;background:#0d1519;display:grid;place-items:center;overflow:hidden}.gallery-media img,.gallery-media video{width:100%;height:100%;object-fit:cover}.gallery-body{padding:14px}.gallery-body h3{margin:0 0 5px}.gallery-body p{font-size:12px;line-height:1.45;margin:0;color:var(--muted)}.gallery-meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}.gallery-meta span{font-size:10px;font-weight:800;background:#eef6f4;padding:5px 8px;border-radius:999px}.account-callout{background:linear-gradient(135deg,#0d2225,#17443d);color:#fff;border-radius:20px;padding:22px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center}.account-callout p{color:#c3d7d3;margin:5px 0 0;line-height:1.5}.account-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.account-fields{grid-column:1/-1;border-top:1px solid #ffffff22;padding-top:14px;margin-top:3px}.selected-style{margin-top:12px;border:1px solid #d8e7e3;border-radius:12px;padding:10px;background:#f5faf8;display:none}.selected-style.show{display:flex;gap:10px;align-items:center}.selected-style img,.selected-style video{width:80px;height:80px;object-fit:cover;border-radius:10px;background:#111}.selected-style b{display:block}.selected-style small{color:var(--muted)}.google-wrap{min-height:40px}
 .footer{background:#0c151b;color:#9cb0b7;padding:28px 20px;text-align:center;font-size:12px}.footer b{color:#fff}
-@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}.book-shell{grid-template-columns:1fr}.summary{position:static}.branch-cards{grid-template-columns:repeat(2,1fr)}}@media(max-width:640px){.grid,.branch-cards,.book{grid-template-columns:1fr}.wide{grid-column:auto}.slots{grid-template-columns:repeat(3,1fr)}.hero{min-height:55vh}.title{align-items:start;flex-direction:column}.wrap{padding:30px 15px}}
+@media(max-width:900px){.grid,.gallery-grid{grid-template-columns:repeat(2,1fr)}.book-shell{grid-template-columns:1fr}.summary{position:static}.branch-cards{grid-template-columns:repeat(2,1fr)}.account-callout{grid-template-columns:1fr}}@media(max-width:640px){.grid,.gallery-grid,.branch-cards,.book{grid-template-columns:1fr}.wide{grid-column:auto}.slots{grid-template-columns:repeat(3,1fr)}.hero{min-height:55vh}.title{align-items:start;flex-direction:column}.wrap{padding:30px 15px}}
 </style>
 <link rel="stylesheet" href="/assets/shop-glass.css?v=20260928-2"><script src="/assets/shop-glass.js?v=20260928-2" defer></script></head>
 <body class="store-screen">
@@ -31,6 +32,18 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
 <div class="wrap" id="services">
   <div class="title"><div><h2>Services</h2><div class="muted">Live services and prices published by the salon</div></div></div>
   <div class="grid" id="serviceGrid"><div class="card muted">Loading services…</div></div>
+</div>
+
+<div class="wrap" id="inspiration">
+  <div class="title"><div><h2>Find your next look</h2><div class="muted">Browse styles uploaded by the salon. Choose a photo or video and it will be attached to your appointment for the barber to see.</div></div></div>
+  <div class="gallery-grid" id="galleryGrid"><div class="card muted">Loading salon styles…</div></div>
+</div>
+
+<div class="wrap">
+  <div class="account-callout">
+    <div><h2 style="margin:0">Become a customer</h2><p>Create a customer account while booking and receive the Shop's current registration discount. Account creation is optional.</p></div>
+    <div class="account-actions"><a class="btn gold" id="createAccountLink">Open customer portal</a><div class="google-wrap" id="googleButton"></div></div>
+  </div>
 </div>
 
 <div class="wrap">
@@ -47,6 +60,8 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
         <div class="field"><label>Full name</label><input name="customerName" required autocomplete="name"></div>
         <div class="field"><label>Phone</label><input name="phone" required autocomplete="tel"></div>
         <div class="field"><label>Email (optional)</label><input name="email" type="email" autocomplete="email"></div>
+        <div class="field wide"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="createAccountCheck" style="width:auto"> Create a customer account with this booking</label></div>
+        <div class="field wide" id="accountPasswordWrap" style="display:none"><label>Create password</label><input id="accountPassword" name="password" type="password" minlength="8" placeholder="At least 8 characters"><small class="muted">Your welcome registration discount will be added to the new customer account.</small></div>
         <div class="field"><label>Branch</label><select name="branchId" id="branchSelect" required></select></div>
         <div class="field"><label>Service</label><select name="serviceId" id="serviceSelect" required></select></div>
         <div class="field"><label>Preferred barber</label><select name="staffId" id="barberSelect"><option value="">Any available barber</option></select></div>
@@ -64,7 +79,8 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
       <div class="summary-row"><span>Branch</span><b id="sumBranch">—</b></div>
       <div class="summary-row"><span>Barber</span><b id="sumBarber">Any available</b></div>
       <div class="summary-row"><span>Time</span><b id="sumTime">—</b></div>
-      <div class="notice" style="margin-top:14px">Your booking is written directly to the salon's live appointment calendar. If the selected time becomes unavailable before confirmation, you will be asked to choose another slot.</div>
+      <div id="selectedStyle" class="selected-style"></div>
+            <div class="notice" style="margin-top:14px">Your booking is written directly to the salon's live appointment calendar. If the selected time becomes unavailable before confirmation, you will be asked to choose another slot.</div>
     </aside>
   </div>
 </div>
@@ -73,7 +89,7 @@ button,input,select,textarea{font:inherit}.hero{min-height:62vh;background:radia
 
 <script>
 const slug=location.pathname.split('/').filter(Boolean).pop();
-let data=null,selectedSlot=null,availabilityController=null;
+let data=null,selectedSlot=null,availabilityController=null,galleryData=[],selectedInspiration=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const money=n=>'GHS '+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 function todayLocal(){const d=new Date(),y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');return y+'-'+m+'-'+day}
@@ -81,7 +97,7 @@ function selectedService(){return data?.services?.find(x=>x.id===serviceSelect.v
 function selectedBranch(){return data?.branches?.find(x=>x.id===branchSelect.value)}
 function selectedBarber(){return data?.barbers?.find(x=>x.id===barberSelect.value)}
 function timeLabel(iso){try{return new Intl.DateTimeFormat('en-GH',{hour:'2-digit',minute:'2-digit',timeZone:data?.shop?.timezone||'Africa/Accra'}).format(new Date(iso))}catch{return new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}}
-function refreshSummary(){const s=selectedService(),b=selectedBranch(),barber=selectedBarber();sumService.textContent=s?.name||'Not selected';sumPrice.textContent=s?money(s.price):'—';sumBranch.textContent=b?.name||'—';sumBarber.textContent=barber?.full_name||'Any available';sumTime.textContent=selectedSlot?bookingDate.value+' · '+timeLabel(selectedSlot):'—'}
+function refreshSummary(){const s=selectedService(),b=selectedBranch(),barber=selectedBarber();sumService.textContent=s?.name||'Not selected';sumPrice.textContent=s?money(s.price):'—';sumBranch.textContent=b?.name||'—';sumBarber.textContent=barber?.full_name||'Any available';sumTime.textContent=selectedSlot?bookingDate.value+' · '+timeLabel(selectedSlot):'—';if(selectedInspiration){selectedStyle.classList.add('show');selectedStyle.innerHTML=(selectedInspiration.media_type==='video'?'<video muted preload="metadata" src="'+esc(selectedInspiration.media_url)+'"></video>':'<img src="'+esc(selectedInspiration.media_url)+'" alt="">')+'<div><b>'+esc(selectedInspiration.title)+'</b><small>Style reference attached to this booking</small><button type="button" class="btn" style="margin-top:6px;padding:6px 8px" onclick="clearInspiration()">Remove</button></div>'}else{selectedStyle.classList.remove('show');selectedStyle.innerHTML=''}}
 function renderBarbers(){const bid=branchSelect.value;const rows=(data?.barbers||[]).filter(x=>!x.branch_id||x.branch_id===bid);barberSelect.innerHTML='<option value="">Any available barber</option>'+rows.map(x=>'<option value="'+x.id+'">'+esc(x.full_name)+(x.specialty?' · '+esc(x.specialty):'')+'</option>').join('');refreshSummary()}
 async function loadAvailability(){
   selectedSlot=null;bookedFor.value='';refreshSummary();
@@ -95,7 +111,7 @@ async function loadAvailability(){
     const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/availability?'+p.toString(),{signal:availabilityController.signal});
     const b=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(b?.error?.message||'Availability could not be loaded');
-    if(!b.slots?.length){slots.className='slot-empty';slots.textContent='No appointment times are available for this date. Try another date or barber.';return}
+    if(!b.slots?.length){slots.className='slot-empty';const messages={closed:'The salon is closed on this date. Please choose another date.',no_active_barber:'No active barber is scheduled for this branch on this date.',barber_on_leave:'Your selected barber is on approved leave on this date. Choose another barber or date.',fully_booked:'All available barbers are already booked for this date and service. Try another date or barber.'};slots.textContent=messages[b.reason]||'No appointment time is available for the selected combination. Try another date, branch or barber.';return}
     slots.className='slots';
     slots.innerHTML=b.slots.map(x=>'<button type="button" class="slot" data-slot="'+esc(x.startsAt)+'">'+esc(timeLabel(x.startsAt))+'</button>').join('');
     slots.querySelectorAll('.slot').forEach(btn=>btn.onclick=()=>{slots.querySelectorAll('.slot').forEach(x=>x.classList.remove('selected'));btn.classList.add('selected');selectedSlot=btn.dataset.slot;bookedFor.value=selectedSlot;refreshSummary()});
@@ -108,6 +124,7 @@ async function loadStore(){
   data=x;
   document.title=x.shop.name+' · Book appointment';
   customerPortalLink.href='/customer/'+encodeURIComponent(slug);
+  createAccountLink.href='/customer/'+encodeURIComponent(slug)+'?mode=register';
   shopName.textContent=x.shop.name;
   shopInfo.textContent=[x.shop.address,x.shop.phone].filter(Boolean).join(' · ')||'Book your grooming appointment online.';
   serviceGrid.innerHTML=x.services.length?x.services.map(s=>'<article class="card service" data-service="'+s.id+'"><h3>'+esc(s.name)+'</h3><p class="muted">'+esc(s.description||'Professional grooming service')+'</p><div class="price">'+money(s.price)+'</div><div class="meta"><span>'+Number(s.duration_minutes||0)+' min</span><span>'+Number(s.deposit_percent||0)+'% deposit</span></div></article>').join(''):'<div class="card muted">No services are currently published.</div>';
@@ -118,8 +135,36 @@ async function loadStore(){
   bookingDate.min=todayLocal();bookingDate.value=todayLocal();
   if(x.shop.allow_online_booking===false){bookingDisabled.style.display='block';bookButton.disabled=true}
   serviceGrid.querySelectorAll('.service').forEach(card=>card.onclick=()=>{serviceSelect.value=card.dataset.service;serviceGrid.querySelectorAll('.service').forEach(x=>x.classList.toggle('selected',x===card));refreshSummary();loadAvailability();document.getElementById('booking').scrollIntoView({behavior:'smooth'})});
+  await Promise.allSettled([loadGallery(),loadGoogleAuth()]);
   refreshSummary();
 }
+async function loadGallery(){
+  try{
+    const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/gallery'),rows=await r.json().catch(()=>[]);
+    if(!r.ok)throw new Error(rows?.error?.message||'Gallery could not be loaded');
+    galleryData=Array.isArray(rows)?rows:[];
+    galleryGrid.innerHTML=galleryData.length?galleryData.map(m=>'<article class="gallery-card" data-media="'+m.id+'"><div class="gallery-media">'+(m.media_type==='video'?'<video muted playsinline preload="metadata" src="'+esc(m.media_url)+'"></video>':'<img src="'+esc(m.media_url)+'" alt="'+esc(m.title)+'">')+'</div><div class="gallery-body"><h3>'+esc(m.title)+'</h3><p>'+esc(m.description||'Choose this look as inspiration for your appointment.')+'</p><div class="gallery-meta">'+(m.service_name?'<span>'+esc(m.service_name)+'</span>':'')+(m.barber_name?'<span>'+esc(m.barber_name)+'</span>':'')+'</div></div></article>').join(''):'<div class="card muted">The salon has not published style photos or videos yet.</div>';
+    galleryGrid.querySelectorAll('[data-media]').forEach(card=>card.onclick=()=>chooseInspiration(card.dataset.media));
+  }catch(e){galleryGrid.innerHTML='<div class="card muted">'+esc(e.message)+'</div>'}
+}
+window.chooseInspiration=function(id){
+  selectedInspiration=galleryData.find(x=>x.id===id)||null;if(!selectedInspiration)return;
+  galleryGrid.querySelectorAll('[data-media]').forEach(x=>x.classList.toggle('selected',x.dataset.media===id));
+  if(selectedInspiration.service_id&&data.services.some(x=>x.id===selectedInspiration.service_id))serviceSelect.value=selectedInspiration.service_id;
+  if(selectedInspiration.staff_id&&data.barbers.some(x=>x.id===selectedInspiration.staff_id)){const staff=data.barbers.find(x=>x.id===selectedInspiration.staff_id);if(staff?.branch_id&&!branchSelect.value){branchSelect.value=staff.branch_id;renderBarbers()}barberSelect.value=selectedInspiration.staff_id}
+  refreshSummary();loadAvailability();document.getElementById('booking').scrollIntoView({behavior:'smooth'});
+};
+window.clearInspiration=function(){selectedInspiration=null;galleryGrid.querySelectorAll('[data-media]').forEach(x=>x.classList.remove('selected'));refreshSummary()};
+async function loadGoogleAuth(){
+  try{
+    const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/auth-config'),cfg=await r.json().catch(()=>({}));
+    if(!r.ok||!cfg.google?.enabled)return;
+    const script=document.createElement('script');script.src='https://accounts.google.com/gsi/client';script.async=true;script.defer=true;
+    script.onload=()=>{if(!window.google?.accounts?.id)return;google.accounts.id.initialize({client_id:cfg.google.clientId,callback:async response=>{try{const x=await fetch('/api/customer-portal/'+encodeURIComponent(slug)+'/google',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({credential:response.credential})}),b=await x.json().catch(()=>({}));if(!x.ok)throw new Error(b?.error?.message||'Google sign-in failed');location.href='/customer/'+encodeURIComponent(slug)}catch(e){msg.textContent=e.message;msg.className='msg bad'}}});google.accounts.id.renderButton(googleButton,{theme:'outline',size:'large',text:'signup_with'})};
+    document.head.appendChild(script);
+  }catch{}
+}
+createAccountCheck.onchange=()=>{accountPasswordWrap.style.display=createAccountCheck.checked?'':'none';accountPassword.required=createAccountCheck.checked};
 branchSelect.onchange=()=>{renderBarbers();loadAvailability()};serviceSelect.onchange=()=>{serviceGrid.querySelectorAll('.service').forEach(x=>x.classList.toggle('selected',x.dataset.service===serviceSelect.value));refreshSummary();loadAvailability()};barberSelect.onchange=()=>{refreshSummary();loadAvailability()};bookingDate.onchange=loadAvailability;
 bookForm.onsubmit=async e=>{
   e.preventDefault();msg.textContent='';msg.className='msg';
@@ -127,17 +172,20 @@ bookForm.onsubmit=async e=>{
   const f=Object.fromEntries(new FormData(bookForm));
   delete f.bookingDate;
   f.bookedFor=selectedSlot;
+  f.createAccount=createAccountCheck.checked;
+  if(selectedInspiration)f.inspirationMediaId=selectedInspiration.id;
   if(!f.staffId)delete f.staffId;
   if(!f.email)delete f.email;
   if(!f.notes)delete f.notes;
+  if(!f.createAccount)delete f.password;
   bookButton.disabled=true;bookButton.textContent='Confirming…';
   try{
     const r=await fetch('/api/public/store/'+encodeURIComponent(slug)+'/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(f)});
     const b=await r.json().catch(()=>({}));
     if(!r.ok)throw new Error(b?.error?.message||'Booking could not be created');
-    msg.textContent='Appointment confirmed. Reference: '+b.id;
+    msg.innerHTML='Appointment confirmed. Reference: <b>'+esc(b.id)+'</b>'+(b.accountCreated?' Your customer account is ready with a '+Number(b.welcomeDiscountPercent||0)+'% registration discount. <a href="'+esc(b.customerPortalPath)+'">Open customer dashboard</a>.':'');
     msg.classList.add('ok');
-    bookForm.reset();bookingDate.min=todayLocal();bookingDate.value=todayLocal();selectedSlot=null;bookedFor.value='';slots.className='slot-empty';slots.textContent='Choose a branch, service and date to see available times.';refreshSummary();
+    bookForm.reset();accountPasswordWrap.style.display='none';bookingDate.min=todayLocal();bookingDate.value=todayLocal();selectedSlot=null;bookedFor.value='';selectedInspiration=null;galleryGrid.querySelectorAll('[data-media]').forEach(x=>x.classList.remove('selected'));slots.className='slot-empty';slots.textContent='Choose a branch, service and date to see available times.';refreshSummary();
   }catch(err){msg.textContent=err.message;msg.classList.add('bad');await loadAvailability()}
   finally{bookButton.disabled=data?.shop?.allow_online_booking===false;bookButton.textContent='Confirm appointment'}
 };
