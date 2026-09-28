@@ -8,23 +8,26 @@ import { loadConfig } from './config.js';
 import { createDb, ensureShopNamespace } from './db.js';
 import { ensureShopSchema } from './schema.js';
 import { ensureEnterpriseShopSchema } from './enterprise-schema.js';
+import { ensureShopOperationsSchema } from './operations-schema.js';
 import { clearAuthCookies, loginDemoToCore, loginToCore, setAuthCookies } from './auth.js';
 import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
 import { registerEnterpriseShopRoutes, runShopAutomations } from './enterprise.js';
+import { registerShopOperationsRoutes } from './operations.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
 import { createDemoCustomerSession, ensureDemoWorkspace } from './demo.js';
 import { demoLoginHtml, loginHtml, resetHtml } from './ui.js';
 
 const config=loadConfig();
 const db=createDb(config);
-const app=Fastify({logger:true,trustProxy:true});
+const app=Fastify({logger:true,trustProxy:true,bodyLimit:35*1024*1024});
 const salonHtml=readFileSync(new URL('../public/salon.html',import.meta.url),'utf8');
 const salonStorefrontHtml=readFileSync(new URL('../public/salon-storefront.html',import.meta.url),'utf8');
 const customerPortalHtml=readFileSync(new URL('../public/customer-portal.html',import.meta.url),'utf8');
 const shopEnterpriseJs=readFileSync(new URL('../public/shop-enterprise.js',import.meta.url),'utf8');
+const shopOperationsJs=readFileSync(new URL('../public/shop-operations.js',import.meta.url),'utf8');
 const shopGlassCss=readFileSync(new URL('../public/shop-glass.css',import.meta.url),'utf8');
 const shopGlassJs=readFileSync(new URL('../public/shop-glass.js',import.meta.url),'utf8');
 
@@ -35,20 +38,74 @@ await app.register(cors,{
 });
 await app.register(rateLimit,{max:400,timeWindow:'1 minute'});
 
-app.setErrorHandler((error,request,reply)=>{
+function humanField(path:(string|number)[]){
+  const raw=path.length?String(path[path.length-1]):'field';
+  const spaced=raw.replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_-]+/g,' ');
+  return spaced.charAt(0).toUpperCase()+spaced.slice(1);
+}
+function validationMessage(error:ZodError){
+  const fieldErrors:Record<string,string>={};
+  for(const issue of error.issues){
+    const field=issue.path.length?issue.path.join('.'):'request';
+    let message=issue.message;
+    if(issue.code==='invalid_type'&&(issue as any).received==='undefined')message='This field is required.';
+    if(issue.code==='invalid_format'&&(issue as any).format==='email')message='Enter a valid email address.';
+    if(issue.code==='too_small'&&(issue as any).minimum!=null)message='Enter at least '+String((issue as any).minimum)+' characters or the required minimum value.';
+    fieldErrors[field]=message;
+  }
+  const first=error.issues[0];
+  const label=humanField(first?.path||[]);
+  let detail=fieldErrors[first?.path?.join('.')||'request']||first?.message||'Invalid value.';
+  if(first?.path?.includes('slug'))detail='Use lowercase letters, numbers and hyphens only, for example: east-legon-salon.';
+  return{message:label+': '+detail,fieldErrors,details:error.issues};
+}
+app.setErrorHandler((error:any,request,reply)=>{
   request.log.error(error);
   if(error instanceof ZodError){
-    return reply.code(400).send({error:{code:'VALIDATION_ERROR',message:'Please check the information entered.',details:error.issues}});
+    const v=validationMessage(error);
+    return reply.code(400).send({error:{code:'VALIDATION_ERROR',...v}});
   }
-  const status=(error as any).statusCode||500;
-  const message=status>=500?'The request could not be completed. Please try again.':(error as Error).message;
-  return reply.code(status).send({error:{code:status===401?'UNAUTHENTICATED':status===403?'FORBIDDEN':'REQUEST_ERROR',message}});
+
+  const pgCode=String(error?.code||'');
+  if(pgCode==='23505'){
+    const constraint=String(error?.constraint||'');
+    let message='A record with the same information already exists.';
+    if(/public_slug|shops.*slug|ux_shops_public_slug/i.test(constraint))message='A Shop with this name or URL slug already exists. Use a different Shop name or slug.';
+    else if(/sku/i.test(constraint))message='This product SKU is already in use for the selected Shop.';
+    else if(/customer.*email|portal.*email/i.test(constraint))message='A customer account already exists for this email address.';
+    else if(/session/i.test(constraint))message='Another cashier session is already open. Close or hand over the existing session first.';
+    return reply.code(409).send({error:{code:'DUPLICATE_RECORD',message,constraint}});
+  }
+  if(pgCode==='23503'){
+    return reply.code(400).send({error:{code:'RELATED_RECORD_INVALID',message:'The selected related record no longer exists or does not belong to this Shop. Refresh the page and choose it again.'}});
+  }
+  if(pgCode==='23514'){
+    return reply.code(400).send({error:{code:'VALUE_NOT_ALLOWED',message:'One of the values entered is outside the allowed range. Review the highlighted information and try again.'}});
+  }
+  if(pgCode==='22P02'){
+    return reply.code(400).send({error:{code:'INVALID_FORMAT',message:'One of the selected values is invalid or has expired. Refresh the page and try again.'}});
+  }
+
+  const status=Number(error?.statusCode||500);
+  const safeCode=String(error?.code||(
+    status===401?'UNAUTHENTICATED':
+    status===403?'FORBIDDEN':
+    status===404?'NOT_FOUND':
+    status===409?'CONFLICT':
+    status===428?'PRECONDITION_REQUIRED':
+    'REQUEST_ERROR'
+  ));
+  const message=status>=500
+    ? 'The request could not be completed because of a server error. Please try again. If it continues, note the time and contact the system administrator.'
+    : String(error?.message||'The request could not be completed.');
+  return reply.code(status).send({error:{code:safeCode,message}});
 });
 
 await ensureShopNamespace(db);
 await ensureShopSchema(db);
 await ensureSalonSchema(db);
 await ensureEnterpriseShopSchema(db);
+await ensureShopOperationsSchema(db);
 const cleanup=await purgeLegacyShopDemoData(db);
 if(cleanup.removedShops>0)app.log.info(cleanup,'Legacy demo salon data removed');
 
@@ -66,6 +123,7 @@ app.get('/health/ready',async(_req,reply)=>{
 app.get('/assets/shop-glass.css',async(_req,reply)=>reply.type('text/css; charset=utf-8').send(shopGlassCss));
 app.get('/assets/shop-glass.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopGlassJs));
 app.get('/assets/shop-enterprise.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopEnterpriseJs));
+app.get('/assets/shop-operations.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopOperationsJs));
 app.get('/login',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(loginHtml()));
 app.get('/demo-login',async(_req,reply)=>{
   if(!config.ENABLE_DEMO_LOGIN)return reply.code(404).type('text/plain').send('Demo access is disabled');
@@ -129,6 +187,7 @@ await registerSalonRoutes(app,{db,config});
 await registerCommercialSalonRoutes(app,{db,config});
 await registerPaymentWebhook(app,{db,config});
 await registerEnterpriseShopRoutes(app,{db,config});
+await registerShopOperationsRoutes(app,{db,config});
 
 const automationRun=()=>runShopAutomations(db,config).catch(error=>app.log.error({error},'Shop automation run failed'));
 setTimeout(automationRun,5000).unref();
