@@ -1623,7 +1623,7 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
 
   app.post('/api/customer-portal/appointments',async(req,reply)=>{
     const c=await customerContext(db,req);
-    const b=z.object({branchId:uuid.optional(),serviceId:uuid,staffId:uuid.optional(),bookedFor:z.coerce.date(),notes:z.string().max(2000).optional()}).parse(req.body);
+    const b=z.object({branchId:uuid.optional(),serviceId:uuid,staffId:uuid.optional(),bookedFor:z.coerce.date(),notes:z.string().max(2000).optional(),inspirationMediaId:uuid.optional()}).parse(req.body);
     let branchId=b.branchId||c.branch_id;
     if(!branchId){
       const branch=await maybeOne<any>(db,"SELECT id FROM shop_branches WHERE shop_id=$1 AND status='active' ORDER BY created_at LIMIT 1",[c.shop_id]);
@@ -1631,10 +1631,14 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     }
     if(!branchId)return reply.code(409).send({error:{message:'No active branch is available'}});
     await assertSalonBookingAvailability(db,{organisationId:c.organisation_id,shopId:c.shop_id,branchId,bookedFor:b.bookedFor,serviceId:b.serviceId,staffId:b.staffId||null});
+    if(b.inspirationMediaId){
+      const media=await maybeOne<any>(db,"SELECT id FROM shop_gallery_media WHERE id=$1 AND shop_id=$2 AND is_published=true",[b.inspirationMediaId,c.shop_id]);
+      if(!media)return reply.code(400).send({error:{code:'INSPIRATION_MEDIA_NOT_FOUND',message:'The selected style photo or video is no longer available. Please choose another one.'}});
+    }
     const r=await db.query(`
-      INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,booked_for,notes,status,salon_staff_id,appointment_type,source)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'booked',$11,'appointment','customer_portal') RETURNING *`,
-      [c.organisation_id,c.shop_id,branchId,b.serviceId,c.customer_id,c.name,c.phone,c.email,b.bookedFor,b.notes||null,b.staffId||null]
+      INSERT INTO shop_bookings(organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,booked_for,notes,status,salon_staff_id,appointment_type,source,inspiration_media_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'booked',$11,'appointment','customer_portal',$12) RETURNING *`,
+      [c.organisation_id,c.shop_id,branchId,b.serviceId,c.customer_id,c.name,c.phone,c.email,b.bookedFor,b.notes||null,b.staffId||null,b.inspirationMediaId||null]
     );
     return reply.code(201).send(r.rows[0]);
   });
