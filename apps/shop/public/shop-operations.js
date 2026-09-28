@@ -19,10 +19,10 @@ opsStyle.textContent=`
 .ops-request-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ops-request{border:1px solid var(--line);border-radius:16px;background:#fff;padding:14px;display:grid;grid-template-columns:150px minmax(0,1fr);gap:13px}.ops-request-media{height:150px;border-radius:12px;background:#edf1f2;overflow:hidden;display:grid;place-items:center}.ops-request-media img,.ops-request-media video{width:100%;height:100%;object-fit:cover}.ops-request h3{margin:0 0 5px}.ops-request p{margin:4px 0;color:var(--muted);font-size:12px}
 .ops-session-status{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}.ops-session-status .card{box-shadow:none}
 .ops-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.ops-image-large{width:100%;max-height:430px;object-fit:contain;border-radius:16px;background:#0c1117}
+.ops-image-large{width:100%;max-height:430px;object-fit:contain;border-radius:16px;background:#0c1117}.ops-latest-booking{display:grid;grid-template-columns:minmax(280px,420px) minmax(0,1fr);gap:16px;align-items:stretch;margin:14px 0}.ops-latest-booking-media{min-height:300px;border-radius:18px;background:#0d151a;overflow:hidden;display:grid;place-items:center}.ops-latest-booking-media img,.ops-latest-booking-media video{width:100%;height:100%;max-height:380px;object-fit:cover}.ops-latest-booking-info{padding:8px 2px}.ops-latest-booking-info h2{margin:5px 0 9px}.ops-latest-booking-info p{color:var(--muted);line-height:1.5}
 .ops-error-detail{font-size:11px;color:#7a3030;margin-top:4px}
 @media(max-width:1100px){.ops-role,.ops-report-layout{grid-template-columns:1fr}.ops-gallery{grid-template-columns:repeat(2,1fr)}.ops-finance-hero{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:720px){.ops-role-side,.ops-finance-hero,.ops-gallery,.ops-request-grid,.ops-session-status,.ops-edit-grid{grid-template-columns:1fr}.ops-request{grid-template-columns:1fr}.ops-request-media{height:230px}}
+@media(max-width:720px){.ops-latest-booking{grid-template-columns:1fr}.ops-role-side,.ops-finance-hero,.ops-gallery,.ops-request-grid,.ops-session-status,.ops-edit-grid{grid-template-columns:1fr}.ops-request{grid-template-columns:1fr}.ops-request-media{height:230px}}
 `;
 document.head.appendChild(opsStyle);
 
@@ -92,6 +92,22 @@ function opsMetricLabel(key){
   return {appointments_today:'Appointments today',waiting_now:'Waiting now',new_requests:'New requests',sales_today:'Sales today',payments_today:'Payments today',stock_alerts:'Stock alerts',pending_approvals:'Pending approvals',open_tickets:'Open tickets'}[key]||key.replaceAll('_',' ');
 }
 function opsMetricValue(key,v){return /sales|payments/.test(key)?money(v):Number(v||0).toLocaleString()}
+async function loadLatestBookingReference(){
+  if(!selectedShopId)return;
+  let host=document.getElementById('opsLatestBookingReference');
+  if(!host){host=document.createElement('div');host.id='opsLatestBookingReference';document.getElementById('opsRoleDashboard')?.insertAdjacentElement('afterend',host)}
+  try{
+    const p=new URLSearchParams({shopId:selectedShopId});if(selectedBranchId)p.set('branchId',selectedBranchId);
+    const rows=await originalApi('/api/requests/external?'+p);
+    const latest=rows.find(x=>x.inspiration_media_id)||rows[0];
+    if(!latest){host.innerHTML='';return}
+    const hasMedia=Boolean(latest.inspiration_media_id);
+    const preview=hasMedia?(latest.inspiration_media_type==='video'?'<video controls preload="metadata" src="/api/public/media/'+latest.inspiration_media_id+'"></video>':'<img src="/api/public/media/'+latest.inspiration_media_id+'" alt="">'):'<div class="empty">Customer did not select a style reference.</div>';
+    host.innerHTML='<div class="card"><div class="card-head"><div><h3>Latest customer booking reference</h3><small>Public and customer portal bookings appear here immediately</small></div>'+(latest.request_seen_at?'':tag('new'))+'</div><div class="ops-latest-booking"><div class="ops-latest-booking-media">'+preview+'</div><div class="ops-latest-booking-info"><div class="eyebrow">'+esc((latest.source||'booking').replaceAll('_',' ').toUpperCase())+'</div><h2>'+esc(latest.customer_name||'Customer')+'</h2><p><b>'+esc(latest.service_name||'Service')+'</b><br>'+new Date(latest.booked_for).toLocaleString()+'<br>'+esc(latest.barber_name||'Any available barber')+'</p>'+(latest.inspiration_title?'<p><b>Chosen look:</b> '+esc(latest.inspiration_title)+'</p>':'')+'<div class="toolbar" style="margin-top:14px"><button class="btn primary" onclick="showPage(\'requests\')">Open booking request</button>'+(hasMedia?'<button class="btn soft" onclick="previewBookingMedia(\''+latest.id+'\')">View style large</button>':'')+'</div></div></div></div>';
+    externalRequests=rows;
+  }catch{host.innerHTML=''}
+}
+
 window.loadRoleDashboard=async function(){
   if(!selectedShopId)return;
   try{
@@ -186,6 +202,7 @@ async function pollNotifications(initial=false){
       showToast(incoming[0].title);
     }
     if(newest)lastNotificationTime=newest;
+    if(incoming.length)loadLatestBookingReference();
   }catch{}
 }
 opsBell.onclick=()=>opsNotificationPop.classList.toggle('show');
@@ -329,7 +346,7 @@ showPage=function(id){
 const oldReloadAll=reloadAll;
 reloadAll=async function(){
   await oldReloadAll();
-  await Promise.allSettled([loadRoleDashboard(),pollNotifications(!lastNotificationTime)]);
+  await Promise.allSettled([loadRoleDashboard(),loadLatestBookingReference(),pollNotifications(!lastNotificationTime)]);
   if(base.role==='cashier'){
     try{const p=new URLSearchParams({shopId:selectedShopId||''});if(selectedBranchId)p.set('branchId',selectedBranchId);const s=await originalApi('/api/cashier/session/current?'+p);cashierState=s.session||null;if(!cashierState)setTimeout(()=>promptCashierSession(),250)}catch{}
   }
@@ -343,5 +360,5 @@ renderAll=function(){
 };
 
 setInterval(()=>pollNotifications(false),8000);
-setTimeout(()=>{pollNotifications(true);loadRoleDashboard()},1200);
+setTimeout(()=>{pollNotifications(true);loadRoleDashboard();loadLatestBookingReference()},1200);
 })();
