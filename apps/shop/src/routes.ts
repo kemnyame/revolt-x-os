@@ -334,8 +334,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const orderNo=code('INV');
     const order=await tx(db,async c=>{
       const r=await c.query(
-        `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,job_id,booking_id,order_no,subtotal,discount,tax,total,balance,notes,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13) RETURNING *`,
+        `INSERT INTO shop_orders(organisation_id,shop_id,branch_id,customer_id,job_id,booking_id,order_no,subtotal,discount,tax,total,balance,notes,cashier_session_id,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,
+                (SELECT id FROM shop_cashier_sessions WHERE organisation_id=$1 AND cashier_user_id=$13 AND status='open' ORDER BY started_at DESC LIMIT 1),
+                $13) RETURNING *`,
         [a.core.organisation_id,b.shopId,b.branchId||null,b.customerId||null,b.jobId||null,b.bookingId||null,orderNo,subtotal,appliedDiscount,tax,total,b.notes||null,a.core.id]
       );
       for(const l of b.lines){
@@ -378,9 +380,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       if(b.amount>outstanding+0.001)throw Object.assign(new Error('Payment cannot exceed the outstanding balance'),{statusCode:400});
       const ref=b.reference?.trim()||code('PAY');
       const p=await c.query(
-        `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at)
-         VALUES($1,$2,$3,$4,$5,$6,'manual',$7,$8,'GHS','successful',now()) RETURNING *`,
-        [a.core.organisation_id,o.rows[0].shop_id,o.rows[0].branch_id,orderId,o.rows[0].customer_id,ref,b.method,b.amount]
+        `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,method,amount,currency,status,paid_at,cashier_session_id)
+         VALUES($1,$2,$3,$4,$5,$6,'manual',$7,$8,'GHS','successful',now(),
+                (SELECT id FROM shop_cashier_sessions WHERE organisation_id=$1 AND cashier_user_id=$9 AND status='open' ORDER BY started_at DESC LIMIT 1)) RETURNING *`,
+        [a.core.organisation_id,o.rows[0].shop_id,o.rows[0].branch_id,orderId,o.rows[0].customer_id,ref,b.method,b.amount,a.core.id]
       );
       await c.query(
         `INSERT INTO shop_ledger_entries(organisation_id,shop_id,branch_id,account_code,account_name,debit,credit,source_type,source_id,reference,description)
@@ -467,9 +470,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const data=await ps.json() as any;
     if(!ps.ok||!data?.status)return reply.code(502).send({error:{message:data?.message||'Payment provider initialization failed'}});
     const p=await db.query(
-      `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,provider_reference,method,amount,currency,status,payer_phone,payer_email,raw_json)
-       VALUES($1,$2,$3,$4,$5,$6,'paystack',$7,$8,$9,$10,'pending',$11,$12,$13) RETURNING *`,
-      [a.core.organisation_id,o.shop_id,o.branch_id,o.id,o.customer_id,reference,data.data?.reference||reference,b.method,amount,config.PAYSTACK_CURRENCY,b.phone||null,b.email,data]
+      `INSERT INTO shop_payments(organisation_id,shop_id,branch_id,order_id,customer_id,reference,provider,provider_reference,method,amount,currency,status,payer_phone,payer_email,raw_json,cashier_session_id)
+       VALUES($1,$2,$3,$4,$5,$6,'paystack',$7,$8,$9,$10,'pending',$11,$12,$13,
+              (SELECT id FROM shop_cashier_sessions WHERE organisation_id=$1 AND cashier_user_id=$14 AND status='open' ORDER BY started_at DESC LIMIT 1)) RETURNING *`,
+      [a.core.organisation_id,o.shop_id,o.branch_id,o.id,o.customer_id,reference,data.data?.reference||reference,b.method,amount,config.PAYSTACK_CURRENCY,b.phone||null,b.email,data,a.core.id]
     );
     await audit(db,a.core.organisation_id,a.core.id,'payment.initialized','payment',p.rows[0].id,o.shop_id,{method:b.method,amount});
     return{payment:p.rows[0],authorization_url:data.data.authorization_url,access_code:data.data.access_code};
@@ -587,8 +591,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     const b=z.object({shopId:uuid,branchId:uuid.optional(),category:z.string().min(2),description:z.string().min(2),amount:positive,paymentMethod:z.string().default('cash'),reference:z.string().optional(),expenseDate:z.string().optional()}).parse(req.body);
     const expense=await tx(db,async c=>{
       const r=await c.query(
-        `INSERT INTO shop_expenses(organisation_id,shop_id,branch_id,category,description,amount,payment_method,reference,expense_date,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,coalesce($9::date,CURRENT_DATE),$10) RETURNING *`,
+        `INSERT INTO shop_expenses(organisation_id,shop_id,branch_id,category,description,amount,payment_method,reference,expense_date,cashier_session_id,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,coalesce($9::date,CURRENT_DATE),
+                (SELECT id FROM shop_cashier_sessions WHERE organisation_id=$1 AND cashier_user_id=$10 AND status='open' ORDER BY started_at DESC LIMIT 1),
+                $10) RETURNING *`,
         [a.core.organisation_id,b.shopId,b.branchId||null,b.category,b.description,b.amount,b.paymentMethod,b.reference||null,b.expenseDate||null,a.core.id]
       );
       await c.query(
