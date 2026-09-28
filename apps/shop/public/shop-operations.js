@@ -62,7 +62,7 @@ document.body.insertAdjacentHTML('beforeend',`
 const topUser=document.querySelector('.userbox');
 if(topUser&&!document.getElementById('opsBell')){
   topUser.insertAdjacentHTML('afterbegin','<button class="ops-bell" id="opsBell" title="Notifications">🔔<span class="ops-bell-count" id="opsBellCount">0</span></button>');
-  document.body.insertAdjacentHTML('beforeend','<div class="ops-pop" id="opsNotificationPop"><div class="ops-pop-head"><div><b>Notifications</b><small class="muted">Appointments and operational alerts</small></div><button class="btn sm" id="opsEnableNotifications">Enable desktop alerts</button></div><div id="opsNotificationList"></div></div>');
+  document.body.insertAdjacentHTML('beforeend','<div class="ops-pop" id="opsNotificationPop"><div class="ops-pop-head"><div><b>Notifications</b><small class="muted">Appointments and operational alerts</small></div><button class="btn sm" id="opsEnableNotifications">Enable sound & desktop alerts</button></div><div id="opsNotificationList"></div></div>');
 }
 
 const oldAllowedPages=allowedPages;
@@ -75,7 +75,7 @@ allowedPages=function(role){
   return [...new Set(pages)];
 };
 
-let cashierState=null,opsNotifications=[],lastNotificationTime=null,reportCatalog=[],activeReportType='executive_summary',opsGallery=[],externalRequests=[],leaveRows=[];
+let cashierState=null,opsNotifications=[],lastNotificationTime=null,reportCatalog=[],activeReportType='executive_summary',opsGallery=[],externalRequests=[],leaveRows=[],opsAudioContext=null;
 
 const originalApi=api;
 api=async function(url,opt={}){
@@ -180,7 +180,9 @@ cashierEndForm.onsubmit=async e=>{
 function notificationSound(){
   try{
     const C=window.AudioContext||window.webkitAudioContext;if(!C)return;
-    const ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.setValueAtTime(880,ctx.currentTime);g.gain.setValueAtTime(.08,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.35);o.start();o.stop(ctx.currentTime+.36);
+    opsAudioContext=opsAudioContext||new C();const ctx=opsAudioContext;
+    if(ctx.state==='suspended')ctx.resume().catch(()=>{});
+    const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.setValueAtTime(880,ctx.currentTime);g.gain.setValueAtTime(.08,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.35);o.start();o.stop(ctx.currentTime+.36);
   }catch{}
 }
 function renderNotifications(){
@@ -206,7 +208,7 @@ async function pollNotifications(initial=false){
   }catch{}
 }
 opsBell.onclick=()=>opsNotificationPop.classList.toggle('show');
-opsEnableNotifications.onclick=async()=>{if(window.Notification){const p=await Notification.requestPermission();showToast(p==='granted'?'Desktop booking alerts enabled':'Desktop alerts were not enabled')}};
+opsEnableNotifications.onclick=async()=>{try{const C=window.AudioContext||window.webkitAudioContext;if(C){opsAudioContext=opsAudioContext||new C();await opsAudioContext.resume();notificationSound()}}catch{}if(window.Notification){const p=await Notification.requestPermission();showToast(p==='granted'?'Sound and desktop booking alerts enabled':'Sound alerts enabled. Desktop notifications were not permitted.')}else showToast('Sound booking alerts enabled.')};
 document.addEventListener('click',e=>{if(!opsNotificationPop.contains(e.target)&&e.target!==opsBell&&!opsBell.contains(e.target))opsNotificationPop.classList.remove('show')});
 
 window.loadExternalRequests=async function(){
