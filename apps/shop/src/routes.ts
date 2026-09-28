@@ -898,7 +898,8 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       branchId:uuid.optional(),serviceId:uuid,staffId:uuid.optional(),
       customerName:z.string().trim().min(2),phone:z.string().trim().min(6),
       email:z.string().email().optional().or(z.literal('')),
-      bookedFor:z.coerce.date(),notes:z.string().max(2000).optional()
+      bookedFor:z.coerce.date(),notes:z.string().max(2000).optional(),
+      inspirationMediaId:uuid.optional()
     }).parse(req.body);
 
     let branchId=b.branchId||null;
@@ -915,6 +916,10 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
     if(b.staffId){
       const validStaff=await maybeOne<any>(db,"SELECT id FROM salon_staff WHERE id=$1 AND shop_id=$2 AND role='barber' AND status='active' AND (branch_id=$3 OR branch_id IS NULL)",[b.staffId,shop.id,branchId]);
       if(!validStaff)return reply.code(400).send({error:{message:'Selected barber is not available at this branch.'}});
+    }
+    if(b.inspirationMediaId){
+      const media=await maybeOne<any>(db,"SELECT id FROM shop_gallery_media WHERE id=$1 AND shop_id=$2 AND is_published=true",[b.inspirationMediaId,shop.id]);
+      if(!media)return reply.code(400).send({error:{code:'INSPIRATION_MEDIA_NOT_FOUND',message:'The selected style photo or video is no longer available. Please choose another one.'}});
     }
 
     await assertSalonBookingAvailability(db,{
@@ -949,11 +954,11 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
       const r=await client.query(
         `INSERT INTO shop_bookings(
            organisation_id,shop_id,branch_id,service_id,customer_id,customer_name,phone,email,
-           booked_for,notes,source,status,salon_staff_id,appointment_type
+           booked_for,notes,source,status,salon_staff_id,appointment_type,inspiration_media_id
          )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'public','booked',$11,'appointment')
-         RETURNING id,status,booked_for,customer_id`,
-        [shop.organisation_id,shop.id,branchId,b.serviceId,customer.id,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null,b.staffId||null]
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'public','booked',$11,'appointment',$12)
+         RETURNING id,status,booked_for,customer_id,inspiration_media_id`,
+        [shop.organisation_id,shop.id,branchId,b.serviceId,customer.id,b.customerName,b.phone,b.email||null,b.bookedFor,b.notes||null,b.staffId||null,b.inspirationMediaId||null]
       );
       return r.rows[0];
     });
