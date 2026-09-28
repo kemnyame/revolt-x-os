@@ -330,7 +330,114 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
   }
 }
 
+export async function runShopOperationsAutomations(db:Db){
+  const rows=await db.query(`
+    SELECT d.*,coalesce(ss.timezone,'Africa/Accra') timezone,
+           coalesce(a.auto_eod_enabled,true) auto_eod_enabled,
+           coalesce(a.auto_eod_time,'21:00'::time) auto_eod_time,
+           (now() AT TIME ZONE coalesce(ss.timezone,'Africa/Accra'))::date local_date,
+           (now() AT TIME ZONE coalesce(ss.timezone,'Africa/Accra'))::time local_time
+    FROM shop_business_days d
+    LEFT JOIN salon_settings ss ON ss.shop_id=d.shop_id
+    LEFT JOIN shop_automation_settings a ON a.shop_id=d.shop_id AND a.branch_id=d.branch_id
+    WHERE d.status='open'
+  `);
+  let closed=0;
+  for(const day of rows.rows){
+    if(day.auto_eod_enabled===false)continue;
+    const shouldClose=String(day.business_date)<String(day.local_date)||
+      (String(day.business_date)===String(day.local_date)&&String(day.local_time)>=String(day.auto_eod_time));
+    if(!shouldClose)continue;
+    await tx(db,async client=>{
+      const locked=await maybeOne<any>(client,'SELECT * FROM shop_business_days WHERE id=$1 AND status=\'open\' FOR UPDATE',[day.id]);
+      if(!locked)return;
+      const sessions=(await client.query("SELECT * FROM shop_cashier_sessions WHERE business_day_id=$1 AND status='open' FOR UPDATE",[day.id])).rows;
+      for(const session of sessions){
+        const expected=await sessionExpectedCash(client,session,new Date());
+        await client.query(`
+          UPDATE shop_cashier_sessions
+          SET status='closed',expected_cash=$1,actual_cash=$1,variance=0,ended_at=now(),
+              end_reason='end_day',handover_note=concat_ws(E'\\n',handover_note,'Automatically closed at configured end-of-day time. Physical cash requires review.')
+          WHERE id=$2`,[expected,session.id]);
+      }
+      const expected=await dayExpectedCash(client,locked,new Date());
+      await client.query(`
+        UPDATE shop_business_days
+        SET status='closed',expected_cash=$1,actual_cash=$1,variance=0,closed_at=now(),updated_at=now(),
+            notes=concat_ws(E'\\n',notes,'Automatically closed at configured end-of-day time. Physical cash count requires management review.')
+        WHERE id=$2`,[expected,day.id]);
+      const totals=await maybeOne<any>(client,`
+        SELECT
+          coalesce(sum(CASE WHEN method='mobile_money' AND status='successful' THEN amount ELSE 0 END),0) momo,
+          coalesce(sum(CASE WHEN method='card' AND status='successful' THEN amount ELSE 0 END),0) card,
+          coalesce(sum(CASE WHEN method='bank_transfer' AND status='successful' THEN amount ELSE 0 END),0) bank,
+          coalesce(sum(CASE WHEN status='successful' THEN amount ELSE 0 END),0) total
+        FROM shop_payments
+        WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3 AND created_at >= $4 AND created_at <= now()`,
+        [day.organisation_id,day.shop_id,day.branch_id,day.opened_at]
+      );
+      const expenses=await maybeOne<any>(client,`
+        SELECT coalesce(sum(amount),0) total FROM shop_expenses
+        WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3 AND created_at >= $4 AND created_at <= now()`,
+        [day.organisation_id,day.shop_id,day.branch_id,day.opened_at]
+      );
+      await client.query(`
+        INSERT INTO salon_eod_closures(
+          organisation_id,shop_id,branch_id,business_date,opening_cash,expected_cash,actual_cash,variance,
+          momo_total,card_total,bank_total,total_sales,total_expenses,notes,closed_by,close_mode,review_status
+        )
+        VALUES($1,$2,$3,$4,$5,$6,$6,0,$7,$8,$9,$10,$11,
+               'Automatically closed by Shop. Physical cash count requires management review.',
+               NULL,'automatic','review_required')
+        ON CONFLICT(shop_id,branch_id,business_date) DO UPDATE SET
+          expected_cash=EXCLUDED.expected_cash,actual_cash=EXCLUDED.actual_cash,variance=EXCLUDED.variance,
+          momo_total=EXCLUDED.momo_total,card_total=EXCLUDED.card_total,bank_total=EXCLUDED.bank_total,
+          total_sales=EXCLUDED.total_sales,total_expenses=EXCLUDED.total_expenses,
+          notes=EXCLUDED.notes,close_mode='automatic',review_status='review_required',closed_at=now()`,
+        [day.organisation_id,day.shop_id,day.branch_id,day.business_date,day.opening_cash,expected,
+         totals?.momo||0,totals?.card||0,totals?.bank||0,totals?.total||0,expenses?.total||0]
+      );
+      await client.query(`
+        INSERT INTO shop_notifications(
+          organisation_id,shop_id,branch_id,event_type,title,message,entity_type,entity_id,target_role,priority
+        )
+        VALUES($1,$2,$3,'finance.eod_review','Automatic end-of-day close requires review',
+               'The business day was automatically closed. Review the physical cash count and variance.',
+               'business_day',$4,'manager','high')`,
+        [day.organisation_id,day.shop_id,day.branch_id,day.id]
+      );
+    });
+    closed++;
+  }
+  return{closed};
+}
+
 export async function registerShopOperationsRoutes(app:FastifyInstance,{db,config}:{db:Db;config:ShopConfig}){
+  app.post('/api/cashier/business-day/:id/review',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'finance.manage');
+    const id=uuid.parse((req.params as any).id);
+    const b=z.object({actualCash:money,note:z.string().max(1500).optional()}).parse(req.body);
+    const result=await tx(db,async client=>{
+      const day=await maybeOne<any>(client,'SELECT * FROM shop_business_days WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+      if(!day)return null;
+      const expected=Number(day.expected_cash??await dayExpectedCash(client,day,new Date(day.closed_at||Date.now())));
+      const variance=Number(b.actualCash)-expected;
+      await client.query(`
+        UPDATE shop_business_days SET actual_cash=$1,variance=$2,closed_by=$3,closed_at=coalesce(closed_at,now()),
+          notes=concat_ws(E'\\n',notes,$4),updated_at=now()
+        WHERE id=$5`,[b.actualCash,variance,a.core.id,b.note||'Physical cash reviewed',id]);
+      await client.query(`
+        UPDATE salon_eod_closures SET actual_cash=$1,variance=$2,review_status='confirmed',
+          reviewed_by=$3,reviewed_at=now(),notes=concat_ws(E'\\n',notes,$4)
+        WHERE shop_id=$5 AND branch_id=$6 AND business_date=$7`,
+        [b.actualCash,variance,a.core.id,b.note||'Physical cash reviewed',day.shop_id,day.branch_id,day.business_date]);
+      return{...day,actual_cash:b.actualCash,expected_cash:expected,variance,review_status:'confirmed'};
+    });
+    if(!result)return reply.code(404).send({error:{code:'BUSINESS_DAY_NOT_FOUND',message:'Business day not found.'}});
+    await audit(db,a.core.organisation_id,a.core.id,'finance.eod_reviewed','business_day',id,result.shop_id,result.branch_id,{actualCash:b.actualCash,variance:result.variance});
+    return result;
+  });
+
   app.get('/api/cashier/session/current',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'dashboard.read');
     const session=await activeCashierSession(db,a.core.organisation_id,a.core.id);
