@@ -15,7 +15,7 @@ import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
 import { registerPaymentWebhook } from './payments.js';
 import { registerEnterpriseShopRoutes, runShopAutomations } from './enterprise.js';
-import { registerShopOperationsRoutes } from './operations.js';
+import { registerShopOperationsRoutes, runShopOperationsAutomations } from './operations.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
 import { createDemoCustomerSession, ensureDemoWorkspace } from './demo.js';
 import { demoLoginHtml, loginHtml, resetHtml } from './ui.js';
@@ -189,7 +189,14 @@ await registerPaymentWebhook(app,{db,config});
 await registerEnterpriseShopRoutes(app,{db,config});
 await registerShopOperationsRoutes(app,{db,config});
 
-const automationRun=()=>runShopAutomations(db,config).catch(error=>app.log.error({error},'Shop automation run failed'));
+const automationRun=async()=>{
+  try{
+    await runShopAutomations(db,config);
+    await runShopOperationsAutomations(db);
+  }catch(error){
+    app.log.error({error},'Shop automation run failed');
+  }
+};
 setTimeout(automationRun,5000).unref();
 setInterval(automationRun,10*60*1000).unref();
 
