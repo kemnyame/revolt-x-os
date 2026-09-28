@@ -38,7 +38,7 @@ await app.register(cors,{
 });
 await app.register(rateLimit,{max:400,timeWindow:'1 minute'});
 
-function humanField(path:(string|number)[]){
+function humanField(path:readonly PropertyKey[]){
   const raw=path.length?String(path[path.length-1]):'field';
   const spaced=raw.replace(/([a-z])([A-Z])/g,'$1 $2').replace(/[_-]+/g,' ');
   return spaced.charAt(0).toUpperCase()+spaced.slice(1);
