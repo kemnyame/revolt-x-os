@@ -19,5 +19,6 @@ checkInlineHtml('../public/salon.html','salon');
 checkInlineHtml('../public/salon-storefront.html','salon-storefront');
 checkInlineHtml('../public/customer-portal.html','customer-portal');
 checkJs('../public/shop-enterprise.js','shop-enterprise.js');
+checkJs('../public/shop-operations.js','shop-operations.js');
 checkJs('../public/shop-glass.js','shop-glass.js');
 console.log('Shop browser JavaScript syntax OK');
