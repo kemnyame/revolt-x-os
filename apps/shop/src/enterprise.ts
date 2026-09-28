@@ -74,12 +74,12 @@ const defaultRoles=[
 
 const defaultRoleCapabilities:Record<string,string[]>={
   shop_admin:['*'],
-  manager:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','inventory.read','inventory.manage','procurement.manage','sales.manage','payments.read','payments.create','reports.read','tickets.manage','assets.manage'],
-  cashier:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','services.read','sales.manage','payments.read','payments.create','tickets.manage'],
-  finance:['dashboard.read','customers.read','payments.read','payments.create','finance.read','finance.manage','reports.read'],
-  service:['dashboard.read','appointments.manage','customers.read','services.read'],
-  inventory:['dashboard.read','inventory.read','inventory.manage','procurement.manage','assets.manage'],
-  auditor:['dashboard.read','customers.read','services.read','payments.read','finance.read','reports.read','audit.read','system.read']
+  manager:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','retention.manage','services.read','services.manage','approvals.review','inventory.read','inventory.manage','procurement.manage','sales.manage','payments.read','payments.create','reports.read','tickets.manage','assets.manage','cashier.session','leave.manage','leave.review','media.manage','notifications.read'],
+  cashier:['dashboard.read','appointments.manage','customers.read','customers.manage','communications.manage','services.read','sales.manage','payments.read','payments.create','tickets.manage','cashier.session','leave.manage','notifications.read'],
+  finance:['dashboard.read','customers.read','payments.read','payments.create','finance.read','finance.manage','reports.read','notifications.read'],
+  service:['dashboard.read','appointments.manage','customers.read','services.read','leave.manage','notifications.read'],
+  inventory:['dashboard.read','inventory.read','inventory.manage','procurement.manage','assets.manage','leave.manage','notifications.read'],
+  auditor:['dashboard.read','customers.read','services.read','payments.read','finance.read','reports.read','audit.read','system.read','notifications.read']
 };
 
 async function ensureDefaultRoles(db:Db,orgId:string){
