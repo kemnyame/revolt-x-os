@@ -155,10 +155,11 @@ async function loadEnterpriseSummary(){
       const el=document.createElement('div');el.id='enterpriseSummary';el.className='enterprise-kpis';const hero=overview.querySelector('.hero');hero?.insertAdjacentElement('afterend',el);
     }
     const el=document.getElementById('enterpriseSummary');
-    if(el)el.innerHTML=[
-      ['Inactive customers',x.inactive_customers],['Inventory alerts',x.inventory_alerts],['Pending approvals',x.pending_approvals],
-      ['Open tickets',x.open_tickets],['Customer chats',x.open_conversations],['EOD review',x.eod_review_required]
-    ].map(x=>'<div class="enterprise-kpi"><small>'+x[0]+'</small><b>'+Number(x[1]||0)+'</b></div>').join('');
+    if(el){const items=[
+      ['Inactive customers',x.inactive_customers,'retention','Reconnect with customers'],['Inventory alerts',x.inventory_alerts,'inventory','Review stock levels'],['Pending approvals',x.pending_approvals,'approvals','Requests awaiting a decision'],
+      ['Open tickets',x.open_tickets,'tickets','Customer support requests'],['Customer chats',x.open_conversations,'communications','Continue conversations'],['Cash close reviews',x.eod_review_required,'finance','Reconcile the business day']
+    ];el.innerHTML=items.filter(i=>pageAllowed(i[2])).map(i=>'<button class="attention-row" data-target="'+i[2]+'"><span class="attention-count '+(Number(i[1])?'has-items':'')+'">'+Number(i[1]||0)+'</span><span><b>'+i[0]+'</b><small>'+i[3]+'</small></span><span class="row-arrow">→</span></button>').join('')||'<div class="empty">No activity available for your role.</div>';el.querySelectorAll('[data-target]').forEach(b=>b.onclick=()=>{const nav=document.querySelector('.navbtn[data-page="'+b.dataset.target+'"]');if(nav)nav.click()});}
+
   }catch{}
 }
 
