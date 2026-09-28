@@ -186,7 +186,11 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
         AND expense_date BETWEEN $4::date AND $5::date ORDER BY expense_date DESC,created_at DESC LIMIT 3000`,p)).rows;
     case 'cashier_sessions': return (await db.query(`
       SELECT d.business_date,s.session_no,u.first_name||' '||u.last_name cashier,b.name branch,s.started_at,s.ended_at,s.status,s.end_reason,
-             s.opening_cash,s.expected_cash,s.actual_cash,s.variance,s.handover_note
+             s.opening_cash,s.expected_cash,s.actual_cash,s.variance,s.handover_note,
+             (SELECT count(*)::int FROM shop_orders o WHERE o.cashier_session_id=s.id) orders,
+             (SELECT coalesce(sum(py.amount),0) FROM shop_payments py WHERE py.cashier_session_id=s.id AND py.status='successful') payments_received,
+             (SELECT coalesce(sum(py.amount),0) FROM shop_payments py WHERE py.cashier_session_id=s.id AND py.status='successful' AND py.method='cash') cash_received,
+             (SELECT coalesce(sum(e.amount),0) FROM shop_expenses e WHERE e.cashier_session_id=s.id) expenses_recorded
       FROM shop_cashier_sessions s JOIN shop_business_days d ON d.id=s.business_day_id
       LEFT JOIN revolt_x_os.users u ON u.id=s.cashier_user_id JOIN shop_branches b ON b.id=s.branch_id
       WHERE s.organisation_id=$1 AND s.shop_id=$2 AND ($3::uuid IS NULL OR s.branch_id=$3)
