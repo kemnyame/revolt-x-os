@@ -377,6 +377,17 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
     return result;
   });
 
+  app.get('/api/cashier/available-cashiers',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'dashboard.read');
+    return (await db.query(`
+      SELECT u.id,u.first_name,u.last_name,u.email
+      FROM shop_memberships sm
+      JOIN revolt_x_os.users u ON u.id=sm.os_user_id
+      WHERE sm.organisation_id=$1 AND sm.role='cashier' AND sm.status='active' AND u.status='active'
+      ORDER BY u.first_name,u.last_name,u.email`,
+      [a.core.organisation_id])).rows;
+  });
+
   app.get('/api/cashier/sessions',async(req,reply)=>{
     const a=await authorize(db,config,req,reply,'reports.read');
     const q=z.object({shopId:uuid,branchId:uuid.optional(),from:z.string().optional(),to:z.string().optional()}).parse(req.query);
