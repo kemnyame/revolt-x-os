@@ -176,7 +176,7 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
              CASE WHEN stock_quantity<=0 THEN 'out_of_stock' WHEN stock_quantity<=reorder_level THEN 'reorder' ELSE 'healthy' END status
       FROM shop_products WHERE organisation_id=$1 AND shop_id=$2 AND active=true ORDER BY name`,[orgId,shopId])).rows;
     case 'stock_movements': return (await db.query(`
-      SELECT sm.created_at,p.sku,p.name product,sm.movement_type,sm.quantity,sm.reference,sm.note
+      SELECT sm.created_at,p.sku,p.name product,sm.movement_type,sm.quantity,sm.source_type,sm.source_id,sm.note
       FROM shop_stock_movements sm JOIN shop_products p ON p.id=sm.product_id
       WHERE sm.organisation_id=$1 AND sm.shop_id=$2 AND ($3::uuid IS NULL OR sm.branch_id=$3)
         AND sm.created_at::date BETWEEN $4::date AND $5::date ORDER BY sm.created_at DESC LIMIT 3000`,p)).rows;
@@ -230,6 +230,54 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
       SELECT created_at,reference,provider,method,amount,fee,settlement_amount,status,reconciliation_status,reconciled_at
       FROM shop_payments WHERE organisation_id=$1 AND shop_id=$2 AND ($3::uuid IS NULL OR branch_id=$3)
         AND created_at::date BETWEEN $4::date AND $5::date ORDER BY created_at DESC LIMIT 3000`,p)).rows;
+    case 'service_performance': return (await db.query(`
+      SELECT s.name service,s.category,s.price,
+             count(b.id)::int bookings,
+             count(b.id) FILTER(WHERE b.status='completed')::int completed,
+             count(b.id) FILTER(WHERE b.status='cancelled')::int cancelled,
+             count(b.id) FILTER(WHERE b.status='no_show')::int no_shows,
+             coalesce(sum(s.price) FILTER(WHERE b.status='completed'),0) completed_service_value
+      FROM shop_services s
+      LEFT JOIN shop_bookings b ON b.service_id=s.id
+        AND b.booked_for::date BETWEEN $4::date AND $5::date
+        AND ($3::uuid IS NULL OR b.branch_id=$3)
+      WHERE s.organisation_id=$1 AND s.shop_id=$2
+      GROUP BY s.id ORDER BY completed DESC,s.name`,p)).rows;
+    case 'booking_sources': return (await db.query(`
+      SELECT source,appointment_type,status,count(*)::int bookings
+      FROM shop_bookings
+      WHERE organisation_id=$1 AND shop_id=$2 AND ($3::uuid IS NULL OR branch_id=$3)
+        AND booked_for::date BETWEEN $4::date AND $5::date
+      GROUP BY source,appointment_type,status ORDER BY bookings DESC`,p)).rows;
+    case 'customer_retention': return (await db.query(`
+      SELECT status,count(*)::int customers,
+             coalesce(avg(extract(day from now()-coalesce(last_visit_at,created_at))),0)::numeric(12,1) average_days_since_activity,
+             count(*) FILTER(WHERE portal_registered_at IS NOT NULL)::int portal_customers,
+             coalesce(sum(loyalty_points),0) loyalty_points
+      FROM shop_customers WHERE organisation_id=$1 AND shop_id=$2
+      GROUP BY status ORDER BY status`,[orgId,shopId])).rows;
+    case 'branch_performance': return (await db.query(`
+      SELECT br.name branch,
+        count(DISTINCT b.id) FILTER(WHERE b.booked_for::date BETWEEN $4::date AND $5::date)::int appointments,
+        count(DISTINCT b.id) FILTER(WHERE b.status='completed' AND b.booked_for::date BETWEEN $4::date AND $5::date)::int completed_services,
+        coalesce((SELECT sum(o.total) FROM shop_orders o WHERE o.organisation_id=$1 AND o.shop_id=$2 AND o.branch_id=br.id AND o.created_at::date BETWEEN $4::date AND $5::date),0) invoiced_sales,
+        coalesce((SELECT sum(py.amount) FROM shop_payments py WHERE py.organisation_id=$1 AND py.shop_id=$2 AND py.branch_id=br.id AND py.status='successful' AND py.created_at::date BETWEEN $4::date AND $5::date),0) collections
+      FROM shop_branches br
+      LEFT JOIN shop_bookings b ON b.branch_id=br.id
+      WHERE br.organisation_id=$1 AND br.shop_id=$2
+      GROUP BY br.id ORDER BY collections DESC,br.name`,p)).rows;
+    case 'approvals': return (await db.query(`
+      SELECT requested_at,action_key,target_type,request_title,reason,status,resolved_at,applied_at,apply_error
+      FROM shop_approval_requests
+      WHERE organisation_id=$1 AND ($2::uuid IS NULL OR shop_id=$2)
+        AND requested_at::date BETWEEN $4::date AND $5::date
+      ORDER BY requested_at DESC LIMIT 3000`,[orgId,shopId,branchId,from,to])).rows;
+    case 'communications': return (await db.query(`
+      SELECT created_at,channel,status,recipient,subject,attempt_count,sent_at,last_error
+      FROM shop_communication_outbox
+      WHERE organisation_id=$1 AND shop_id=$2
+        AND created_at::date BETWEEN $4::date AND $5::date
+      ORDER BY created_at DESC LIMIT 3000`,[orgId,shopId,branchId,from,to])).rows;
     default: throw Object.assign(new Error('Unknown report type.'),{statusCode:400,code:'UNKNOWN_REPORT'});
   }
 }
@@ -670,6 +718,12 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
       ['procurement','Procurement','Inventory','Purchase orders, suppliers and approval state'],
       ['assets','Assets & Equipment','Inventory','Equipment register, condition and service dates'],
       ['reconciliation','Payment Reconciliation','Finance','Settlement and reconciliation state of collections'],
+      ['service_performance','Service Performance','Operations','Demand, completions, cancellations, no-shows and service value by service'],
+      ['booking_sources','Booking Sources','Operations','Bookings by public page, customer portal, staff and appointment type'],
+      ['customer_retention','Customer Retention','Customers','Active and inactive customer base, portal adoption and engagement age'],
+      ['branch_performance','Branch Performance','Management','Appointments, completions, invoiced sales and collections by branch'],
+      ['approvals','Approval Workflow','Controls','Controlled changes, decisions and application status'],
+      ['communications','Communication Delivery','Customers','SMS, WhatsApp and email outbox delivery and failures'],
       ['audit','Audit Trail','Controls','Recorded system activity and control events']
     ].map(x=>({key:x[0],name:x[1],group:x[2],description:x[3]}));
   });
