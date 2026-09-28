@@ -413,8 +413,29 @@ export async function runShopOperationsAutomations(db:Db){
 }
 
 export async function registerShopOperationsRoutes(app:FastifyInstance,{db,config}:{db:Db;config:ShopConfig}){
+  app.get('/api/cashier/business-days',async(req,reply)=>{
+    const a=await authorize(db,config,req,reply,'dashboard.read');
+    const canFinance=await hasShopCapability(db,a.core.organisation_id,a.role,'finance.read');
+    if(!canFinance&&!['shop_admin','manager'].includes(a.role))return reply.code(403).send({error:{code:'CASH_CLOSE_ACCESS_REQUIRED',message:'Finance or manager access is required to review business-day cash closes.'}});
+    const q=z.object({shopId:uuid,branchId:uuid.optional(),status:z.enum(['open','closed']).optional(),limit:z.coerce.number().int().min(1).max(500).default(120)}).parse(req.query);
+    return (await db.query(`
+      SELECT d.*,b.name branch_name,
+             e.close_mode,e.review_status,e.reviewed_at,e.reviewed_by,
+             (SELECT count(*)::int FROM shop_cashier_sessions s WHERE s.business_day_id=d.id) cashier_sessions
+      FROM shop_business_days d
+      JOIN shop_branches b ON b.id=d.branch_id
+      LEFT JOIN salon_eod_closures e ON e.shop_id=d.shop_id AND e.branch_id=d.branch_id AND e.business_date=d.business_date
+      WHERE d.organisation_id=$1 AND d.shop_id=$2
+        AND ($3::uuid IS NULL OR d.branch_id=$3)
+        AND ($4::text IS NULL OR d.status=$4)
+      ORDER BY d.business_date DESC,d.opened_at DESC LIMIT $5`,
+      [a.core.organisation_id,q.shopId,q.branchId||null,q.status||null,q.limit])).rows;
+  });
+
   app.post('/api/cashier/business-day/:id/review',async(req,reply)=>{
-    const a=await authorize(db,config,req,reply,'finance.manage');
+    const a=await authorize(db,config,req,reply,'dashboard.read');
+    const canManageFinance=await hasShopCapability(db,a.core.organisation_id,a.role,'finance.manage');
+    if(!canManageFinance&&!['shop_admin','manager'].includes(a.role))return reply.code(403).send({error:{code:'CASH_CLOSE_REVIEW_REQUIRED',message:'Only Finance, a manager or a Shop administrator can confirm the physical cash close.'}});
     const id=uuid.parse((req.params as any).id);
     const b=z.object({actualCash:money,note:z.string().max(1500).optional()}).parse(req.body);
     const result=await tx(db,async client=>{
