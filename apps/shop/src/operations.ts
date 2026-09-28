@@ -278,6 +278,49 @@ async function reportRows(db:Db,orgId:string,type:string,shopId:string,branchId:
       WHERE organisation_id=$1 AND shop_id=$2
         AND created_at::date BETWEEN $4::date AND $5::date
       ORDER BY created_at DESC LIMIT 3000`,[orgId,shopId,branchId,from,to])).rows;
+    case 'trial_balance': return (await db.query(`
+      SELECT a.code,a.name,a.account_type,a.subtype,
+             coalesce(sum(l.debit),0) debit,coalesce(sum(l.credit),0) credit,
+             CASE WHEN a.account_type IN('asset','expense')
+               THEN a.opening_balance+coalesce(sum(l.debit),0)-coalesce(sum(l.credit),0)
+               ELSE a.opening_balance+coalesce(sum(l.credit),0)-coalesce(sum(l.debit),0) END balance
+      FROM shop_finance_accounts a
+      LEFT JOIN shop_finance_journal_lines l ON l.account_id=a.id
+      LEFT JOIN shop_finance_journal_entries j ON j.id=l.journal_entry_id
+        AND j.status='posted' AND j.entry_date BETWEEN $3::date AND $4::date
+      WHERE a.organisation_id=$1 AND a.shop_id=$2 AND a.is_active=true
+      GROUP BY a.id ORDER BY a.code`,[orgId,shopId,from,to])).rows;
+    case 'general_journal': return (await db.query(`
+      SELECT j.entry_date,j.entry_no,j.description,j.reference,j.source_type,j.status,
+             a.code account_code,a.name account_name,l.description line_description,l.debit,l.credit
+      FROM shop_finance_journal_entries j
+      JOIN shop_finance_journal_lines l ON l.journal_entry_id=j.id
+      JOIN shop_finance_accounts a ON a.id=l.account_id
+      WHERE j.organisation_id=$1 AND j.shop_id=$2 AND ($3::uuid IS NULL OR j.branch_id=$3)
+        AND j.entry_date BETWEEN $4::date AND $5::date
+      ORDER BY j.entry_date DESC,j.created_at DESC,j.entry_no,a.code LIMIT 5000`,p)).rows;
+    case 'receivables': return (await db.query(`
+      SELECT o.created_at,o.order_no,c.customer_no,c.name customer,c.phone,o.total,o.amount_paid,o.balance,o.status
+      FROM shop_orders o LEFT JOIN shop_customers c ON c.id=o.customer_id
+      WHERE o.organisation_id=$1 AND o.shop_id=$2 AND ($3::uuid IS NULL OR o.branch_id=$3)
+        AND o.balance>0 AND o.created_at::date <= $5::date
+      ORDER BY o.balance DESC,o.created_at LIMIT 3000`,p)).rows;
+    case 'budgets': return (await db.query(`
+      SELECT a.code account_code,a.name account_name,b.period_start,b.period_end,b.amount budget_amount,b.notes
+      FROM shop_finance_budgets b JOIN shop_finance_accounts a ON a.id=b.account_id
+      WHERE b.organisation_id=$1 AND b.shop_id=$2
+        AND b.period_start <= $4::date AND b.period_end >= $3::date
+      ORDER BY b.period_start DESC,a.code`,[orgId,shopId,from,to])).rows;
+    case 'tax_obligations': return (await db.query(`
+      SELECT t.code,t.name,t.rate,t.authority,o.period_start,o.period_end,o.due_date,o.amount_due,o.amount_paid,o.status,o.filing_reference
+      FROM shop_finance_tax_obligations o JOIN shop_finance_tax_types t ON t.id=o.tax_type_id
+      WHERE o.organisation_id=$1 AND o.shop_id=$2
+        AND o.period_start <= $4::date AND o.period_end >= $3::date
+      ORDER BY o.due_date NULLS LAST,o.period_start DESC`,[orgId,shopId,from,to])).rows;
+    case 'vendors': return (await db.query(`
+      SELECT name,tax_id,phone,email,address,contact_person,is_active,created_at
+      FROM shop_finance_vendors
+      WHERE organisation_id=$1 AND shop_id=$2 ORDER BY name`,[orgId,shopId])).rows;
     default: throw Object.assign(new Error('Unknown report type.'),{statusCode:400,code:'UNKNOWN_REPORT'});
   }
 }
@@ -729,6 +772,12 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
       ['branch_performance','Branch Performance','Management','Appointments, completions, invoiced sales and collections by branch'],
       ['approvals','Approval Workflow','Controls','Controlled changes, decisions and application status'],
       ['communications','Communication Delivery','Customers','SMS, WhatsApp and email outbox delivery and failures'],
+      ['trial_balance','Trial Balance','Finance & Accounts','Debit, credit and balance position for every active account'],
+      ['general_journal','General Journal','Finance & Accounts','Posted accounting entries and individual debit and credit lines'],
+      ['receivables','Accounts Receivable','Finance & Accounts','Outstanding customer invoice balances'],
+      ['budgets','Budgets','Finance & Accounts','Budget periods and amounts by finance account'],
+      ['tax_obligations','Tax & Statutory Obligations','Finance & Accounts','Tax types, due dates, filing references, amounts due and paid'],
+      ['vendors','Vendors & Suppliers','Finance & Accounts','Supplier register and contact information'],
       ['audit','Audit Trail','Controls','Recorded system activity and control events']
     ].map(x=>({key:x[0],name:x[1],group:x[2],description:x[3]}));
   });
