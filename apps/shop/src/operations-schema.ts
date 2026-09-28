@@ -145,6 +145,27 @@ export async function ensureShopOperationsSchema(db:Db){
       ON shop_bookings(organisation_id,shop_id,request_seen_at,created_at DESC)
       WHERE source IN('public','customer_portal');
 
+    CREATE OR REPLACE FUNCTION shop_notify_external_booking() RETURNS trigger AS $
+    BEGIN
+      IF NEW.source IN ('public','customer_portal') THEN
+        INSERT INTO shop_notifications(
+          organisation_id,shop_id,branch_id,event_type,title,message,entity_type,entity_id,priority
+        ) VALUES(
+          NEW.organisation_id,NEW.shop_id,NEW.branch_id,'booking.request',
+          CASE WHEN NEW.source='customer_portal' THEN 'Customer booked an appointment' ELSE 'New public booking request' END,
+          coalesce(NEW.customer_name,'Customer')||' requested an appointment for '||to_char(NEW.booked_for,'DD Mon YYYY HH24:MI'),
+          'booking',NEW.id,'high'
+        );
+      END IF;
+      RETURN NEW;
+    END;
+    $ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS trg_shop_notify_external_booking ON shop_bookings;
+    CREATE TRIGGER trg_shop_notify_external_booking
+      AFTER INSERT ON shop_bookings
+      FOR EACH ROW EXECUTE FUNCTION shop_notify_external_booking();
+
     INSERT INTO shop_capabilities(key,name,module,description,sort_order) VALUES
       ('cashier.session','Cashier Session','Commerce','Start, hand over and close cashier sessions',73),
       ('leave.manage','Leave Requests','People','Create and view staff leave requests',115),
