@@ -167,6 +167,21 @@ export async function assertSalonBookingAvailability(
     }
   }
 
+  if(input.staffId){
+    const leave=await maybeOne<any>(db,`
+      SELECT id FROM shop_staff_leave_requests
+      WHERE organisation_id=$1 AND shop_id=$2
+        AND salon_staff_id=$3 AND status='approved'
+        AND $4::date BETWEEN start_date AND end_date
+      LIMIT 1`,
+      [input.organisationId,input.shopId,input.staffId,input.bookedFor.toISOString().slice(0,10)]
+    );
+    if(leave){
+      const e:any=new Error('The selected barber is on approved leave for this date. Please choose another barber or date.');
+      e.statusCode=409;e.code='BARBER_ON_LEAVE';throw e;
+    }
+  }
+
   if(input.staffId||input.chairId){
     const conflict=await maybeOne<any>(db,`
       SELECT b.id
@@ -194,10 +209,16 @@ export async function assertSalonBookingAvailability(
           WHERE organisation_id=$1 AND shop_id=$2
             AND ($3::uuid IS NULL OR branch_id=$3)
             AND status<>'maintenance') AS chairs,
-        (SELECT count(*)::int FROM salon_staff
-          WHERE organisation_id=$1 AND shop_id=$2
-            AND ($3::uuid IS NULL OR branch_id=$3)
-            AND role='barber' AND status='active') AS barbers,
+        (SELECT count(*)::int FROM salon_staff st
+          WHERE st.organisation_id=$1 AND st.shop_id=$2
+            AND ($3::uuid IS NULL OR st.branch_id=$3 OR st.branch_id IS NULL)
+            AND st.role='barber' AND st.status='active'
+            AND NOT EXISTS(
+              SELECT 1 FROM shop_staff_leave_requests lr
+              WHERE lr.organisation_id=$1 AND lr.shop_id=$2
+                AND lr.salon_staff_id=st.id AND lr.status='approved'
+                AND $4::timestamptz::date BETWEEN lr.start_date AND lr.end_date
+            )) AS barbers,
         (SELECT count(*)::int
           FROM shop_bookings b
           LEFT JOIN shop_services s ON s.id=b.service_id
@@ -214,12 +235,14 @@ export async function assertSalonBookingAvailability(
     ]);
     const chairs=Math.max(0,Number(cap?.chairs||0));
     const barbers=Math.max(0,Number(cap?.barbers||0));
-    const capacity=Math.min(chairs,barbers);
+    // Chairs are operational resources, but a missing chair register must not make
+    // active barbers invisible to online booking. Use barber capacity until chairs are configured.
+    const capacity=barbers<=0?0:(chairs>0?Math.min(chairs,barbers):barbers);
     if(capacity<=0){
-      const e:any=new Error('No active barber and chair capacity is configured for this branch.');e.statusCode=409;throw e;
+      const e:any=new Error('No active barber is available for this branch. Add or activate a barber before booking this time.');e.statusCode=409;e.code='NO_ACTIVE_BARBER';throw e;
     }
     if(Number(cap?.busy||0)>=capacity){
-      const e:any=new Error('The salon is fully booked for the selected time. Please choose another time.');e.statusCode=409;throw e;
+      const e:any=new Error('All available barbers are already booked for the selected time. Please choose another time or barber.');e.statusCode=409;e.code='TIME_FULLY_BOOKED';throw e;
     }
   }
   return{durationMinutes:duration,endAt};
