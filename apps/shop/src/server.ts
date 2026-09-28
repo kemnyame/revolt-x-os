@@ -25,6 +25,8 @@ const salonHtml=readFileSync(new URL('../public/salon.html',import.meta.url),'ut
 const salonStorefrontHtml=readFileSync(new URL('../public/salon-storefront.html',import.meta.url),'utf8');
 const customerPortalHtml=readFileSync(new URL('../public/customer-portal.html',import.meta.url),'utf8');
 const shopEnterpriseJs=readFileSync(new URL('../public/shop-enterprise.js',import.meta.url),'utf8');
+const shopGlassCss=readFileSync(new URL('../public/shop-glass.css',import.meta.url),'utf8');
+const shopGlassJs=readFileSync(new URL('../public/shop-glass.js',import.meta.url),'utf8');
 
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{
@@ -61,6 +63,8 @@ app.get('/health/ready',async(_req,reply)=>{
   }
 });
 
+app.get('/assets/shop-glass.css',async(_req,reply)=>reply.type('text/css; charset=utf-8').send(shopGlassCss));
+app.get('/assets/shop-glass.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopGlassJs));
 app.get('/assets/shop-enterprise.js',async(_req,reply)=>reply.type('application/javascript; charset=utf-8').send(shopEnterpriseJs));
 app.get('/login',async(_req,reply)=>reply.type('text/html; charset=utf-8').send(loginHtml()));
 app.get('/demo-login',async(_req,reply)=>{
@@ -117,7 +121,7 @@ app.get('/customer/:slug',async(req,reply)=>{
 });
 app.get('/payments/callback',async(req,reply)=>{
   const ref=String((req.query as any)?.reference||'');
-  return reply.type('text/html; charset=utf-8').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment received</title><style>body{font-family:system-ui;background:#f4f7fb;display:grid;place-items:center;min-height:100vh;margin:0}.c{background:white;border:1px solid #dfe7f1;border-radius:18px;padding:30px;max-width:520px;text-align:center}a{color:#2563eb}</style></head><body><div class="c"><h1>Payment submitted</h1><p>Your payment reference is <b>${ref.replace(/[<>&"]/g,'')}</b>.</p><p>The final status is confirmed by the payment provider and reflected in the salon payment monitor.</p><a href="/">Return to Revolt-X Shop</a></div></body></html>`);
+  return reply.type('text/html; charset=utf-8').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment received</title><style>body{font-family:system-ui;background:#f4f7fb;display:grid;place-items:center;min-height:100vh;margin:0}.c{background:white;border:1px solid #dfe7f1;border-radius:18px;padding:30px;max-width:520px;text-align:center}a{color:#2563eb}</style><link rel="stylesheet" href="/assets/shop-glass.css?v=20260927"><script src="/assets/shop-glass.js?v=20260927" defer></script></head><body><div class="c"><h1>Payment submitted</h1><p>Your payment reference is <b>${ref.replace(/[<>&"]/g,'')}</b>.</p><p>The final status is confirmed by the payment provider and reflected in the salon payment monitor.</p><a href="/">Return to Revolt-X Shop</a></div></body></html>`);
 });
 
 await registerShopApi(app,{db,config});
