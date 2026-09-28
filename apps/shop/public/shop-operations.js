@@ -247,6 +247,8 @@ appointmentActions=function(a){
   let h='<div class="toolbar">';
   if(permitted&&['booked','queued','checked_in'].includes(a.status))h+='<button class="btn sm" onclick="openReschedule(\''+a.id+'\')">Edit</button>';
   if(permitted&&['booked','queued','checked_in'].includes(a.status))h+='<button class="btn sm primary" onclick="openCheckinFlow(\''+a.id+'\')">'+(a.status==='checked_in'?'Start service':'Check in')+'</button>';
+  if(permitted&&['booked','queued'].includes(a.status))h+='<button class="btn sm danger" onclick="setApptStatus(\''+a.id+'\',\'no_show\')">No-show</button>';
+  if(permitted&&['booked','queued'].includes(a.status))h+='<button class="btn sm" onclick="setApptStatus(\''+a.id+'\',\'cancelled\')">Cancel</button>';
   if(permitted&&a.status==='in_chair')h+='<button class="btn sm gold" onclick="setApptStatus(\''+a.id+'\',\'completed\')">Complete</button>';
   if(['shop_admin','manager','cashier'].includes(base.role)&&a.status==='completed')h+='<button class="btn sm dark" onclick="billAppointment(\''+a.id+'\')">Bill</button>';
   if(a.inspiration_media_id)h+='<button class="btn sm soft" onclick="previewAppointmentStyle(\''+a.id+'\')">Style</button>';
