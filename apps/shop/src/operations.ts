@@ -486,15 +486,18 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
   });
 
   app.get('/api/cashier/sessions',async(req,reply)=>{
-    const a=await authorize(db,config,req,reply,'reports.read');
+    const a=await authorize(db,config,req,reply,'cashier.session');
     const q=z.object({shopId:uuid,branchId:uuid.optional(),from:z.string().optional(),to:z.string().optional()}).parse(req.query);
+    const restrictToSelf=a.role==='cashier';
     return (await db.query(`
       SELECT s.*,d.business_date,u.first_name||' '||u.last_name cashier_name,b.name branch_name
       FROM shop_cashier_sessions s JOIN shop_business_days d ON d.id=s.business_day_id
       LEFT JOIN revolt_x_os.users u ON u.id=s.cashier_user_id JOIN shop_branches b ON b.id=s.branch_id
       WHERE s.organisation_id=$1 AND s.shop_id=$2 AND ($3::uuid IS NULL OR s.branch_id=$3)
         AND ($4::date IS NULL OR d.business_date >= $4::date) AND ($5::date IS NULL OR d.business_date <= $5::date)
-      ORDER BY s.started_at DESC LIMIT 1000`,[a.core.organisation_id,q.shopId,q.branchId||null,q.from||null,q.to||null])).rows;
+        AND ($6::boolean=false OR s.cashier_user_id=$7)
+      ORDER BY s.started_at DESC LIMIT 1000`,
+      [a.core.organisation_id,q.shopId,q.branchId||null,q.from||null,q.to||null,restrictToSelf,a.core.id])).rows;
   });
 
   app.get('/api/role-dashboard',async(req,reply)=>{
