@@ -319,15 +319,18 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
            AND ($3::uuid IS NULL OR x.branch_id=$3)
          ORDER BY x.name`,params),
       canAppointments?db.query(
-        `SELECT b.*,s.name service_name,st.full_name barber_name,ch.name chair_name
+        `SELECT b.*,s.name service_name,st.full_name barber_name,ch.name chair_name,
+                gm.title inspiration_title,gm.media_type inspiration_media_type,
+                CASE WHEN gm.file_data IS NOT NULL THEN '/api/public/media/'||gm.id::text ELSE gm.external_url END inspiration_media_url
          FROM shop_bookings b
          LEFT JOIN shop_services s ON s.id=b.service_id
          LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
          LEFT JOIN salon_chairs ch ON ch.id=b.salon_chair_id
+         LEFT JOIN shop_gallery_media gm ON gm.id=b.inspiration_media_id
          WHERE b.organisation_id=$1
            AND ($2::uuid IS NULL OR b.shop_id=$2)
            AND ($3::uuid IS NULL OR b.branch_id=$3)
-           AND b.booked_for::date BETWEEN CURRENT_DATE-7 AND CURRENT_DATE+30
+           AND b.booked_for::date BETWEEN CURRENT_DATE-30 AND CURRENT_DATE+180
          ORDER BY b.booked_for`,params):empty(),
       canFinance?db.query(
         `SELECT ce.*,st.full_name barber_name
