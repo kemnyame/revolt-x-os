@@ -13,7 +13,7 @@ import { clearAuthCookies, loginDemoToCore, loginToCore, setAuthCookies } from '
 import { registerShopApi } from './routes.js';
 import { ensureSalonSchema, registerSalonRoutes } from './salon.js';
 import { registerCommercialSalonRoutes } from './commercial.js';
-import { registerPaymentWebhook } from './payments.js';
+import { registerPaymentWebhook, verifyPaystackReference } from './payments.js';
 import { registerEnterpriseShopRoutes, runShopAutomations } from './enterprise.js';
 import { registerShopOperationsRoutes, runShopOperationsAutomations } from './operations.js';
 import { purgeLegacyShopDemoData } from './legacy-cleanup.js';
@@ -178,8 +178,30 @@ app.get('/customer/:slug',async(req,reply)=>{
   return reply.type('text/html; charset=utf-8').send(customerPortalHtml);
 });
 app.get('/payments/callback',async(req,reply)=>{
-  const ref=String((req.query as any)?.reference||'');
-  return reply.type('text/html; charset=utf-8').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Payment received</title><style>body{font-family:system-ui;background:#f4f7fb;display:grid;place-items:center;min-height:100vh;margin:0}.c{background:white;border:1px solid #dfe7f1;border-radius:18px;padding:30px;max-width:520px;text-align:center}a{color:#2563eb}</style><link rel="stylesheet" href="/assets/shop-glass.css?v=20260928-2"><script src="/assets/shop-glass.js?v=20260928-2" defer></script></head><body><div class="c"><h1>Payment submitted</h1><p>Your payment reference is <b>${ref.replace(/[<>&"]/g,'')}</b>.</p><p>The final status is confirmed by the payment provider and reflected in the salon payment monitor.</p><a href="/">Return to Revolt-X Shop</a></div></body></html>`);
+  const ref=String((req.query as any)?.reference||'').trim();
+  const safeRef=ref.replace(/[<>&"]/g,'');
+  let title='Payment submitted',message='Your payment is being confirmed.',status='pending',returnPath='/';
+  try{
+    if(!ref)throw Object.assign(new Error('Payment reference is missing.'),{statusCode:400});
+    const result=await verifyPaystackReference(db,config,ref,null);
+    status=result.status;
+    if(result.payment?.source==='customer_portal'&&result.publicSlug)returnPath='/customer/'+encodeURIComponent(result.publicSlug);
+    if(status==='successful'){
+      title='Payment successful';
+      message='Your payment has been confirmed. The invoice has been updated and the finance journal has been posted automatically.';
+    }else if(status==='review_required'){
+      title='Payment needs review';
+      message='The provider response did not match the expected invoice amount or currency. The transaction has been held for finance review.';
+    }else{
+      title='Payment pending';
+      message='The provider has not confirmed this payment yet. You can return to the system and verify it again shortly.';
+    }
+  }catch(error:any){
+    title='Payment verification unavailable';
+    message=String(error?.message||'The payment could not be verified right now. Please try again from the payment monitor.');
+  }
+  const badge=status==='successful'?'Paid':status==='review_required'?'Review required':'Pending';
+  return reply.type('text/html; charset=utf-8').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui;background:#f4f7fb;display:grid;place-items:center;min-height:100vh;margin:0;padding:18px}.c{background:white;border:1px solid #dfe7f1;border-radius:20px;padding:32px;max-width:560px;text-align:center;box-shadow:0 24px 70px rgba(20,35,55,.12)}.badge{display:inline-block;padding:7px 12px;border-radius:999px;background:#eef7f4;color:#166457;font-size:12px;font-weight:800;margin-bottom:12px}a{display:inline-flex;margin-top:18px;padding:11px 16px;border-radius:10px;background:#163f46;color:white;text-decoration:none;font-weight:700}.ref{font-family:ui-monospace,monospace;background:#f3f6f8;padding:8px 10px;border-radius:8px}</style><link rel="stylesheet" href="/assets/shop-glass.css?v=20260928-2"><script src="/assets/shop-glass.js?v=20260928-2" defer></script></head><body><div class="c"><div class="badge">${badge}</div><h1>${title}</h1><p>${message}</p><p>Reference: <span class="ref">${safeRef}</span></p><a href="${returnPath}">Return to Revolt-X Shop</a></div></body></html>`);
 });
 
 await registerShopApi(app,{db,config});
