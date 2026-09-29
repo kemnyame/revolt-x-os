@@ -700,6 +700,23 @@ async function settleOnlinePayment(reference:string){
   return settled;
 }
 
+async function settleOnlinePaymentEventually(reference:string,attempts=4){
+  let last:any=null;
+  let lastError:any=null;
+  for(let attempt=0;attempt<attempts;attempt++){
+    try{
+      last=await settleOnlinePayment(reference);
+      if(last?.status==='success'||last?.status==='failed')return last;
+    }catch(error:any){
+      lastError=error;
+      app.log.warn({reference,attempt:attempt+1,error:String(error?.message||error)},'Paystack settlement attempt did not complete');
+    }
+    if(attempt+1<attempts)await new Promise(resolve=>setTimeout(resolve,1000*(attempt+1)));
+  }
+  if(last)return last;
+  throw lastError||fail(502,'Payment verification is temporarily unavailable');
+}
+
 function hashPortalPin(pin:string){
   const salt=randomBytes(16);
   const derived=scryptSync(pin,salt,32);
@@ -6316,6 +6333,7 @@ app.get('/api/payments/provider-status',async request=>{
 app.get('/api/fees/payment-requests',async request=>{
   const a=await authorize(request,db,config,'fees.view');
   const q=z.object({status:z.enum(['open','paid','cancelled','expired']).optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  await db.query("UPDATE fee_payment_requests SET status='expired',updated_at=now() WHERE organisation_id=$1 AND status='open' AND expires_at IS NOT NULL AND expires_at<=now()",[a.core.organisation_id]);
   return (await db.query(`SELECT pr.*,s.admission_no,s.first_name,s.last_name,f.name fee_name,
       g.first_name guardian_first_name,g.last_name guardian_last_name,g.phone guardian_phone,g.email guardian_email
     FROM fee_payment_requests pr
@@ -6356,15 +6374,19 @@ app.post('/api/fees/payment-requests',async(request,reply)=>{
       a.core.organisation_id,b.studentId,b.studentFeeId??null,guardian.id,b.amount,b.note??null,a.core.id,b.expiresAt??null
     ]);
   const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
-  await notifyContact({
+  const notificationResults=await notifyContact({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:guardian.id,eventKey:'fees.payment_requested',
     name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
     subject:'School fee payment request',
     body:`${school.school_name} has requested a fee payment of ${school.currency||'GHS'} ${Number(b.amount).toFixed(2)} for ${student.first_name} ${student.last_name}${fee?' - '+fee.fee_name:''}. Sign in to the Parent Portal to review and pay.`,
     relatedType:'fee_payment_request',relatedId:row.id
   });
-  await audit(a.core.organisation_id,a.core.id,'fee_payment_request.created','fee_payment_request',row.id,{studentId:b.studentId,amount:b.amount});
-  return reply.code(201).send(row);
+  const emailDelivery=notificationResults.find((x:any)=>x.channel==='email')||null;
+  await audit(a.core.organisation_id,a.core.id,'fee_payment_request.created','fee_payment_request',row.id,{studentId:b.studentId,amount:b.amount,emailStatus:emailDelivery?.status||null});
+  return reply.code(201).send({...row,notification:{
+    email:emailDelivery?{status:emailDelivery.status,provider:emailDelivery.provider||null,error:emailDelivery.last_error||null}:null,
+    inApp:true
+  }});
 });
 app.post('/api/fees/payment-requests/:id/cancel',async request=>{
   const a=await authorize(request,db,config,'payments.initiate');
@@ -6377,11 +6399,22 @@ app.post('/api/fees/payment-requests/:id/cancel',async request=>{
 
 app.get('/api/payment-intents',async request=>{
   const a=await authorize(request,db,config,'fees.view');
-  const q=z.object({limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
-  return (await db.query(`SELECT pi.*,s.admission_no,s.first_name,s.last_name,f.name fee_name
+  const q=z.object({limit:z.coerce.number().int().min(1).max(500).default(200)}).parse(request.query);
+  return (await db.query(`SELECT pi.*,s.admission_no,s.first_name,s.last_name,f.name fee_name,
+      pr.status payment_request_status,pr.paid_at payment_request_paid_at
     FROM payment_intents pi JOIN students s ON s.id=pi.student_id
     LEFT JOIN student_fees sf ON sf.id=pi.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
+    LEFT JOIN fee_payment_requests pr ON pr.id=pi.payment_request_id
     WHERE pi.organisation_id=$1 ORDER BY pi.created_at DESC LIMIT $2`,[a.core.organisation_id,q.limit])).rows;
+});
+
+app.post('/api/payment-intents/:reference/reconcile',async request=>{
+  const a=await authorize(request,db,config,'payments.initiate');
+  const {reference}=z.object({reference:z.string().min(1).max(120)}).parse(request.params);
+  const existing=await one<any>(db,'SELECT id FROM payment_intents WHERE reference=$1 AND organisation_id=$2',[reference,a.core.organisation_id]);
+  const result=await settleOnlinePaymentEventually(reference,4);
+  await audit(a.core.organisation_id,a.core.id,'payment_intent.reconciled','payment_intent',existing.id,{reference,status:result.status});
+  return result;
 });
 
 app.post('/api/payment-intents',async(request,reply)=>{
@@ -6430,12 +6463,12 @@ app.get('/api/parent/students/:id/payment-requests',async request=>{
   const g=await guardianAuth(request);
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   await ensureGuardianStudent(g.guardian_id,id);
+  await db.query("UPDATE fee_payment_requests SET status='expired',updated_at=now() WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3 AND status='open' AND expires_at IS NOT NULL AND expires_at<=now()",[g.organisation_id,id,g.guardian_id]);
   return (await db.query(`SELECT pr.*,f.name fee_name
     FROM fee_payment_requests pr
     LEFT JOIN student_fees sf ON sf.id=pr.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
-    WHERE pr.organisation_id=$1 AND pr.student_id=$2 AND pr.guardian_id=$3 AND pr.status='open'
-      AND (pr.expires_at IS NULL OR pr.expires_at>now())
-    ORDER BY pr.created_at DESC`,[g.organisation_id,id,g.guardian_id])).rows;
+    WHERE pr.organisation_id=$1 AND pr.student_id=$2 AND pr.guardian_id=$3
+    ORDER BY pr.created_at DESC LIMIT 50`,[g.organisation_id,id,g.guardian_id])).rows;
 });
 app.post('/api/parent/payment-intents',async(request,reply)=>{
   const g=await guardianAuth(request);
@@ -6483,15 +6516,34 @@ app.post('/api/parent/payment-intents',async(request,reply)=>{
     throw error;
   }
 });
+app.get('/api/parent/payment-intents/:reference/status',async request=>{
+  const g=await guardianAuth(request);
+  const {reference}=z.object({reference:z.string().min(1).max(120)}).parse(request.params);
+  const existing=await one<any>(db,`SELECT * FROM payment_intents
+    WHERE reference=$1 AND organisation_id=$2 AND guardian_id=$3`,[reference,g.organisation_id,g.guardian_id]);
+  let current=existing;
+  if(existing.status!=='success'){
+    try{current=await settleOnlinePaymentEventually(reference,2)}
+    catch(error:any){app.log.warn({reference,error:String(error?.message||error)},'Parent payment status refresh could not reconcile')}
+  }
+  return{
+    reference:current.reference,status:current.status,amount:current.amount,currency:current.currency,
+    channel:current.provider_channel||current.method,paidAt:current.paid_at||null,
+    paymentRequestId:current.payment_request_id||null,
+    failureReason:current.status==='failed'?(current.failure_reason||'The payment was not completed'):null
+  };
+});
+
 app.get('/payment/callback',async(request,reply)=>{
   const q=z.object({reference:z.string().min(1).max(120)}).parse(request.query);
+  const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
   try{
-    const intent=await settleOnlinePayment(q.reference);
-    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-    return reply.redirect(base+'/parent?payment='+encodeURIComponent(intent.status)+'&reference='+encodeURIComponent(q.reference));
-  }catch{
-    const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-    return reply.redirect(base+'/parent?payment=failed&reference='+encodeURIComponent(q.reference));
+    const intent=await settleOnlinePaymentEventually(q.reference,4);
+    const status=intent.status==='success'?'success':intent.status==='failed'?'failed':'pending';
+    return reply.redirect(base+'/parent?payment='+encodeURIComponent(status)+'&reference='+encodeURIComponent(q.reference));
+  }catch(error:any){
+    app.log.error({reference:q.reference,error:String(error?.message||error)},'Paystack callback settlement failed');
+    return reply.redirect(base+'/parent?payment=checking&reference='+encodeURIComponent(q.reference));
   }
 });
 app.route({
