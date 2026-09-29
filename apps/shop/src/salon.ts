@@ -639,7 +639,8 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
         in_chair:['completed','cancelled'],
         completed:[],
         cancelled:[],
-        no_show:['checked_in','cancelled']
+        // A no-show can still arrive late. Recover the same booking instead of creating a duplicate.
+        no_show:['booked','queued','checked_in','in_chair','cancelled']
       };
       if(!(transitions[row.status]||[]).includes(b.status)){
         throw Object.assign(new Error('Invalid appointment status transition from '+row.status+' to '+b.status+'.'),{statusCode:409});
@@ -730,7 +731,11 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
 
       let queueNumber=row.queue_number||null;
       let estimatedWait=row.estimated_wait_minutes||null;
-      if(b.status==='checked_in'&&!queueNumber){
+      if(['completed','cancelled','no_show'].includes(b.status)){
+        queueNumber=null;
+        estimatedWait=null;
+      }
+      if(b.status==='checked_in'&&(row.status==='no_show'||!queueNumber)){
         const nextQueue=await maybeOne<any>(client,`
           SELECT coalesce(max(queue_number),0)+1 next_queue
           FROM shop_bookings
@@ -762,14 +767,20 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
           status=$1,
           salon_staff_id=coalesce($2,salon_staff_id),
           salon_chair_id=coalesce($3,salon_chair_id),
-          queue_number=coalesce($5,queue_number),
-          estimated_wait_minutes=coalesce($6,estimated_wait_minutes),
-          check_in_at=CASE WHEN $1='checked_in' AND check_in_at IS NULL THEN now() ELSE check_in_at END,
-          service_started_at=CASE WHEN $1='in_chair' AND service_started_at IS NULL THEN now() ELSE service_started_at END,
+          queue_number=CASE WHEN $1 IN('completed','cancelled','no_show') THEN NULL ELSE coalesce($5,queue_number) END,
+          estimated_wait_minutes=CASE WHEN $1 IN('completed','cancelled','no_show') THEN NULL ELSE coalesce($6,estimated_wait_minutes) END,
+          check_in_at=CASE
+            WHEN $1='checked_in' AND ($7='no_show' OR check_in_at IS NULL) THEN now()
+            ELSE check_in_at
+          END,
+          service_started_at=CASE
+            WHEN $1='in_chair' AND ($7='no_show' OR service_started_at IS NULL) THEN now()
+            ELSE service_started_at
+          END,
           service_completed_at=CASE WHEN $1='completed' AND service_completed_at IS NULL THEN now() ELSE service_completed_at END
         WHERE id=$4
         RETURNING *`,
-        [b.status,staffId,chairId,id,queueNumber,estimatedWait]
+        [b.status,staffId,chairId,id,queueNumber,estimatedWait,row.status]
       );
       const current=upd.rows[0];
 
