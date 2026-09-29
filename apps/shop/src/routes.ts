@@ -6,6 +6,7 @@ import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
 import { assertSalonBookingAvailability } from './salon.js';
 import { authorize, hasShopCapability, listShopCapabilities, resetCorePasswordAsSystem } from './auth.js';
+import { postPaymentFinanceJournal, postPaymentReversalFinanceJournal } from './accounting.js';
 
 const money=z.coerce.number().finite().min(0);
 const positive=z.coerce.number().finite().positive();
@@ -396,6 +397,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
         [a.core.organisation_id,o.rows[0].shop_id,o.rows[0].branch_id,b.amount,p.rows[0].id,ref]
       );
       await updateOrderPaid(c,orderId);
+      await postPaymentFinanceJournal(c,p.rows[0],a.core.id);
       return p.rows[0];
     });
     if(!payment)return reply.code(404).send({error:{message:'Order not found'}});
@@ -436,6 +438,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
         );
       }
       if(payment.order_id)await updateOrderPaid(client,payment.order_id);
+      await postPaymentReversalFinanceJournal(client,payment,b.reason,a.core.id);
       await client.query(
         `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
          VALUES($1,$2,'payment.reversed','payment',$3,$4,$5,$6)`,
@@ -583,6 +586,7 @@ export async function registerShopApi(app:FastifyInstance,opts:{db:Db;config:Sho
           }
         }
         await updateOrderPaid(client,current.order_id);
+        await postPaymentFinanceJournal(client,{...current,status:'successful',fee:providerFee,paid_at:new Date().toISOString()},a.core.id);
       }
     });
 
