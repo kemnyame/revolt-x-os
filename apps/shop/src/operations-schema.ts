@@ -132,6 +132,17 @@ export async function ensureShopOperationsSchema(db:Db){
     CREATE INDEX IF NOT EXISTS idx_shop_payments_cashier_session ON shop_payments(cashier_session_id) WHERE cashier_session_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_shop_expenses_cashier_session ON shop_expenses(cashier_session_id) WHERE cashier_session_id IS NOT NULL;
 
+    ALTER TABLE shop_conversations ADD COLUMN IF NOT EXISTS portal_account_id uuid REFERENCES shop_customer_portal_accounts(id) ON DELETE SET NULL;
+    UPDATE shop_conversations c
+       SET portal_account_id=a.id
+      FROM shop_customer_portal_accounts a
+     WHERE c.portal_account_id IS NULL
+       AND c.shop_id=a.shop_id
+       AND c.customer_id=a.customer_id;
+    CREATE INDEX IF NOT EXISTS idx_shop_conversations_portal_account
+      ON shop_conversations(portal_account_id,channel,status,last_message_at DESC)
+      WHERE portal_account_id IS NOT NULL;
+
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS inspiration_media_id uuid REFERENCES shop_gallery_media(id) ON DELETE SET NULL;
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS request_seen_at timestamptz;
     ALTER TABLE shop_bookings ADD COLUMN IF NOT EXISTS request_seen_by uuid;
