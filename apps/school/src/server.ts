@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Script } from 'node:vm';
 import { createRequire } from 'node:module';
+import { Transform } from 'node:stream';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
@@ -468,7 +469,10 @@ async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserI
     LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id
     WHERE p.id=$1`,[paymentId]);
   if(p.voided_at)return null;
-  const debitCode=p.payment_method==='mobile_money'?'1020':p.payment_method==='card'?'1030':p.payment_method==='bank'?'1010':'1000';
+  const debitCode=p.payment_method==='mobile_money'?'1020'
+    :p.payment_method==='card'?'1030'
+      :p.payment_method==='bank'||String(p.source||'').includes('online')?'1010'
+        :'1000';
   const debitAccount=await financeAccountByCode(client,p.organisation_id,debitCode);
   const creditAccount=p.student_fee_id
     ?await financeAccountByCode(client,p.organisation_id,'1100')
@@ -517,29 +521,111 @@ async function nextSystemPaymentReference(client:any,organisationId:string,metho
   return prefix+'-'+studentCode+'-'+String(counter.next_number).padStart(4,'0');
 }
 
+type OnlinePaystackMethod='card'|'mobile_money'|'paystack';
+
+function paystackChannelsForMethod(method:OnlinePaystackMethod){
+  return method==='paystack'?undefined:[method];
+}
+
+function normalizedPaystackPaymentMethod(channel:string){
+  const value=String(channel||'').toLowerCase();
+  if(value==='mobile_money')return 'mobile_money';
+  if(value==='card'||value==='apple_pay')return 'card';
+  if(value==='bank'||value==='bank_transfer'||value==='eft'||value==='capitec_pay'||value==='payattitude')return 'bank';
+  return 'other';
+}
+
+async function notifyOnlinePaymentReceipt(intent:any){
+  if(!intent||intent.status!=='success')return;
+  const claimed=await maybeOne<any>(db,`UPDATE payment_intents
+    SET receipt_notified_at=now(),updated_at=now()
+    WHERE id=$1 AND receipt_notified_at IS NULL
+    RETURNING *`,[intent.id]);
+  if(!claimed)return;
+
+  const guardian=claimed.guardian_id
+    ?await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1',[claimed.guardian_id])
+    :null;
+  const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1',[claimed.student_id]);
+  if(!guardian||!student)return;
+
+  const school=await maybeOne<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[claimed.organisation_id]);
+  await notifyContact({
+    organisationId:claimed.organisation_id,
+    guardianId:guardian.id,
+    eventKey:'fees.payment_received',
+    name:guardian.first_name+' '+guardian.last_name,
+    email:guardian.email,
+    phone:guardian.phone,
+    subject:'School fee payment received',
+    body:`${school?.school_name||'The school'} has received ${claimed.currency} ${Number(claimed.amount).toFixed(2)} for ${student.first_name} ${student.last_name}. Payment method: ${String(claimed.provider_channel||claimed.method||'Paystack').replace(/_/g,' ')}. Reference: ${claimed.reference}. The student account and finance journal have been updated.`,
+    relatedType:'payment_intent',
+    relatedId:claimed.id
+  });
+}
+
+function paystackWebhookPreParsing(request:any,_reply:any,payload:any,done:any){
+  const chunks:Buffer[]=[];
+  let receivedEncodedLength=0;
+  let tee:any;
+  tee=new Transform({
+    transform(chunk:any,encoding:any,callback:any){
+      const buffer=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk,encoding);
+      chunks.push(buffer);
+      receivedEncodedLength+=buffer.length;
+      tee.receivedEncodedLength=receivedEncodedLength;
+      callback(null,chunk);
+    },
+    flush(callback:any){
+      request.paystackRawBody=Buffer.concat(chunks);
+      callback();
+    }
+  });
+  tee.receivedEncodedLength=0;
+  payload.on('error',(error:any)=>tee.destroy(error));
+  payload.pipe(tee);
+  done(null,tee);
+}
+
+function validPaystackWebhookSignature(rawBody:Buffer|undefined,signature:string){
+  if(!config.PAYSTACK_SECRET_KEY||!rawBody||!signature)return false;
+  const expected=createHmac('sha512',config.PAYSTACK_SECRET_KEY).update(rawBody).digest('hex');
+  const expectedBuffer=Buffer.from(expected,'utf8');
+  const suppliedBuffer=Buffer.from(String(signature).trim(),'utf8');
+  return expectedBuffer.length===suppliedBuffer.length&&timingSafeEqual(expectedBuffer,suppliedBuffer);
+}
+
 async function settleOnlinePayment(reference:string){
   const intent=await maybeOne<any>(db,'SELECT * FROM payment_intents WHERE reference=$1',[reference]);
   if(!intent)throw fail(404,'Payment reference not found');
-  if(intent.status==='success')return intent;
+  if(intent.status==='success'){
+    await notifyOnlinePaymentReceipt(intent);
+    return intent;
+  }
+
   const verified=await verifyPaystack(config,reference);
   if(verified.status!=='success'){
-    await db.query(`UPDATE payment_intents SET status=$1,failure_reason=$2,provider_payload=$3,updated_at=now() WHERE id=$4`,
-      [verified.status==='failed'?'failed':'pending',verified.gatewayResponse,JSON.stringify(verified.raw),intent.id]);
+    await db.query(`UPDATE payment_intents SET status=$1,failure_reason=$2,provider_payload=$3,provider_channel=$4,updated_at=now() WHERE id=$5`,
+      [verified.status==='failed'?'failed':'pending',verified.gatewayResponse,JSON.stringify(verified.raw),verified.channel||null,intent.id]);
     return await one<any>(db,'SELECT * FROM payment_intents WHERE id=$1',[intent.id]);
   }
+
   if(Math.abs(Number(intent.amount)-Number(verified.amount))>0.001||String(intent.currency)!==String(verified.currency)){
-    await db.query("UPDATE payment_intents SET status='failed',failure_reason='Verified amount or currency mismatch',updated_at=now() WHERE id=$1",[intent.id]);
+    await db.query("UPDATE payment_intents SET status='failed',failure_reason='Verified amount or currency mismatch',provider_payload=$1,provider_channel=$2,updated_at=now() WHERE id=$3",
+      [JSON.stringify(verified.raw),verified.channel||null,intent.id]);
     throw fail(409,'Payment verification amount did not match the request');
   }
-  return tx(db,async client=>{
+
+  const paymentMethod=normalizedPaystackPaymentMethod(verified.channel);
+  const settled=await tx(db,async client=>{
     const locked=await one<any>(client,'SELECT * FROM payment_intents WHERE id=$1 FOR UPDATE',[intent.id]);
     if(locked.status==='success')return locked;
+
     const student=await one<any>(client,'SELECT id,admission_no,first_name,last_name FROM students WHERE id=$1 AND organisation_id=$2',
       [locked.student_id,locked.organisation_id]);
     let remaining=Number(locked.amount),firstPayment:any=null;
     const source=locked.initiated_by_type==='guardian'?'parent_online':'school_online';
 
-    // Allocate verified online money to the selected fee first, then other outstanding fees.
     const openFees=(await client.query(`
       SELECT sf.id,f.name fee_name,sf.created_at,
         (sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p
@@ -559,7 +645,7 @@ async function settleOnlinePayment(reference:string){
       const payment=await one<any>(client,`INSERT INTO payments(
         organisation_id,student_id,student_fee_id,amount,payment_method,reference,received_by_os_user_id,note,source,payment_intent_id
       ) VALUES($1,$2,$3,$4,$5,$6,NULL,$7,$8,$9) RETURNING *`,[
-        locked.organisation_id,locked.student_id,fee.id,amount,locked.method,verified.reference,
+        locked.organisation_id,locked.student_id,fee.id,amount,paymentMethod,verified.reference,
         'Online payment verified by Paystack',source,firstPayment?null:locked.id
       ]);
       if(!firstPayment)firstPayment=payment;
@@ -568,31 +654,41 @@ async function settleOnlinePayment(reference:string){
       remaining-=amount;
     }
 
-    // If the student paid more than current outstanding fees, carry it forward as a real liability credit.
     if(remaining>0.004){
       const deposit=await financeAccountByCode(client,locked.organisation_id,'2200');
-      const debitCode=locked.method==='mobile_money'?'1020':locked.method==='card'?'1030':'1010';
+      const debitCode=paymentMethod==='mobile_money'?'1020':paymentMethod==='card'?'1030':'1010';
       const settlement=await financeAccountByCode(client,locked.organisation_id,debitCode);
       const credit=await one<any>(client,`INSERT INTO student_account_credits(
         organisation_id,student_id,source_receipt_id,original_amount,balance,created_by_os_user_id
       ) VALUES($1,$2,NULL,$3,$3,NULL) RETURNING *`,[locked.organisation_id,locked.student_id,remaining]);
       await postFinanceJournal(client,{
-        organisationId:locked.organisation_id,entryDate:new Date().toISOString().slice(0,10),
+        organisationId:locked.organisation_id,
+        entryDate:new Date().toISOString().slice(0,10),
         description:'Online student advance - '+student.first_name+' '+student.last_name+' ('+student.admission_no+')',
-        sourceType:'online_student_credit',sourceId:credit.id,reference:verified.reference,actorOsUserId:null,
+        sourceType:'online_student_credit',
+        sourceId:credit.id,
+        reference:verified.reference,
+        actorOsUserId:null,
         lines:[
-          {accountId:settlement.id,debit:remaining,description:locked.method+' online receipt'},
+          {accountId:settlement.id,debit:remaining,description:paymentMethod+' online receipt'},
           {accountId:deposit.id,credit:remaining,description:'Student advance / overpayment credit'}
         ]
       });
     }
 
-    if(locked.payment_request_id)await client.query("UPDATE fee_payment_requests SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1",[locked.payment_request_id]);
-    const updated=await one<any>(client,`UPDATE payment_intents SET status='success',settled_payment_id=$1,paid_at=now(),
-      provider_payload=$2,failure_reason=NULL,updated_at=now() WHERE id=$3 RETURNING *`,
-      [firstPayment?.id??null,JSON.stringify(verified.raw),locked.id]);
-    return updated;
+    if(locked.payment_request_id){
+      await client.query("UPDATE fee_payment_requests SET status='paid',paid_at=now(),updated_at=now() WHERE id=$1",[locked.payment_request_id]);
+    }
+
+    return one<any>(client,`UPDATE payment_intents
+      SET status='success',settled_payment_id=$1,paid_at=now(),provider_payload=$2,provider_channel=$3,
+          failure_reason=NULL,updated_at=now()
+      WHERE id=$4 RETURNING *`,
+      [firstPayment?.id??null,JSON.stringify(verified.raw),verified.channel||null,locked.id]);
   });
+
+  if(settled.status==='success')await notifyOnlinePaymentReceipt(settled);
+  return settled;
 }
 
 function hashPortalPin(pin:string){
@@ -6287,7 +6383,7 @@ app.post('/api/payment-intents',async(request,reply)=>{
     studentFeeId:z.string().uuid().optional(),
     guardianId:z.string().uuid().optional(),
     amount:z.number().positive(),
-    method:z.enum(['card','mobile_money'])
+    method:z.enum(['card','mobile_money','paystack'])
   }).parse(request.body);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
   const guardian=b.guardianId
@@ -6308,7 +6404,7 @@ app.post('/api/payment-intents',async(request,reply)=>{
     const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
     const initialized=await initializePaystack(config,{
       email:guardian.email,amount:b.amount,currency:config.PAYSTACK_CURRENCY,reference,
-      channels:[b.method],callbackUrl:base+'/payment/callback',
+      channels:paystackChannelsForMethod(b.method),callbackUrl:base+'/payment/callback',
       metadata:{schoolPaymentIntentId:intent.id,studentId:b.studentId,studentFeeId:b.studentFeeId||null}
     });
     const updated=await one<any>(db,`UPDATE payment_intents SET status='pending',authorization_url=$1,provider_access_code=$2,updated_at=now()
@@ -6340,7 +6436,7 @@ app.post('/api/parent/payment-intents',async(request,reply)=>{
     studentFeeId:z.string().uuid().optional(),
     paymentRequestId:z.string().uuid().optional(),
     amount:z.number().positive(),
-    method:z.enum(['card','mobile_money'])
+    method:z.enum(['card','mobile_money','paystack'])
   }).parse(request.body);
   await ensureGuardianStudent(g.guardian_id,b.studentId);
   if(!g.email)throw fail(409,'Add an email address to your guardian record before making an online payment');
@@ -6367,7 +6463,7 @@ app.post('/api/parent/payment-intents',async(request,reply)=>{
     const base=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
     const initialized=await initializePaystack(config,{
       email:g.email,amount:b.amount,currency:config.PAYSTACK_CURRENCY,reference,
-      channels:[b.method],callbackUrl:base+'/payment/callback',
+      channels:paystackChannelsForMethod(b.method),callbackUrl:base+'/payment/callback',
       metadata:{schoolPaymentIntentId:intent.id,studentId:b.studentId,guardianId:g.guardian_id}
     });
     const updated=await one<any>(db,`UPDATE payment_intents SET status='pending',authorization_url=$1,provider_access_code=$2,updated_at=now()
@@ -6389,29 +6485,29 @@ app.get('/payment/callback',async(request,reply)=>{
     return reply.redirect(base+'/parent?payment=failed&reference='+encodeURIComponent(q.reference));
   }
 });
-app.post('/api/payments/paystack/webhook',async(request,reply)=>{
-  const event=request.body as any;
-  const reference=String(event?.data?.reference||'');
-  if(event?.event!=='charge.success'||!reference)return reply.code(200).send({ok:true});
-  try{
-    const intent=await settleOnlinePayment(reference);
-    if(intent.status==='success'){
-      const guardian=intent.guardian_id?await maybeOne<any>(db,'SELECT * FROM guardians WHERE id=$1',[intent.guardian_id]):null;
-      const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1',[intent.student_id]);
-      if(guardian&&student){
-        await notifyContact({
-          organisationId:intent.organisation_id,guardianId:guardian.id,eventKey:'fees.payment_received',
-          name:guardian.first_name+' '+guardian.last_name,email:guardian.email,phone:guardian.phone,
-          subject:'School fee payment received',
-          body:`Payment of ${intent.currency} ${Number(intent.amount).toFixed(2)} for ${student.first_name} ${student.last_name} has been received successfully. Reference: ${intent.reference}.`,
-          relatedType:'payment_intent',relatedId:intent.id
-        });
-      }
+app.route({
+  method:'POST',
+  url:'/api/payments/paystack/webhook',
+  preParsing:paystackWebhookPreParsing,
+  handler:async(request,reply)=>{
+    const signature=String(request.headers['x-paystack-signature']||'');
+    const rawBody=(request as any).paystackRawBody as Buffer|undefined;
+    if(!validPaystackWebhookSignature(rawBody,signature)){
+      request.log.warn({path:'/api/payments/paystack/webhook'},'Rejected invalid Paystack webhook signature');
+      return reply.code(401).send({ok:false});
     }
-  }catch(error:any){
-    console.error('Paystack webhook settlement failed',error?.message||error);
+
+    const event=request.body as any;
+    const reference=String(event?.data?.reference||'');
+    if(event?.event!=='charge.success'||!reference)return reply.code(200).send({ok:true});
+
+    try{
+      await settleOnlinePayment(reference);
+    }catch(error:any){
+      request.log.error({error:String(error?.message||error),reference},'Paystack webhook settlement failed');
+    }
+    return reply.code(200).send({ok:true});
   }
-  return reply.code(200).send({ok:true});
 });
 
 
