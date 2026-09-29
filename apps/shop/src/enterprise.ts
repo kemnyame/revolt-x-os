@@ -611,10 +611,13 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
     const a=await authorize(db,config,req,reply,'communications.manage');
     const shopId=(req.query as any)?.shopId||null;
     const r=await db.query(`
-      SELECT c.*,cu.name customer_name,cu.phone customer_phone,
-             (SELECT body FROM shop_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at DESC LIMIT 1) last_message
+      SELECT c.*,cu.name customer_name,cu.phone customer_phone,cu.customer_no,
+             pa.email portal_email,
+             (SELECT body FROM shop_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at DESC LIMIT 1) last_message,
+             (SELECT count(*)::int FROM shop_messages m WHERE m.conversation_id=c.id) message_count
       FROM shop_conversations c
       LEFT JOIN shop_customers cu ON cu.id=c.customer_id
+      LEFT JOIN shop_customer_portal_accounts pa ON pa.id=c.portal_account_id
       WHERE c.organisation_id=$1 AND ($2::uuid IS NULL OR c.shop_id=$2)
       ORDER BY c.last_message_at DESC LIMIT 250`,[a.core.organisation_id,shopId]);
     return r.rows;
@@ -1686,9 +1689,16 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
 
   app.get('/api/customer-portal/messages',async(req,reply)=>{
     const c=await customerContext(db,req);
-    let conv=await maybeOne<any>(db,"SELECT * FROM shop_conversations WHERE customer_id=$1 AND shop_id=$2 AND channel='in_app' AND status<>'closed' ORDER BY created_at LIMIT 1",[c.customer_id,c.shop_id]);
+    let conv=await maybeOne<any>(db,
+      "SELECT * FROM shop_conversations WHERE portal_account_id=$1 AND shop_id=$2 AND channel='in_app' AND status<>'closed' ORDER BY created_at LIMIT 1",
+      [c.account_id,c.shop_id]
+    );
     if(!conv){
-      conv=(await db.query(`INSERT INTO shop_conversations(organisation_id,shop_id,branch_id,customer_id,channel,subject) VALUES($1,$2,$3,$4,'in_app','Customer chat') RETURNING *`,[c.organisation_id,c.shop_id,c.branch_id,c.customer_id])).rows[0];
+      conv=(await db.query(
+        `INSERT INTO shop_conversations(organisation_id,shop_id,branch_id,customer_id,portal_account_id,channel,subject)
+         VALUES($1,$2,$3,$4,$5,'in_app',$6) RETURNING *`,
+        [c.organisation_id,c.shop_id,c.branch_id,c.customer_id,c.account_id,'Customer chat · '+c.name]
+      )).rows[0];
     }
     const messages=(await db.query('SELECT * FROM shop_messages WHERE conversation_id=$1 ORDER BY created_at',[conv.id])).rows;
     return{conversation:conv,messages};
@@ -1697,9 +1707,22 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
   app.post('/api/customer-portal/messages',async(req,reply)=>{
     const c=await customerContext(db,req);
     const b=z.object({body:z.string().trim().min(1).max(5000)}).parse(req.body);
-    let conv=await maybeOne<any>(db,"SELECT * FROM shop_conversations WHERE customer_id=$1 AND shop_id=$2 AND channel='in_app' AND status<>'closed' ORDER BY created_at LIMIT 1",[c.customer_id,c.shop_id]);
-    if(!conv)conv=(await db.query(`INSERT INTO shop_conversations(organisation_id,shop_id,branch_id,customer_id,channel,subject) VALUES($1,$2,$3,$4,'in_app','Customer chat') RETURNING *`,[c.organisation_id,c.shop_id,c.branch_id,c.customer_id])).rows[0];
-    const r=await db.query(`INSERT INTO shop_messages(conversation_id,sender_type,sender_id,channel,body,delivery_status) VALUES($1,'customer',$2,'in_app',$3,'sent') RETURNING *`,[conv.id,c.customer_id,b.body]);
+    let conv=await maybeOne<any>(db,
+      "SELECT * FROM shop_conversations WHERE portal_account_id=$1 AND shop_id=$2 AND channel='in_app' AND status<>'closed' ORDER BY created_at LIMIT 1",
+      [c.account_id,c.shop_id]
+    );
+    if(!conv){
+      conv=(await db.query(
+        `INSERT INTO shop_conversations(organisation_id,shop_id,branch_id,customer_id,portal_account_id,channel,subject)
+         VALUES($1,$2,$3,$4,$5,'in_app',$6) RETURNING *`,
+        [c.organisation_id,c.shop_id,c.branch_id,c.customer_id,c.account_id,'Customer chat · '+c.name]
+      )).rows[0];
+    }
+    const r=await db.query(
+      `INSERT INTO shop_messages(conversation_id,sender_type,sender_id,channel,body,delivery_status)
+       VALUES($1,'customer',$2,'in_app',$3,'sent') RETURNING *`,
+      [conv.id,c.customer_id,b.body]
+    );
     await db.query("UPDATE shop_conversations SET last_message_at=now(),status='open' WHERE id=$1",[conv.id]);
     return reply.code(201).send(r.rows[0]);
   });
