@@ -202,7 +202,7 @@ export async function initializePaystack(config:SchoolConfig,input:{
   amount:number;
   currency:string;
   reference:string;
-  channels?:PaystackChannel[];
+  channels?:PaystackChannel[]|undefined;
   callbackUrl:string;
   metadata:Record<string,unknown>;
 }){
