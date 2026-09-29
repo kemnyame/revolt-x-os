@@ -243,14 +243,14 @@ let activeConversation=null;
 window.loadConversations=async function(){
   try{
     const rows=await api('/api/conversations?shopId='+encodeURIComponent(selectedShopId));
-    conversationList.innerHTML=rows.map(x=>'<button class="conversation-card" data-conv="'+x.id+'" onclick="openConversation(\''+x.id+'\')"><b>'+esc(x.customer_name||'Customer')+'</b><small>'+esc(x.last_message||x.subject||'No message yet')+'</small></button>').join('')||'<div class="empty">No conversations yet. Customer portal messages will appear here.</div>';
+    conversationList.innerHTML=rows.map(x=>'<button class="conversation-card" data-conv="'+x.id+'" onclick="openConversation(\''+x.id+'\')"><b>'+esc(x.customer_name||'Customer')+'</b><small>'+esc([x.customer_no,x.customer_phone].filter(Boolean).join(' · ')||x.portal_email||'Customer portal')+'</small><small style="margin-top:5px">'+esc(x.last_message||x.subject||'No message yet')+'</small><small style="margin-top:5px">'+Number(x.message_count||0)+' message'+(Number(x.message_count||0)===1?'':'s')+' · '+new Date(x.last_message_at||x.created_at).toLocaleString()+'</small></button>').join('')||'<div class="empty">No conversations yet. Each customer portal chat will appear as a separate thread here.</div>';
   }catch(e){conversationList.innerHTML='<div class="empty">'+esc(e.message)+'</div>'}
 };
 window.openConversation=async function(id){
   try{
     const rows=await api('/api/conversations?shopId='+encodeURIComponent(selectedShopId)),conv=rows.find(x=>x.id===id);activeConversation=conv||null;
     document.querySelectorAll('.conversation-card').forEach(x=>x.classList.toggle('active',x.dataset.conv===id));
-    conversationTitle.textContent=conv?.customer_name||'Customer conversation';conversationContact.textContent=conv?.customer_phone||'';
+    conversationTitle.textContent=(conv?.customer_name||'Customer')+' · private chat';conversationContact.textContent=[conv?.customer_no,conv?.customer_phone,conv?.portal_email].filter(Boolean).join(' · ');
     let p=String(conv?.customer_phone||'').replace(/\D/g,'');if(p.startsWith('0'))p='233'+p.slice(1);conversationWhatsApp.style.display=p?'inline-flex':'none';conversationWhatsApp.href=p?'https://wa.me/'+p:'#';
     activeConversationId.value=id;
     const messages=await api('/api/conversations/'+encodeURIComponent(id)+'/messages');
