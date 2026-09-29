@@ -950,7 +950,7 @@ else if(p==='attendance'){
        '<div class="two" style="margin-top:12px"><div><label>Payment method</label><select id="receiptPaymentMethod">'+pmOpts+'</select></div><div><label>Amount received</label><input id="receiptAmountReceived" type="number" min="0" step="0.01" placeholder="0.00"></div></div>'+
        '<div class="two"><div><label>System reference</label><input id="receiptReference" value="Generated on posting" readonly></div><div><label>Note</label><input id="receiptNote" placeholder="Optional receipt note"></div></div>'+
        '<div id="receiptBalanceStatus" class="notice" style="margin-top:10px">Add at least one fee to the payment container.</div>'+
-       '<div class="actions"><button id="postStudentReceipt" class="primary">Post & Print Receipt</button></div></div>'+
+       '<div class="actions"><button id="postStudentReceipt" class="primary">Post, Send & Print Receipt</button></div></div>'+
        '<div class="panel" style="margin-top:12px"><h3>Recent Receipts</h3>'+table(x.receipts||[],[{key:"paid_at",label:"Date",render:function(r){return esc(new Date(r.paid_at).toLocaleDateString())}},{key:"receipt_no",label:"Receipt No."},{key:"reference",label:"Reference"},{key:"payment_method_label",label:"Method"},{key:"amount",render:function(r){return money(r.amount)}},{key:"entry_no",label:"Journal"}],function(r){return'<button class="mini primary-lite" data-preview-fin-receipt="'+r.id+'">Print</button>'})+'</div>'
    }
    async function previewFinanceReceipt(id){
@@ -1033,9 +1033,13 @@ else if(p==='attendance'){
            directIncomeAmount:0,note:E('receiptNote').value||undefined,
            allocations:paymentContainer.map(function(x){return{studentFeeId:x.studentFeeId,amount:Number(x.amount)}})
          })});
-         toast('Receipt '+r.receipt.receipt_no+' posted. Opening Print Preview...');
-         await previewFinanceReceipt(r.receipt.id);await openStudentAccount(activeStudentAccount.student.id)
-       }finally{btn.disabled=false;btn.textContent='Post & Print Receipt'}
+          var em=r.notification&&r.notification.email;
+          if(em&&em.status==='sent')toast('Receipt '+r.receipt.receipt_no+' posted and email sent.');
+          else if(em&&em.status==='failed')toast('Receipt posted, but email delivery failed: '+(em.error||'check Communication Centre'),true);
+          else if(em&&em.status==='pending_configuration')toast('Receipt posted. Email is pending configuration.',true);
+          else toast('Receipt '+r.receipt.receipt_no+' posted. Parent in-app alert created.');
+          await previewFinanceReceipt(r.receipt.id);await openStudentAccount(activeStudentAccount.student.id)
+        }finally{btn.disabled=false;btn.textContent='Post, Send & Print Receipt'}
      }
    }
    async function runStudentSearch(){
