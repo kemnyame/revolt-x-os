@@ -297,6 +297,27 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
       if(!branch)return reply.code(400).send({error:{message:'Selected branch does not belong to this shop.'}});
     }
 
+    // Keep chair state aligned with the live service floor. This repairs stale
+    // occupied flags after refresh/restart and makes the queue/chair board reliable.
+    await db.query(`
+      UPDATE salon_chairs ch
+      SET status=CASE
+        WHEN EXISTS(
+          SELECT 1 FROM shop_bookings b
+          WHERE b.organisation_id=ch.organisation_id
+            AND b.shop_id=ch.shop_id
+            AND b.salon_chair_id=ch.id
+            AND b.status='in_chair'
+        ) THEN 'occupied'
+        ELSE 'available'
+      END
+      WHERE ch.organisation_id=$1
+        AND ($2::uuid IS NULL OR ch.shop_id=$2)
+        AND ($3::uuid IS NULL OR ch.branch_id=$3)
+        AND ch.status NOT IN('maintenance','inactive')`,
+      params
+    );
+
     const empty=()=>Promise.resolve({rows:[]} as any);
     const [canAppointments,canFinance,canReports]=await Promise.all([
       hasShopCapability(db,a.core.organisation_id,a.role,'appointments.manage').then(v=>v||hasShopCapability(db,a.core.organisation_id,a.role,'bookings.manage')),
@@ -313,7 +334,23 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
            AND ($3::uuid IS NULL OR x.branch_id=$3 OR x.branch_id IS NULL)
          ORDER BY x.role,x.full_name`,params),
       db.query(
-        `SELECT * FROM salon_chairs x
+        `SELECT x.*,
+                active_booking.id active_booking_id,
+                active_booking.customer_name current_customer_name,
+                active_booking.service_name current_service_name,
+                active_booking.barber_name current_barber_name,
+                active_booking.service_started_at current_service_started_at
+         FROM salon_chairs x
+         LEFT JOIN LATERAL(
+           SELECT b.id,b.customer_name,b.service_started_at,
+                  s.name service_name,st.full_name barber_name
+           FROM shop_bookings b
+           LEFT JOIN shop_services s ON s.id=b.service_id
+           LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
+           WHERE b.salon_chair_id=x.id AND b.status='in_chair'
+           ORDER BY b.service_started_at DESC NULLS LAST
+           LIMIT 1
+         ) active_booking ON true
          WHERE x.organisation_id=$1
            AND ($2::uuid IS NULL OR x.shop_id=$2)
            AND ($3::uuid IS NULL OR x.branch_id=$3)
@@ -321,12 +358,21 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
       canAppointments?db.query(
         `SELECT b.*,s.name service_name,st.full_name barber_name,ch.name chair_name,
                 gm.title inspiration_title,gm.media_type inspiration_media_type,
-                CASE WHEN gm.file_data IS NOT NULL THEN '/api/public/media/'||gm.id::text ELSE gm.external_url END inspiration_media_url
+                CASE WHEN gm.file_data IS NOT NULL THEN '/api/public/media/'||gm.id::text ELSE gm.external_url END inspiration_media_url,
+                bill.id billing_order_id,bill.order_no billing_order_no,bill.status billing_status,
+                bill.total billing_total,bill.amount_paid billing_amount_paid,bill.balance billing_balance
          FROM shop_bookings b
          LEFT JOIN shop_services s ON s.id=b.service_id
          LEFT JOIN salon_staff st ON st.id=b.salon_staff_id
          LEFT JOIN salon_chairs ch ON ch.id=b.salon_chair_id
          LEFT JOIN shop_gallery_media gm ON gm.id=b.inspiration_media_id
+         LEFT JOIN LATERAL(
+           SELECT o.id,o.order_no,o.status,o.total,o.amount_paid,o.balance
+           FROM shop_orders o
+           WHERE o.booking_id=b.id
+           ORDER BY o.created_at DESC
+           LIMIT 1
+         ) bill ON true
          WHERE b.organisation_id=$1
            AND ($2::uuid IS NULL OR b.shop_id=$2)
            AND ($3::uuid IS NULL OR b.branch_id=$3)
@@ -593,7 +639,7 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
         in_chair:['completed','cancelled'],
         completed:[],
         cancelled:[],
-        no_show:[]
+        no_show:['checked_in','cancelled']
       };
       if(!(transitions[row.status]||[]).includes(b.status)){
         throw Object.assign(new Error('Invalid appointment status transition from '+row.status+' to '+b.status+'.'),{statusCode:409});
@@ -657,19 +703,58 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
             if(occupiedByOther.rowCount)throw Object.assign(new Error('Selected chair is currently occupied.'),{statusCode:409});
           }
         }else{
-          const chair=await client.query(
-            `SELECT ch.id
-             FROM salon_chairs ch
-             WHERE ch.organisation_id=$1 AND ch.shop_id=$2 AND ch.branch_id=$3
-               AND ch.status='available'
-             ORDER BY ch.name
-             FOR UPDATE OF ch SKIP LOCKED
-             LIMIT 1`,
+          const chairCount=await client.query(
+            `SELECT count(*)::int c FROM salon_chairs
+             WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+               AND status NOT IN('maintenance','inactive')`,
             [a.core.organisation_id,row.shop_id,row.branch_id]
           );
-          if(!chair.rowCount)throw Object.assign(new Error('No barber chair is currently available.'),{statusCode:409});
-          chairId=chair.rows[0].id;
+          if(Number(chairCount.rows[0]?.c||0)>0){
+            const chair=await client.query(
+              `SELECT ch.id
+               FROM salon_chairs ch
+               WHERE ch.organisation_id=$1 AND ch.shop_id=$2 AND ch.branch_id=$3
+                 AND ch.status='available'
+               ORDER BY CASE WHEN ch.assigned_staff_id=$4::uuid THEN 0 ELSE 1 END,ch.name
+               FOR UPDATE OF ch SKIP LOCKED
+               LIMIT 1`,
+              [a.core.organisation_id,row.shop_id,row.branch_id,staffId]
+            );
+            if(!chair.rowCount)throw Object.assign(new Error('All barber chairs are currently occupied. Complete an active service or choose another available chair.'),{statusCode:409,code:'NO_AVAILABLE_CHAIR'});
+            chairId=chair.rows[0].id;
+          }else{
+            chairId=null;
+          }
         }
+      }
+
+      let queueNumber=row.queue_number||null;
+      let estimatedWait=row.estimated_wait_minutes||null;
+      if(b.status==='checked_in'&&!queueNumber){
+        const nextQueue=await maybeOne<any>(client,`
+          SELECT coalesce(max(queue_number),0)+1 next_queue
+          FROM shop_bookings
+          WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+            AND coalesce(check_in_at,booked_for)::date=CURRENT_DATE`,
+          [a.core.organisation_id,row.shop_id,row.branch_id]
+        );
+        queueNumber=Number(nextQueue?.next_queue||1);
+        const ahead=await maybeOne<any>(client,`
+          SELECT count(*)::int waiting
+          FROM shop_bookings
+          WHERE organisation_id=$1 AND shop_id=$2 AND branch_id=$3
+            AND id<>$4 AND status IN('queued','checked_in')`,
+          [a.core.organisation_id,row.shop_id,row.branch_id,id]
+        );
+        const capacity=await maybeOne<any>(client,`
+          SELECT greatest(1,count(*)::int) capacity
+          FROM salon_staff
+          WHERE organisation_id=$1 AND shop_id=$2
+            AND role='barber' AND status='active'
+            AND (branch_id=$3 OR branch_id IS NULL)`,
+          [a.core.organisation_id,row.shop_id,row.branch_id]
+        );
+        estimatedWait=Math.max(0,Math.ceil(Number(ahead?.waiting||0)/Math.max(1,Number(capacity?.capacity||1)))*20);
       }
 
       const upd=await client.query(`
@@ -677,12 +762,14 @@ export async function registerSalonRoutes(app:FastifyInstance,{db,config}:{db:Db
           status=$1,
           salon_staff_id=coalesce($2,salon_staff_id),
           salon_chair_id=coalesce($3,salon_chair_id),
+          queue_number=coalesce($5,queue_number),
+          estimated_wait_minutes=coalesce($6,estimated_wait_minutes),
           check_in_at=CASE WHEN $1='checked_in' AND check_in_at IS NULL THEN now() ELSE check_in_at END,
           service_started_at=CASE WHEN $1='in_chair' AND service_started_at IS NULL THEN now() ELSE service_started_at END,
           service_completed_at=CASE WHEN $1='completed' AND service_completed_at IS NULL THEN now() ELSE service_completed_at END
         WHERE id=$4
         RETURNING *`,
-        [b.status,staffId,chairId,id]
+        [b.status,staffId,chairId,id,queueNumber,estimatedWait]
       );
       const current=upd.rows[0];
 
