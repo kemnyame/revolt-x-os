@@ -92,6 +92,84 @@ async function settlePaystackCharge(db:Db,payment:any,data:any){
   );
 }
 
+export async function verifyPaystackReference(db:Db,config:ShopConfig,reference:string,actorUserId:string|null=null){
+  if(!config.PAYSTACK_SECRET_KEY){
+    const e:any=new Error('Online payment provider is not configured');
+    e.statusCode=503;e.code='PAYMENT_PROVIDER_NOT_CONFIGURED';throw e;
+  }
+  const payment=await maybeOne<any>(
+    db,
+    `SELECT p.*,s.public_slug
+     FROM shop_payments p
+     LEFT JOIN shops s ON s.id=p.shop_id
+     WHERE p.provider='paystack' AND p.reference=$1
+     ORDER BY p.created_at DESC LIMIT 1`,
+    [reference]
+  );
+  if(!payment){
+    const e:any=new Error('Payment reference was not found');
+    e.statusCode=404;e.code='PAYMENT_NOT_FOUND';throw e;
+  }
+
+  const ps=await fetch('https://api.paystack.co/transaction/verify/'+encodeURIComponent(reference),{
+    headers:{authorization:'Bearer '+config.PAYSTACK_SECRET_KEY},
+    signal:AbortSignal.timeout(15000)
+  });
+  const data=await ps.json().catch(()=>null) as any;
+  if(!ps.ok||!data?.status){
+    const e:any=new Error(data?.message||'Payment verification failed');
+    e.statusCode=502;e.code='PAYMENT_VERIFICATION_FAILED';throw e;
+  }
+
+  const providerStatus=String(data.data?.status||'pending');
+  const successful=providerStatus==='success';
+  const receivedAmount=Math.round(Number(data.data?.amount||0));
+  const expectedAmount=Math.round(Number(payment.amount||0)*100);
+  const receivedCurrency=String(data.data?.currency||payment.currency||'').toUpperCase();
+  const expectedCurrency=String(payment.currency||config.PAYSTACK_CURRENCY||'GHS').toUpperCase();
+
+  if(successful&&(receivedAmount!==expectedAmount||receivedCurrency!==expectedCurrency)){
+    await db.query(
+      `UPDATE shop_payments SET status='review_required',provider_reference=$1,raw_json=$2 WHERE id=$3`,
+      [String(data.data?.id||payment.provider_reference||reference),JSON.stringify(data),payment.id]
+    );
+    await db.query(
+      `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
+       VALUES($1,$2,'payment.amount_mismatch','payment',$3,$4,$5,$6)`,
+      [payment.organisation_id,actorUserId,payment.id,payment.shop_id,payment.branch_id,JSON.stringify({reference,expectedAmount,receivedAmount,expectedCurrency,receivedCurrency})]
+    );
+    return{status:'review_required',payment:{...payment,status:'review_required'},providerStatus,publicSlug:payment.public_slug};
+  }
+
+  if(successful){
+    await tx(db,async client=>{
+      const locked=await client.query(
+        `SELECT p.*,s.public_slug
+         FROM shop_payments p
+         LEFT JOIN shops s ON s.id=p.shop_id
+         WHERE p.id=$1 FOR UPDATE`,
+        [payment.id]
+      );
+      if(!locked.rowCount)return;
+      const current=locked.rows[0];
+      if(current.status!=='successful')await settlePaystackCharge(client,current,data.data||{});
+    });
+    const settled=await maybeOne<any>(db,
+      `SELECT p.*,s.public_slug FROM shop_payments p LEFT JOIN shops s ON s.id=p.shop_id WHERE p.id=$1`,
+      [payment.id]
+    );
+    return{status:'successful',payment:settled,providerStatus,publicSlug:settled?.public_slug||payment.public_slug};
+  }
+
+  await db.query(
+    `UPDATE shop_payments
+     SET status=$1,provider_reference=$2,raw_json=$3
+     WHERE id=$4 AND status<>'successful'`,
+    [providerStatus,String(data.data?.id||payment.provider_reference||reference),JSON.stringify(data),payment.id]
+  );
+  return{status:providerStatus,payment:{...payment,status:providerStatus},providerStatus,publicSlug:payment.public_slug};
+}
+
 export async function registerPaymentWebhook(app:FastifyInstance,{db,config}:{db:Db;config:ShopConfig}){
   await app.register(async scoped=>{
     scoped.removeContentTypeParser('application/json');
