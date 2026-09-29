@@ -439,6 +439,23 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
     `,[a.core.organisation_id])).rows;
   });
 
+  app.get('/api/accounting/payment-balances',async request=>{
+    const a=await authorize(request,db,config,'finance.view');
+    return (await db.query(`
+      SELECT pm.method_key,pm.label,pm.provider,pm.enabled,
+             fa.code settlement_account_code,fa.name settlement_account_name,
+             fa.opening_balance+
+             COALESCE(sum(CASE WHEN je.status='posted' THEN jl.debit-jl.credit ELSE 0 END),0) balance
+      FROM finance_payment_methods pm
+      JOIN finance_accounts fa ON fa.id=pm.settlement_account_id
+      LEFT JOIN finance_journal_lines jl ON jl.account_id=fa.id
+      LEFT JOIN finance_journal_entries je ON je.id=jl.journal_entry_id
+      WHERE pm.organisation_id=$1
+      GROUP BY pm.id,fa.id
+      ORDER BY CASE pm.method_key WHEN 'cash' THEN 1 WHEN 'bank' THEN 2 WHEN 'mobile_money' THEN 3 WHEN 'card' THEN 4 ELSE 5 END,pm.label
+    `,[a.core.organisation_id])).rows;
+  });
+
   app.patch('/api/accounting/payment-methods/:id',async request=>{
     const a=await authorize(request,db,config,'finance.payment_setup');
     const {id}=z.object({id:z.string().uuid()}).parse(request.params);
@@ -846,21 +863,26 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
     const guardian=await maybeOne<any>(db,`SELECT g.* FROM guardians g
       JOIN student_guardians sg ON sg.guardian_id=g.id
       WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.created_at LIMIT 1`,[b.studentId]);
+    let notificationResults:any[]=[];
     if(guardian){
       const school=await one<any>(db,'SELECT school_name,currency FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
       const balance=await one<any>(db,`SELECT COALESCE(sum((sf.amount_due-sf.discount)-COALESCE((
         SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL
       ),0)),0) outstanding FROM student_fees sf WHERE sf.organisation_id=$1 AND sf.student_id=$2`,
         [a.core.organisation_id,b.studentId]);
-      await notifyContact({
-        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'fees.payment_received',
+      notificationResults=await notifyContact({
+        organisationId:a.core.organisation_id,actorOsUserId:a.core.id,guardianId:guardian.id,eventKey:'fees.payment_received',
         name:(guardian.first_name+' '+guardian.last_name).trim(),email:guardian.email,phone:guardian.phone,
         subject:'Fee payment received - '+result.student.first_name+' '+result.student.last_name,
         body:`${school.school_name} has received ${school.currency||'GHS'} ${Number(b.amountReceived).toFixed(2)} for ${result.student.first_name} ${result.student.last_name} (${result.student.admission_no}). Receipt: ${result.receipt.receipt_no}. Reference: ${result.reference}. Outstanding fee balance: ${school.currency||'GHS'} ${Number(balance.outstanding||0).toFixed(2)}.`,
         relatedType:'finance_student_receipt',relatedId:result.receipt.id
       });
     }
-    return reply.code(201).send(result);
+    const emailDelivery=notificationResults.find((x:any)=>x.channel==='email')||null;
+    return reply.code(201).send({...result,notification:{
+      inApp:Boolean(guardian),
+      email:emailDelivery?{status:emailDelivery.status,provider:emailDelivery.provider||null,error:emailDelivery.last_error||null}:null
+    }});
   });
 
 }
