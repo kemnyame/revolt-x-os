@@ -335,6 +335,7 @@ export async function registerCommercialSalonRoutes(app:FastifyInstance,{db,conf
       database:{configured:Boolean(config.SHOP_DATABASE_URL),status:'connected'},
       onlinePayments:{
         provider:'paystack',
+        mode:config.PAYSTACK_SECRET_KEY?.startsWith('sk_test_')?'test':config.PAYSTACK_SECRET_KEY?.startsWith('sk_live_')?'live':'unknown',
         configured:Boolean(config.PAYSTACK_SECRET_KEY&&config.PUBLIC_BASE_URL),
         secretConfigured:Boolean(config.PAYSTACK_SECRET_KEY),
         callbackConfigured:Boolean(config.PUBLIC_BASE_URL),
