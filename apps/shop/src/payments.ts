@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Db } from './db.js';
 import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
+import { postPaymentFinanceJournal } from './accounting.js';
 
 function secureHexEqual(a:string,b:string){
   try{
@@ -83,6 +84,7 @@ async function settlePaystackCharge(db:Db,payment:any,data:any){
   }
 
   if(payment.order_id)await refreshOrderPaid(db,payment.order_id);
+  await postPaymentFinanceJournal(db,{...payment,status:'successful',fee:providerFee,paid_at:paidAt||new Date().toISOString()},null);
   await db.query(
     `INSERT INTO shop_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,shop_id,branch_id,metadata)
      VALUES($1,NULL,'payment.webhook_settled','payment',$2,$3,$4,$5)`,
