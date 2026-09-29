@@ -1,6 +1,7 @@
 import type { SchoolConfig } from './config.js';
 
 export type MessageChannel='email'|'sms'|'whatsapp';
+export type PaystackChannel='card'|'bank'|'apple_pay'|'ussd'|'qr'|'mobile_money'|'bank_transfer'|'eft'|'capitec_pay'|'payattitude';
 
 export function emailProviderCandidates(config:SchoolConfig){
   if(config.EMAIL_PROVIDER==='brevo')return ['brevo'] as const;
@@ -201,23 +202,24 @@ export async function initializePaystack(config:SchoolConfig,input:{
   amount:number;
   currency:string;
   reference:string;
-  channels:Array<'card'|'mobile_money'>;
+  channels?:PaystackChannel[];
   callbackUrl:string;
   metadata:Record<string,unknown>;
 }){
   if(!config.PAYSTACK_SECRET_KEY)throw new Error('Paystack is not configured');
+  const payload:any={
+    email:input.email,
+    amount:String(Math.round(input.amount*100)),
+    currency:input.currency,
+    reference:input.reference,
+    callback_url:input.callbackUrl,
+    metadata:input.metadata
+  };
+  if(input.channels?.length)payload.channels=input.channels;
   const res=await fetch('https://api.paystack.co/transaction/initialize',{
     method:'POST',
     headers:{authorization:'Bearer '+config.PAYSTACK_SECRET_KEY,'content-type':'application/json'},
-    body:JSON.stringify({
-      email:input.email,
-      amount:String(Math.round(input.amount*100)),
-      currency:input.currency,
-      reference:input.reference,
-      channels:input.channels,
-      callback_url:input.callbackUrl,
-      metadata:input.metadata
-    }),
+    body:JSON.stringify(payload),
     signal:AbortSignal.timeout(15000)
   });
   const data=await res.json().catch(()=>({})) as any;
