@@ -6,6 +6,7 @@ import { maybeOne, tx } from './db.js';
 import type { ShopConfig } from './config.js';
 import { authorize } from './auth.js';
 import { assertSalonBookingAvailability } from './salon.js';
+import { postPaymentFinanceJournal } from './accounting.js';
 
 const uuid=z.string().uuid();
 const money=z.coerce.number().finite().min(0);
@@ -1488,6 +1489,11 @@ export async function registerEnterpriseShopRoutes(app:FastifyInstance,{db,confi
             [intent.organisation_id,intent.shop_id,intent.branch_id,intent.amount,payment.id,payment.reference]
           );
           if(intent.order_id)await updateOrderPaymentStatus(client,intent.order_id);
+        }
+        // Keep accounting and invoice state consistent even when the POS retries a successful intent.
+        if(payment){
+          if(payment.order_id)await updateOrderPaymentStatus(client,payment.order_id);
+          await postPaymentFinanceJournal(client,payment,null);
         }
       }
       await client.query("UPDATE shop_pos_devices SET status='online',last_seen_at=now(),last_ip=$1 WHERE id=$2",[req.ip,device.id]);
