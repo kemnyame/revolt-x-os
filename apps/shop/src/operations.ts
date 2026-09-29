@@ -990,7 +990,15 @@ export async function registerShopOperationsRoutes(app:FastifyInstance,{db,confi
     const slug=z.string().min(2).max(120).parse((req.params as any).slug);
     const shop=await maybeOne<any>(db,"SELECT id FROM shops WHERE public_slug=$1 AND status='active'",[slug]);
     if(!shop)return reply.code(404).send({error:{code:'SHOP_NOT_FOUND',message:'Shop not found.'}});
-    return{google:{enabled:Boolean(config.GOOGLE_CLIENT_ID),clientId:config.GOOGLE_CLIENT_ID||null}};
+    return{
+      google:{enabled:Boolean(config.GOOGLE_CLIENT_ID),clientId:config.GOOGLE_CLIENT_ID||null},
+      payments:{
+        provider:'paystack',
+        configured:Boolean(config.PAYSTACK_SECRET_KEY&&config.PUBLIC_BASE_URL),
+        mode:config.PAYSTACK_SECRET_KEY?.startsWith('sk_test_')?'test':config.PAYSTACK_SECRET_KEY?.startsWith('sk_live_')?'live':'unknown',
+        currency:config.PAYSTACK_CURRENCY
+      }
+    };
   });
 
   app.post('/api/customer-portal/:slug/google',async(req,reply)=>{
