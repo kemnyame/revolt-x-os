@@ -118,7 +118,7 @@ async function page(p){
    ])+'</div>'+
    '<div class="two" style="margin-top:12px"><div class="panel"><h3>Renewals Due Within 60 Days</h3>'+table(x.renewals||[],[
      {key:'name',label:'School'},{key:'plan_name',label:'Plan'},{key:'status',render:function(r){return badge(r.status)}},
-     {key:'current_period_end',label:'Renewal',render:function(r){return esc(fmt(r.current_period_end))},{key:'recurring_amount',label:'Value',render:function(r){return esc(money(r.recurring_amount,r.currency))}}
+     {key:'current_period_end',label:'Renewal',render:function(r){return esc(fmt(r.current_period_end))}},{key:'recurring_amount',label:'Value',render:function(r){return esc(money(r.recurring_amount,r.currency))}}
    ])+'</div>'+
    '<div class="panel"><h3>Revolt-X Internal Operations</h3>'+[
      ['People',inn.people],['Operations',inn.operations],['Documents',inn.documents],['Assets',inn.assets],['Workflows',inn.workflows],['Integrations',inn.integrations],['Automations',inn.automations]
@@ -133,7 +133,7 @@ async function page(p){
      {key:'name',label:'Organisation'},{key:'school_type',label:'Type'},{key:'primary_contact_name',label:'Primary contact'},
      {key:'primary_contact_email',label:'Email'},{key:'plan_name',label:'Plan'},
      {key:'licence_status',label:'Licence',render:function(r){return badge(r.licence_status)}},
-     {key:'current_period_end',label:'Expiry',render:function(r){return esc(fmt(r.current_period_end))},
+     {key:'current_period_end',label:'Expiry',render:function(r){return esc(fmt(r.current_period_end))}},
      {key:'last_backup_status',label:'Backup',render:function(r){return badge(r.last_backup_status||'not run')},
      {key:'report_count',label:'Reports'}
    ],function(r){return '<button class="mini" data-report-org="'+r.id+'">Report</button><button class="mini" data-backup-org="'+r.id+'">Backup</button>'})+'</div>';
@@ -150,7 +150,7 @@ async function page(p){
    '<div class="section-title"><h2>Report Requests</h2></div><div class="panel">'+table(requests,[
      {key:'report_name',label:'Report'},{key:'customer_name',label:'Organisation'},{key:'category'},
      {key:'status',render:function(r){return badge(r.status)}},{key:'progress',render:function(r){return progress(r.progress)}},
-     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))},
+     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))}},
      {key:'completed_at',label:'Completed',render:function(r){return esc(fmt(r.completed_at))}}
    ],function(r){return r.status==='completed'?'<button class="mini" data-download-report="'+r.id+'">Download JSON</button>':r.status==='failed'?'<span class="small">'+esc(r.error||'Failed')+'</span>':''})+'</div>';
    E('newReport').onclick=function(){
@@ -167,7 +167,7 @@ async function page(p){
    E('content').innerHTML='<div class="section-title"><div><h1>Audit & Assurance</h1><div class="muted">Tamper-evident OS audit trail, failure monitoring and control evidence.</div></div><button class="primary" id="verifyAudit">Verify Audit Integrity</button></div>'+
    '<div class="grid">'+[['Audit events',sm.total],['Last 30 days',sm.last_30_days],['Failures 30 days',sm.failures_30_days],['Critical 30 days',sm.critical_30_days],['Hash protected',sm.hashed],['Historical unhashed',sm.historical_unhashed]].map(function(v){return '<div class="panel stat"><span class="muted">'+esc(v[0])+'</span><b>'+esc(v[1]||0)+'</b></div>'}).join('')+'</div>'+
    '<div class="two" style="margin-top:12px"><div class="panel"><h3>Top Audit Actions — 30 Days</h3>'+table(ar.topActions||[],[{key:'action'},{key:'count'}])+'</div><div class="panel"><h3>Recent Audit Events</h3>'+table(ar.recent||[],[
-     {key:'created_at',label:'Time',render:function(r){return esc(fmt(r.created_at))},{key:'action'},
+     {key:'created_at',label:'Time',render:function(r){return esc(fmt(r.created_at))}},{key:'action'},
      {key:'outcome',render:function(r){return badge(r.outcome)}},{key:'severity',render:function(r){return badge(r.severity)}},{key:'email',label:'Actor'}
    ])+'</div></div>';
    E('verifyAudit').onclick=async function(){var b=E('verifyAudit');b.disabled=true;b.textContent='Verifying...';try{var v=await raw('/v1/assurance/audit/verify');showModal('<h2>Audit Integrity Verification</h2><div class="notice '+(v.ok?'':'danger')+'"><b>'+(v.ok?'Integrity verification passed':'Integrity verification failed')+'</b><br>Hash-protected events: '+esc(v.hashedEvents)+'<br>Verified events: '+esc(v.verifiedEvents)+'<br>Historical pre-chain events: '+esc(v.historicalUnhashed)+(v.brokenAt?'<br>Break detected: '+esc(fmt(v.brokenAt.createdAt)):'')+'</div>')}catch(e){toast(e.message,true)}finally{b.disabled=false;b.textContent='Verify Audit Integrity'}};
@@ -181,7 +181,7 @@ async function page(p){
    '<div class="section-title"><h2>Backup Jobs</h2></div><div class="panel">'+table(jobs,[
      {key:'customer_name',label:'Organisation'},{key:'status',render:function(r){return badge(r.status)}},{key:'progress',render:function(r){return progress(r.progress)}},{key:'phase'},
      {key:'row_count',label:'Rows'},{key:'table_count',label:'Tables'},{key:'size_bytes',label:'Size',render:function(r){return esc(bytes(r.size_bytes))}},
-     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))},{key:'completed_at',label:'Completed',render:function(r){return esc(fmt(r.completed_at))}}
+     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))}},{key:'completed_at',label:'Completed',render:function(r){return esc(fmt(r.completed_at))}}
    ],function(r){return r.status==='completed'?'<button class="mini" data-download-backup="'+r.id+'">Download</button>':r.status==='failed'?'<button class="mini" data-retry-backup="'+r.id+'">Retry</button>':''})+'</div>';
    E('allBackups').onclick=async function(){var b=E('allBackups');b.disabled=true;b.textContent='Starting...';try{var x=await raw('/v1/assurance/backups/run-all',{method:'POST',body:'{}'});toast('Backup jobs queued for '+x.count+' organisation(s)');page('backups')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Backup All Organisations'}};
    E('oneBackup').onclick=function(){showModal('<h2>Backup Organisation</h2><label>Organisation</label><select id="backupOrg">'+backupOrgs.map(function(o){return '<option value="'+esc(o.id)+'">'+esc(o.name)+'</option>'}).join('')+'</select><button class="primary" id="startBackup" style="width:100%">Start Backup</button>');E('startBackup').onclick=async function(){var b=E('startBackup');b.disabled=true;b.textContent='Queueing...';try{await raw('/v1/assurance/backups/organisations/'+E('backupOrg').value,{method:'POST',body:'{}'});closeModal();toast('Backup queued');page('backups')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Start Backup'}}};
