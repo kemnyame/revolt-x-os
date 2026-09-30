@@ -52,3 +52,24 @@ jobs:
       - name: Build and test Revolt-X School
         working-directory: apps/school
         run: npm test
+
+
+  shop-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Shop dependencies
+        working-directory: apps/shop
+        run: npm install
+
+      - name: Build Revolt-X Shop
+        working-directory: apps/shop
+        run: npm run build
