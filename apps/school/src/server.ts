@@ -1515,10 +1515,19 @@ app.post('/api/system/recover-services',async request=>{
 async function handleSchoolStaffLogin(request:any,reply:any){
   const b=z.object({
     email:z.string().trim().toLowerCase().email(),
-    password:z.string().min(1).max(200)
+    password:z.string().min(1).max(200),
+    schoolSlug:z.string().trim().min(2).max(100).optional()
   }).parse(request.body);
 
-  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  let school:any;
+  if(b.schoolSlug){
+    school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE tenant_slug=$1',[b.schoolSlug]);
+    if(!school)throw fail(404,'School code was not found');
+  }else{
+    const profiles=(await db.query('SELECT organisation_id,tenant_slug,school_name FROM school_profiles ORDER BY created_at LIMIT 2')).rows;
+    if(profiles.length!==1)throw fail(400,'Enter your school code to sign in');
+    school=profiles[0];
+  }
   const wake=await wakeCoreOS();
   if(!wake.reachable)throw fail(503,'Core Revolt-X OS is still starting. Please retry in a moment.');
 
@@ -1719,7 +1728,8 @@ app.get('/api/context',async request=>{
   const profile=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[a.core.organisation_id]);
   const capabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
   const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
-  return {core:a.core,schoolRole:a.role,roleProfile,profile,capabilities};
+  const license=licenceWithWarning(await schoolLicence(a.core.organisation_id));
+  return {core:a.core,schoolRole:a.role,roleProfile,profile,capabilities,license};
 });
 
 app.post('/api/school/bootstrap',async(request,reply)=>{
