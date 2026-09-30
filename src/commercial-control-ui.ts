@@ -56,7 +56,7 @@ function closeModal(){E("modal").classList.add("hidden");E("modalBody").innerHTM
 function showModal(html){E("modalBody").innerHTML=html;E("modal").classList.remove("hidden")}
 function closeDrawer(){E("drawer").classList.add("hidden");E("drawerBody").innerHTML=""}
 function table(rows,cols,action){if(!rows||!rows.length)return '<div class="empty">No records yet.</div>';return '<div class="tablewrap"><table><thead><tr>'+cols.map(function(c){return"<th>"+esc(c.label||c.key)+"</th>"}).join("")+(action?"<th>Action</th>":"")+'</tr></thead><tbody>'+rows.map(function(r){return"<tr>"+cols.map(function(c){var v=c.render?c.render(r):r[c.key];return"<td>"+(v==null?"":v)+"</td>"}).join("")+(action?"<td>"+action(r)+"</td>":"")+"</tr>"}).join("")+"</tbody></table></div>"}
-async function loadBase(){if(!token){location.href="/demo-login";return false}catalog=await raw("/v1/commercial-control/catalog");schools=await raw("/v1/commercial-control/schools");return true}
+async function loadBase(){if(!token){location.href="/demo-login";return false}catalog=await raw("/v1/commercial-control/catalog");schools=await raw("/v1/commercial-control/schools");var q=new URLSearchParams(location.search);if(q.get("demo")==="1"&&schools.length===0){await raw("/v1/commercial-control/demo-seed",{method:"POST",body:"{}"});schools=await raw("/v1/commercial-control/schools")}return true}
 function planById(id){return (catalog.plans||[]).find(function(p){return p.id===id})}
 function openNewSchool(){
  var opts=catalog.plans.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+" · "+money(p.monthly_price,p.currency)+"/month</option>"}).join("");
