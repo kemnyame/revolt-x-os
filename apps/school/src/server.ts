@@ -416,6 +416,128 @@ app.post('/api/internal/provision',async request=>{
   };
 });
 
+async function safeRows(sql:string,params:any[]=[]){
+  try{return (await db.query(sql,params)).rows}catch{return[] as any[]}
+}
+async function safeValue(sql:string,params:any[]=[]){
+  const rows=await safeRows(sql,params);return rows[0]??{};
+}
+
+app.get('/api/internal/report-summary',async request=>{
+  requireCoreServiceRequest(request);
+  const q=z.object({organisationId:z.string().uuid()}).parse(request.query);
+  const org=q.organisationId;
+  const [
+    profile,students,staff,admissions,attendance,academics,fees,payments,finance,expenses,
+    communications,parentSessions,studentSessions,auditSummary,requestHealth,dataInventory
+  ]=await Promise.all([
+    safeValue('SELECT organisation_id,tenant_slug,school_name,short_name,motto,phone,email,address,created_at,updated_at FROM school_profiles WHERE organisation_id=$1',[org]),
+    safeRows('SELECT status,count(*)::int count FROM students WHERE organisation_id=$1 GROUP BY status ORDER BY status',[org]),
+    safeRows('SELECT role,status,count(*)::int count FROM school_memberships WHERE organisation_id=$1 GROUP BY role,status ORDER BY role,status',[org]),
+    safeRows('SELECT status,count(*)::int count FROM admission_applications WHERE organisation_id=$1 GROUP BY status ORDER BY status',[org]),
+    safeValue(`SELECT count(*)::int total,
+      count(*) FILTER(WHERE status='present')::int present,
+      count(*) FILTER(WHERE status='absent')::int absent,
+      count(*) FILTER(WHERE status='late')::int late,
+      count(*) FILTER(WHERE attendance_date>=current_date-30)::int last_30_days
+      FROM attendance_records WHERE organisation_id=$1`,[org]),
+    safeValue(`SELECT
+      (SELECT count(*) FROM academic_years WHERE organisation_id=$1)::int academic_years,
+      (SELECT count(*) FROM terms WHERE organisation_id=$1)::int terms,
+      (SELECT count(*) FROM grade_levels WHERE organisation_id=$1)::int grade_levels,
+      (SELECT count(*) FROM classrooms WHERE organisation_id=$1)::int classrooms,
+      (SELECT count(*) FROM subjects WHERE organisation_id=$1)::int subjects,
+      (SELECT count(*) FROM assessments WHERE organisation_id=$1)::int assessments,
+      (SELECT count(*) FROM assessment_scores WHERE organisation_id=$1)::int scores,
+      (SELECT count(*) FROM homework_assignments WHERE organisation_id=$1)::int homework`,[org]),
+    safeValue(`SELECT count(*)::int fee_records,
+      COALESCE(sum(amount_due-discount),0)::numeric billed,
+      COALESCE(sum(CASE WHEN status='paid' THEN amount_due-discount ELSE 0 END),0)::numeric marked_paid
+      FROM student_fees WHERE organisation_id=$1`,[org]),
+    safeValue(`SELECT count(*) FILTER(WHERE voided_at IS NULL)::int payment_count,
+      COALESCE(sum(amount) FILTER(WHERE voided_at IS NULL),0)::numeric collected,
+      COALESCE(sum(amount) FILTER(WHERE voided_at IS NOT NULL),0)::numeric voided
+      FROM payments WHERE organisation_id=$1`,[org]),
+    safeValue(`SELECT count(*)::int journal_entries,
+      COALESCE(sum(l.debit),0)::numeric debits,
+      COALESCE(sum(l.credit),0)::numeric credits
+      FROM finance_journal_entries e
+      LEFT JOIN finance_journal_lines l ON l.journal_entry_id=e.id
+      WHERE e.organisation_id=$1 AND e.status<>'voided'`,[org]),
+    safeValue(`SELECT count(*)::int expense_count,COALESCE(sum(amount),0)::numeric total_expenses
+      FROM finance_expenses WHERE organisation_id=$1 AND status<>'voided'`,[org]),
+    safeRows('SELECT status,count(*)::int count FROM communication_outbox WHERE organisation_id=$1 GROUP BY status ORDER BY status',[org]),
+    safeValue(`SELECT count(*) FILTER(WHERE revoked_at IS NULL AND expires_at>now())::int active,
+      count(*)::int total FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id WHERE g.organisation_id=$1`,[org]),
+    safeValue(`SELECT count(*) FILTER(WHERE revoked_at IS NULL AND expires_at>now())::int active,
+      count(*)::int total FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id WHERE s.organisation_id=$1`,[org]),
+    safeValue(`SELECT count(*)::int events,
+      count(*) FILTER(WHERE created_at>=now()-interval '30 days')::int last_30_days
+      FROM school_audit_logs WHERE organisation_id=$1`,[org]),
+    safeValue(`SELECT count(*)::int requests,
+      count(*) FILTER(WHERE status_code>=400)::int errors,
+      count(*) FILTER(WHERE status_code>=500)::int server_errors,
+      ROUND(COALESCE(avg(duration_ms),0)::numeric,2) avg_duration_ms
+      FROM system_request_logs WHERE organisation_id=$1 AND created_at>=now()-interval '30 days'`,[org]),
+    safeRows(`SELECT table_name FROM information_schema.columns
+      WHERE table_schema='revolt_x_school' AND column_name='organisation_id'
+      ORDER BY table_name`)
+  ]);
+  const totalStudents=students.reduce((n:any,x:any)=>n+Number(x.count||0),0);
+  const activeStaff=staff.filter((x:any)=>x.status==='active').reduce((n:any,x:any)=>n+Number(x.count||0),0);
+  const billed=Number(fees.billed||0),collected=Number(payments.collected||0);
+  return{
+    generatedAt:new Date().toISOString(),organisationId:org,profile,
+    students:{total:totalStudents,byStatus:students},
+    staff:{active:activeStaff,byRoleStatus:staff},
+    admissions:{byStatus:admissions},
+    attendance:{...attendance,attendanceRate:Number(attendance.total||0)>0?Number((Number(attendance.present||0)/Number(attendance.total)*100).toFixed(2)):0},
+    academics,fees:{...fees,collected,outstanding:Math.max(0,billed-collected)},
+    payments,finance,expenses,communications,
+    portalAdoption:{parents:parentSessions,students:studentSessions},
+    assurance:{audit:auditSummary,requests30Days:requestHealth},
+    dataInventory:{tenantKeyedTables:dataInventory.map((x:any)=>x.table_name),tableCount:dataInventory.length}
+  };
+});
+
+app.get('/api/internal/backup-snapshot',async request=>{
+  requireCoreServiceRequest(request);
+  const q=z.object({organisationId:z.string().uuid()}).parse(request.query);
+  const org=q.organisationId;
+  const profile=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[org]);
+  if(!profile)throw fail(404,'School tenant not found');
+
+  const tableRows=(await db.query(`SELECT DISTINCT table_name FROM information_schema.columns
+    WHERE table_schema='revolt_x_school' AND column_name='organisation_id' ORDER BY table_name`)).rows;
+  const tables:Record<string,any[]>={};
+  let rowCount=0;
+  for(const item of tableRows){
+    const table=String(item.table_name);
+    if(!/^[a-z0-9_]+$/.test(table))continue;
+    const rows=(await db.query('SELECT * FROM revolt_x_school.'+table+' WHERE organisation_id=$1',[org])).rows;
+    tables[table]=rows;rowCount+=rows.length;
+  }
+
+  const children:any=[
+    ['student_guardians',`SELECT sg.* FROM student_guardians sg JOIN students s ON s.id=sg.student_id WHERE s.organisation_id=$1`],
+    ['admission_status_history',`SELECT h.* FROM admission_status_history h JOIN admission_applications a ON a.id=h.application_id WHERE a.organisation_id=$1`],
+    ['lesson_note_attachments',`SELECT a.* FROM lesson_note_attachments a JOIN lesson_notes n ON n.id=a.lesson_note_id WHERE n.organisation_id=$1`],
+    ['finance_journal_lines',`SELECT l.* FROM finance_journal_lines l JOIN finance_journal_entries e ON e.id=l.journal_entry_id WHERE e.organisation_id=$1`],
+    ['finance_student_receipt_allocations',`SELECT a.* FROM finance_student_receipt_allocations a JOIN finance_student_receipts r ON r.id=a.receipt_id WHERE r.organisation_id=$1`]
+  ];
+  for(const [name,sql] of children){
+    if(tables[name])continue;
+    try{const rows=(await db.query(sql,[org])).rows;tables[name]=rows;rowCount+=rows.length}catch{}
+  }
+  await db.query(`INSERT INTO school_provisioning_events(organisation_id,event_type,status,details)
+    VALUES($1,'backup.snapshot.generated','completed',$2)`,[org,JSON.stringify({rowCount,tableCount:Object.keys(tables).length})]).catch(()=>null);
+  return{
+    schemaVersion:1,backupType:'tenant_logical',generatedAt:new Date().toISOString(),
+    organisationId:org,tenantSlug:profile.tenant_slug,schoolName:profile.school_name,
+    tableCount:Object.keys(tables).length,rowCount,tables
+  };
+});
+
 app.get('/api/internal/tenants',async request=>{
   requireCoreServiceRequest(request);
   const rows=(await db.query(`
