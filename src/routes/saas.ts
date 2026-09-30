@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
@@ -41,6 +42,40 @@ async function uniqueSlug(db: Db, name: string) {
   return base + '-' + Date.now();
 }
 
+function newLicenseCode() {
+  return 'RXS-' + randomBytes(8).toString('hex').toUpperCase();
+}
+
+function tokenHash(value: string) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function schoolApplicationBase(config: Config) {
+  const value = String(config.SCHOOL_APP_URL || '').replace(/\/$/, '');
+  if (!value) throw new AppError(503, 'SCHOOL_APP_NOT_CONFIGURED', 'Revolt-X School application URL is not configured');
+  return value;
+}
+
+function schoolServiceHeaders(config: Config) {
+  if (!config.SCHOOL_SERVICE_KEY) throw new AppError(503, 'SCHOOL_SERVICE_NOT_CONFIGURED', 'School service authentication is not configured');
+  return { 'content-type': 'application/json', 'x-revolt-service-key': config.SCHOOL_SERVICE_KEY };
+}
+
+async function pushLicenseSnapshot(db: Db, config: Config, providerId: string, customerId: string) {
+  const entitlement = await getEntitlements(db, providerId, customerId);
+  const response = await fetch(schoolApplicationBase(config) + '/api/internal/license-sync', {
+    method: 'POST',
+    headers: schoolServiceHeaders(config),
+    body: JSON.stringify({ organisationId: customerId, entitlement }),
+    signal: AbortSignal.timeout(20000)
+  }).catch(() => null);
+  if (!response) return { ok: false, message: 'Revolt-X School could not be reached' };
+  const payload = await response.json().catch(() => null) as any;
+  if (!response.ok) return { ok: false, status: response.status, message: payload?.error?.message || 'School licence sync failed' };
+  await db.query('UPDATE saas_subscriptions SET last_synced_at=now(),updated_at=now() WHERE id=$1', [entitlement.subscriptionId]).catch(() => null);
+  return { ok: true, entitlement, school: payload };
+}
+
 async function getEntitlements(db: Db, providerId: string, customerId: string) {
   const sub = await maybeOne<any>(db,
     "SELECT s.*,p.product_key,p.name product_name,pl.plan_key,pl.name plan_name FROM saas_subscriptions s JOIN saas_products p ON p.id=s.product_id LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id WHERE s.provider_organisation_id=$1 AND s.customer_organisation_id=$2 AND s.status IN('trial','active','grace','suspended') ORDER BY s.created_at DESC LIMIT 1",
@@ -57,6 +92,7 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
     licensed: sub.status !== 'expired' && sub.status !== 'cancelled',
     status: sub.status,
     subscriptionId: sub.id,
+    licenseCode: sub.license_code,
     product: sub.product_key,
     productName: sub.product_name,
     plan: sub.plan_key,
@@ -90,17 +126,18 @@ async function assignSubscription(db: Db, input: {
   );
   const trialEnd = input.status === 'trial' ? new Date(Date.now() + 14 * 86400000).toISOString() : null;
   const periodEnd = input.status === 'trial' ? trialEnd : nextPeriodEnd(input.frequency);
+  const licenseCode = existing?.license_code || newLicenseCode();
 
   if (existing) {
     return one<any>(db,
-      'UPDATE saas_subscriptions SET plan_id=$1,billing_frequency=$2,status=$3,currency=$4,recurring_amount=$5,trial_ends_at=$6,current_period_start=now(),current_period_end=$7,grace_ends_at=NULL,limits=$8,updated_at=now() WHERE id=$9 RETURNING *',
-      [plan.id, input.frequency, input.status, plan.currency, price, trialEnd, periodEnd, JSON.stringify(limits), existing.id]
+      'UPDATE saas_subscriptions SET plan_id=$1,billing_frequency=$2,status=$3,currency=$4,recurring_amount=$5,trial_ends_at=$6,current_period_start=now(),current_period_end=$7,grace_ends_at=NULL,limits=$8,license_code=COALESCE(license_code,$9),updated_at=now() WHERE id=$10 RETURNING *',
+      [plan.id, input.frequency, input.status, plan.currency, price, trialEnd, periodEnd, JSON.stringify(limits), licenseCode, existing.id]
     );
   }
 
   return one<any>(db,
-    'INSERT INTO saas_subscriptions(provider_organisation_id,customer_organisation_id,product_id,plan_id,billing_frequency,status,currency,recurring_amount,trial_ends_at,current_period_end,limits,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
-    [input.providerId, input.customerId, input.productId, plan.id, input.frequency, input.status, plan.currency, price, trialEnd, periodEnd, JSON.stringify(limits), input.actorId]
+    'INSERT INTO saas_subscriptions(provider_organisation_id,customer_organisation_id,product_id,plan_id,billing_frequency,status,currency,recurring_amount,trial_ends_at,current_period_end,limits,license_code,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+    [input.providerId, input.customerId, input.productId, plan.id, input.frequency, input.status, plan.currency, price, trialEnd, periodEnd, JSON.stringify(limits), licenseCode, input.actorId]
   );
 }
 
