@@ -416,6 +416,25 @@ app.post('/api/internal/provision',async request=>{
   };
 });
 
+app.get('/api/internal/tenants',async request=>{
+  requireCoreServiceRequest(request);
+  const rows=(await db.query(`
+    SELECT organisation_id,tenant_slug,school_name,short_name,email,phone,address,created_at
+    FROM school_profiles
+    ORDER BY created_at
+  `)).rows;
+  return rows.map((row:any)=>({
+    organisationId:row.organisation_id,
+    tenantSlug:row.tenant_slug,
+    schoolName:row.school_name,
+    shortName:row.short_name,
+    email:row.email,
+    phone:row.phone,
+    address:row.address,
+    createdAt:row.created_at
+  }));
+});
+
 app.get('/api/license',async request=>{
   const a=await authorize(request,db,config);
   const q=z.object({refresh:z.coerce.boolean().optional()}).parse(request.query);

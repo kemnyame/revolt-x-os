@@ -127,12 +127,40 @@ async function overview(){
  '<div class="split"><div class="panel"><h3>Renewals Due in 60 Days</h3>'+table(renew,[{key:"name",label:"School"},{key:"plan_name",label:"Plan"},{key:"status",render:function(r){return badge(r.status)}},{key:"current_period_end",label:"Renewal",render:function(r){return fmt(r.current_period_end)}},{key:"recurring_amount",label:"Value",render:function(r){return money(r.recurring_amount,r.currency)}}])+'</div>'+
  '<div class="panel"><h3>Licence Status</h3>'+(o.subscriptionStatus||[]).map(function(x){return '<div class="toggle"><span>'+badge(x.status)+'</span><b>'+esc(x.count)+'</b></div>'}).join("")+'<div class="notice" style="margin-top:12px"><b>How this works</b><br>Revolt-X OS is the source of truth. Each School organisation receives a plan, module entitlements, usage limits and a licence status.</div></div></div>';
 }
+async function openExistingSchoolImport(){
+ try{
+   var tenants=await raw("/v1/commercial-control/importable-school-tenants");
+   if(!tenants.length){
+     showModal('<h2>Import Existing School</h2><div class="notice">No unlicensed Revolt-X School tenants are waiting to be imported.</div><div class="modal-actions"><button class="btn primary" id="mCancel">Close</button></div>');E("mCancel").onclick=closeModal;return;
+   }
+   var schoolsOpt=tenants.map(function(t){return '<option value="'+esc(t.organisationId)+'">'+esc(t.schoolName)+' · '+esc(t.tenantSlug||t.organisation.slug)+'</option>'}).join("");
+   var plansOpt=catalog.plans.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+' · '+money(p.monthly_price,p.currency)+'/month</option>'}).join("");
+   showModal('<h2>Import Existing School</h2><div class="notice">Attach an existing live Revolt-X School workspace to commercial licensing. Existing students, finance, academic and portal data will be preserved.</div><div class="fields" style="margin-top:14px">'+
+     '<div class="field full"><label>Existing School</label><select id="importTenant">'+schoolsOpt+'</select></div>'+
+     '<div class="field"><label>Plan</label><select id="importPlan">'+plansOpt+'</select></div>'+
+     '<div class="field"><label>Billing</label><select id="importBilling"><option value="monthly">Monthly</option><option value="termly">Termly</option><option value="annual">Annual</option></select></div>'+
+     '<div class="field"><label>Licence status</label><select id="importStatus"><option value="active">Active</option><option value="trial">14-day Trial</option></select></div>'+
+     '<div class="field"><label>School type</label><input id="importType" placeholder="Optional"></div></div>'+
+     '<div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Import & Apply Plan</button></div>');
+   E("mCancel").onclick=closeModal;
+   E("mSave").onclick=async function(){
+     var b=E("mSave");b.disabled=true;b.textContent="Importing...";
+     try{
+       var x=await raw("/v1/commercial-control/adopt-school",{method:"POST",body:JSON.stringify({
+         organisationId:E("importTenant").value,planId:E("importPlan").value,billingFrequency:E("importBilling").value,
+         licenceStatus:E("importStatus").value,schoolType:E("importType").value||undefined
+       })});
+       closeModal();toast("Existing school imported and licence applied");await loadBase();await openSchool(x.organisation.id)
+     }catch(e){toast(e.message,true);b.disabled=false;b.textContent="Import & Apply Plan"}
+   };
+ }catch(e){toast(e.message,true)}
+}
 function schoolsPage(){
  E("pageTitle").textContent="Schools & Customers";
- var q='<div class="toolbar"><input id="schoolSearch" placeholder="Search school, plan or licence status"><div class="actions"><button class="btn primary" id="addSchool2">+ Add School</button></div></div>';
+ var q='<div class="toolbar"><input id="schoolSearch" placeholder="Search school, plan or licence status"><div class="actions"><button class="btn ghost" id="importSchool">Import Existing School</button><button class="btn primary" id="addSchool2">+ Add School</button></div></div>';
  var cols=[{key:"name",label:"School"},{key:"school_type",label:"Type"},{key:"plan_name",label:"Plan"},{key:"licence_status",label:"Licence",render:function(r){return badge(r.licence_status)}},{key:"recurring_amount",label:"Price",render:function(r){return money(r.recurring_amount,r.currency)+" / "+esc(r.billing_frequency||"—")}},{key:"current_period_end",label:"Renewal / Expiry",render:function(r){return fmt(r.current_period_end)}},{key:"primary_contact_phone",label:"Contact"}];
  E("content").innerHTML=q+'<div class="panel">'+table(schools,cols,function(r){return '<button class="mini" data-open-school="'+r.id+'">Manage</button>'})+'</div>';
- E("addSchool2").onclick=openNewSchool;
+ E("addSchool2").onclick=openNewSchool;E("importSchool").onclick=openExistingSchoolImport;
  E("content").onclick=function(e){var b=e.target.closest("[data-open-school]");if(b)openSchool(b.dataset.openSchool)};
  E("schoolSearch").oninput=function(){var term=this.value.toLowerCase(),rows=schools.filter(function(x){return (x.name+" "+(x.plan_name||"")+" "+(x.licence_status||"")).toLowerCase().includes(term)});E("content").querySelector(".panel").innerHTML=table(rows,cols,function(r){return '<button class="mini" data-open-school="'+r.id+'">Manage</button>'})}
 }
@@ -149,7 +177,7 @@ async function billingPage(){
 async function page(p){current=p;document.querySelectorAll(".nav button").forEach(function(b){b.classList.toggle("active",b.dataset.page===p)});E("content").innerHTML='<div class="empty">Loading...</div>';try{if(p==="overview")await overview();else if(p==="schools")schoolsPage();else if(p==="plans")plansPage();else if(p==="billing")await billingPage()}catch(e){E("content").innerHTML='<div class="panel"><h3>Could not load Commercial Control</h3><p class="sub">'+esc(e.message)+'</p></div>'}}
 document.querySelector(".nav").onclick=function(e){var b=e.target.closest("[data-page]");if(b)page(b.dataset.page)};
 E("backOs").onclick=function(){location.href="/"};E("refresh").onclick=function(){page(current)};E("newSchool").onclick=openNewSchool;E("modal").onclick=function(e){if(e.target===E("modal"))closeModal()};
-(async function(){try{if(!await loadBase())return;await page("overview")}catch(e){if(String(e.message).includes("Permission")||String(e.message).includes("Authentication"))location.href="/demo-login";else E("content").innerHTML='<div class="panel"><h3>Commercial Control unavailable</h3><p>'+esc(e.message)+'</p></div>'}})();
+(async function(){try{if(!await loadBase())return;await page("overview")}catch(e){if(String(e.message).includes("Permission")||String(e.message).includes("Authentication")||String(e.message).includes("Unauthorized"))location.href="/login";else E("content").innerHTML='<div class="panel"><h3>Commercial Control unavailable</h3><p>'+esc(e.message)+'</p></div>'}})();
 })();
 </script>
 </body></html>`;
