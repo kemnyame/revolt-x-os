@@ -451,7 +451,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const product = await one<any>(db, "SELECT id FROM saas_products WHERE product_key='school'");
     const row = await assignSubscription(db, { providerId: a.organisationId, customerId: id, productId: product.id, planId: b.planId, frequency: b.billingFrequency, status: b.status, actorId: a.userId });
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.subscription.updated', resourceType: 'saas_subscription', resourceId: row.id, afterState: row });
-    return row;
+    const licenseSync = await pushLicenseSnapshot(db, config, a.organisationId, id);
+    return { ...row, licenseSync };
   });
 
   app.patch('/v1/commercial-control/schools/:id/license', async request => {
@@ -466,7 +467,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const grace = b.status === 'grace' ? new Date(Date.now() + (b.graceDays || 14) * 86400000).toISOString() : null;
     const row = await one<any>(db, "UPDATE saas_subscriptions SET status=$1,grace_ends_at=$2,cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END,updated_at=now() WHERE id=$3 RETURNING *", [b.status, grace, before.id]);
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.license.status_changed', resourceType: 'saas_subscription', resourceId: row.id, beforeState: before, afterState: row });
-    return row;
+    const licenseSync = await pushLicenseSnapshot(db, config, a.organisationId, id);
+    return { ...row, licenseSync };
   });
 
   app.put('/v1/commercial-control/schools/:id/modules', async request => {
@@ -479,7 +481,9 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     if (!mod) throw notFound('Product module');
     await db.query('INSERT INTO saas_subscription_modules(subscription_id,module_id,enabled) VALUES($1,$2,$3) ON CONFLICT(subscription_id,module_id) DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=now()', [sub.id, mod.id, b.enabled]);
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.module.entitlement_changed', resourceType: 'saas_subscription', resourceId: sub.id, afterState: { moduleKey: b.moduleKey, enabled: b.enabled } });
-    return getEntitlements(db, a.organisationId, id);
+    const entitlement = await getEntitlements(db, a.organisationId, id);
+    const licenseSync = await pushLicenseSnapshot(db, config, a.organisationId, id);
+    return { ...entitlement, licenseSync };
   });
 
   app.post('/v1/commercial-control/schools/:id/usage', async (request, reply) => {
@@ -531,7 +535,10 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       return { invoice: updated, payment };
     });
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.subscription_payment.recorded', resourceType: 'saas_invoice', resourceId: id, afterState: result });
-    return reply.code(201).send(result);
+    const licenseSync = result.invoice.status==='paid'
+      ? await pushLicenseSnapshot(db, config, a.organisationId, result.invoice.customer_organisation_id)
+      : null;
+    return reply.code(201).send({ ...result, licenseSync });
   });
 
   app.post('/v1/commercial-control/demo-seed', async request => {
