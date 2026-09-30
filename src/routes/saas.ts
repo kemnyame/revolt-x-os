@@ -566,12 +566,81 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     }).parse(request.body);
     const before = await maybeOne<any>(db, 'SELECT * FROM saas_subscriptions WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id]);
     if (!before) throw notFound('Subscription');
-    const grace = b.status === 'grace' ? new Date(Date.now() + (b.graceDays || 14) * 86400000).toISOString() : null;
-    const row = await one<any>(db, "UPDATE saas_subscriptions SET status=$1,grace_ends_at=$2,cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE cancelled_at END,updated_at=now() WHERE id=$3 RETURNING *", [b.status, grace, before.id]);
+
+    const now = Date.now();
+    let currentPeriodEnd = before.current_period_end;
+    let trialEndsAt = before.trial_ends_at;
+    let graceEndsAt: string | null = null;
+
+    if (b.status === 'active') {
+      if (!currentPeriodEnd || new Date(currentPeriodEnd).getTime() <= now) currentPeriodEnd = nextPeriodEnd(before.billing_frequency);
+    } else if (b.status === 'trial') {
+      if (!trialEndsAt || new Date(trialEndsAt).getTime() <= now) trialEndsAt = new Date(now + 14 * 86400000).toISOString();
+      currentPeriodEnd = trialEndsAt;
+    } else if (b.status === 'grace') {
+      graceEndsAt = new Date(now + (b.graceDays || 14) * 86400000).toISOString();
+    } else if (b.status === 'expired') {
+      currentPeriodEnd = new Date(now).toISOString();
+    }
+
+    const row = await one<any>(db, `UPDATE saas_subscriptions SET
+      status=$1,
+      current_period_end=$2,
+      trial_ends_at=$3,
+      grace_ends_at=$4,
+      cancelled_at=CASE WHEN $1='cancelled' THEN now() ELSE NULL END,
+      updated_at=now()
+      WHERE id=$5 RETURNING *`, [b.status, currentPeriodEnd, trialEndsAt, graceEndsAt, before.id]);
+
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.license.status_changed', resourceType: 'saas_subscription', resourceId: row.id, beforeState: before, afterState: row });
     const licenseSync = await pushLicenseSnapshot(db, config, a.organisationId, id);
     return { ...row, licenseSync };
   });
+
+  app.post('/v1/commercial-control/schools/:id/extend-license', async request => {
+    const a = requirePermission(request, 'commercial.manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const b = z.object({
+      mode: z.enum(['billing_period', 'days']).default('billing_period'),
+      periods: z.coerce.number().int().min(1).max(24).default(1),
+      days: z.coerce.number().int().min(1).max(730).optional()
+    }).parse(request.body ?? {});
+
+    const before = await maybeOne<any>(db, 'SELECT * FROM saas_subscriptions WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id]);
+    if (!before) throw notFound('Subscription');
+
+    const current = before.current_period_end ? new Date(before.current_period_end) : new Date();
+    const base = current.getTime() > Date.now() ? current : new Date();
+    const next = new Date(base);
+
+    if (b.mode === 'days') {
+      next.setUTCDate(next.getUTCDate() + (b.days || 30));
+    } else {
+      for (let i = 0; i < b.periods; i++) {
+        if (before.billing_frequency === 'annual') next.setUTCFullYear(next.getUTCFullYear() + 1);
+        else if (before.billing_frequency === 'termly') next.setUTCMonth(next.getUTCMonth() + 4);
+        else next.setUTCMonth(next.getUTCMonth() + 1);
+      }
+    }
+
+    const row = await one<any>(db, `UPDATE saas_subscriptions SET
+      status='active',
+      current_period_end=$1,
+      trial_ends_at=NULL,
+      grace_ends_at=NULL,
+      cancelled_at=NULL,
+      updated_at=now()
+      WHERE id=$2 RETURNING *`, [next.toISOString(), before.id]);
+
+    await audit(db, {
+      organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId,
+      action: 'commercial.license.extended', resourceType: 'saas_subscription', resourceId: row.id,
+      beforeState: before, afterState: row
+    });
+    const licenseSync = await pushLicenseSnapshot(db, config, a.organisationId, id);
+    return { ...row, licenseSync };
+  });
+
 
   app.put('/v1/commercial-control/schools/:id/modules', async request => {
     const a = requirePermission(request, 'commercial.manage');
