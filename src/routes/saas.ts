@@ -49,8 +49,8 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
   if (!sub) return { licensed: false, status: 'unlicensed', modules: [], limits: {} };
 
   const modules = (await db.query(
-    "WITH plan_access AS (SELECT pm.id,pm.module_key,pm.name,true enabled FROM saas_plan_modules x JOIN saas_product_modules pm ON pm.id=x.module_id WHERE x.plan_id=$1 AND x.included=true AND pm.is_active=true), overrides AS (SELECT pm.id,pm.module_key,pm.name,sm.enabled FROM saas_subscription_modules sm JOIN saas_product_modules pm ON pm.id=sm.module_id WHERE sm.subscription_id=$2) SELECT DISTINCT ON(module_key) id,module_key,name,enabled FROM (SELECT * FROM overrides UNION ALL SELECT * FROM plan_access) q ORDER BY module_key,enabled DESC",
-    [sub.plan_id, sub.id]
+    "SELECT pm.id,pm.module_key,pm.name,COALESCE(sm.enabled,COALESCE(pl.included,false)) enabled FROM saas_product_modules pm LEFT JOIN saas_plan_modules pl ON pl.module_id=pm.id AND pl.plan_id=$1 LEFT JOIN saas_subscription_modules sm ON sm.module_id=pm.id AND sm.subscription_id=$2 WHERE pm.product_id=$3 AND pm.is_active=true ORDER BY pm.sort_order,pm.name",
+    [sub.plan_id, sub.id, sub.product_id]
   )).rows;
 
   return {
@@ -186,7 +186,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       const subscription = await assignSubscription(c, { providerId: a.organisationId, customerId: org.id, productId: product.id, planId: b.planId, frequency: b.billingFrequency, status: b.licenceStatus, actorId: a.userId });
       const domain = slug + '.school.revolt-x.app';
       await c.query("INSERT INTO saas_customer_domains(provider_organisation_id,customer_organisation_id,domain,domain_type,status) VALUES($1,$2,$3,'subdomain','pending') ON CONFLICT(domain) DO NOTHING", [a.organisationId, org.id, domain]);
-      await c.query("INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by,completed_at) VALUES($1,$2,$3,'create_school_tenant','completed',$4,$5,now())", [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id }), a.userId]);
+      await c.query("INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by) VALUES($1,$2,$3,'create_school_tenant','queued',$4,$5)", [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id, nextStep: 'Provision the School application workspace and activate the tenant domain' }), a.userId]);
       return { organisation: org, subscription, domain };
     });
     await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.school.created', resourceType: 'organisation', resourceId: result.organisation.id, afterState: result });
