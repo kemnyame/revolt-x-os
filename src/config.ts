@@ -15,7 +15,8 @@ const schema = z.object({
   ENABLE_PREVIEW_ACCESS: booleanFromEnv,
   AI_GATEWAY_URL: z.string().url().optional().or(z.literal('')),
   AI_GATEWAY_TOKEN: z.string().optional(),
-  SCHOOL_SERVICE_KEY: z.string().min(32).optional()
+  SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
+  SCHOOL_APP_URL: z.string().url().optional().or(z.literal(''))
 });
 
 export type Config = z.infer<typeof schema>;

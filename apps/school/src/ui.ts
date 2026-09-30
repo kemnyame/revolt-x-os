@@ -36,7 +36,7 @@ input,select,textarea{width:100%;padding:10px;background:#f7f9fb;border:1px soli
 <div id="loading" class="loading"><div><b>REVOLT-X SCHOOL</b><p class="muted">Connecting to Core Revolt-X OS...</p></div></div>
 <div id="app" class="shell hide">
 <aside class="side"><div class="brand"><span>RX</span><div class="rx-brand-copy">Revolt-X School<small>Administration</small></div></div><div id="schoolName" class="schoolname"></div><nav id="nav" class="nav"></nav></aside>
-<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><button id="myProfile" class="ghost">My Profile</button><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main>
+<main class="main"><header class="top"><div><b id="pageTitle">Dashboard</b><div id="who" class="muted"></div></div><div class="right"><div class="global-search"><input id="globalSearch" autocomplete="off" placeholder="Search students, staff, classes, subjects..."><div id="searchResults" class="search-results hide"></div></div><button id="licenceButton" class="ghost">Licence</button><span id="licenceStatus" class="badge"></span><button id="myProfile" class="ghost">My Profile</button><span id="role" class="badge"></span><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main>
 </div>
 <div id="modal" class="modal hide"><div class="modalbox"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div>
 <div id="toast" class="toast hide"></div>
@@ -45,34 +45,46 @@ input,select,textarea{width:100%;padding:10px;background:#f7f9fb;border:1px soli
 var token='',ctx=null,current='dashboard',selectedStudentId='';
 var nav=[
 ['core','School'],
-['dashboard','Dashboard','⌂','screen.dashboard.view'],
-['setup','School Setup','⚙','screen.setup.view'],
-['admissions','Admissions','✚','screen.admissions.view'],
-['students','Students','S','screen.students.view'],
-['approvals','Approvals','✓','screen.approvals.view'],
-['assignments','Academic Manager','C','screen.academic_manager.view'],
-['promotions','Academic Promotion & Rollover','⇧','screen.promotions.view'],
-['attendance','Attendance','✓','screen.attendance.view'],
-['assessments','Assessments & Scores','A','screen.assessments.view'],
-['homework','Homework','H','screen.homework.view'],
-['lessonnotes','Lesson Notes','L','screen.lesson_notes.view'],
-['reports','Report Cards','R','screen.report_cards.view'],
-['studentstatements','Student Statements','S','screen.student_statements.view'],
-['grading','Grading Setup','G','screen.grading.view'],
-['finance','Finance & Accounts','₵','screen.finance.view'],
-['hr','HR','H',''],
-['payroll','Payroll','₵',''],
-['leave','Leave & Relief','L','screen.leave.view'],
-['timetable','Timetable & Scheduling','T','screen.timetable.view'],
-['teacherschedule','Teacher Scheduling','↔','screen.teacher_schedule.view'],
-['announcements','Communication Centre','N','screen.communications.view'],
-['staff','Access Management','P','screen.access_management.view'],
-['systemcheck','System & Audit Logs','✓','screen.system.view'],
-['portals','Portals & Interfaces','◫','screen.portals.view']
+['dashboard','Dashboard','⌂','screen.dashboard.view','school.core'],
+['setup','School Setup','⚙','screen.setup.view','school.core'],
+['admissions','Admissions','✚','screen.admissions.view','school.admissions'],
+['students','Students','S','screen.students.view','school.students'],
+['approvals','Approvals','✓','screen.approvals.view','school.controls'],
+['assignments','Academic Manager','C','screen.academic_manager.view','school.academics'],
+['promotions','Academic Promotion & Rollover','⇧','screen.promotions.view','school.academics'],
+['attendance','Attendance','✓','screen.attendance.view','school.attendance'],
+['assessments','Assessments & Scores','A','screen.assessments.view','school.academics'],
+['homework','Homework','H','screen.homework.view','school.teaching'],
+['lessonnotes','Lesson Notes','L','screen.lesson_notes.view','school.teaching'],
+['reports','Report Cards','R','screen.report_cards.view','school.academics'],
+['studentstatements','Student Statements','S','screen.student_statements.view','school.fees'],
+['grading','Grading Setup','G','screen.grading.view','school.academics'],
+['finance','Finance & Accounts','₵','screen.finance.view','school.finance'],
+['hr','HR','H','','school.staff'],
+['payroll','Payroll','₵','','school.staff'],
+['leave','Leave & Relief','L','screen.leave.view','school.staff'],
+['timetable','Timetable & Scheduling','T','screen.timetable.view','school.timetable'],
+['teacherschedule','Teacher Scheduling','↔','screen.teacher_schedule.view','school.timetable'],
+['announcements','Communication Centre','N','screen.communications.view','school.communications'],
+['staff','Access Management','P','screen.access_management.view','school.controls'],
+['systemcheck','System & Audit Logs','✓','screen.system.view','school.controls'],
+['portals','Portals & Interfaces','◫','screen.portals.view','school.parent_portal'],
+['licence','Licence & Plan','◆','',null]
 ];
 function E(id){return document.getElementById(id)}
 function can(key){return !!(ctx&&ctx.capabilities&&ctx.capabilities.indexOf(key)>=0)}
 function canAny(spec){if(!spec)return true;return String(spec).split('|').some(function(k){return can(k)})}
+function moduleEnabled(key){if(!key)return true;if(!ctx||!ctx.license)return true;if(ctx.license.status==='legacy')return true;return Array.isArray(ctx.license.modules)&&ctx.license.modules.indexOf(key)>=0}
+function navAllowed(n){return n[0]==='core'||(canAny(n[3])&&moduleEnabled(n[4]))}
+function licenceTargetDate(l){return l&&((l.status==='trial'&&l.trialEndsAt)||(l.status==='grace'&&l.graceEndsAt)||l.periodEnd)}
+function licenceNotice(){
+  var l=ctx&&ctx.license;if(!l)return'';
+  var level=l.warningLevel||'none',target=licenceTargetDate(l),date=target?new Date(target).toLocaleDateString():'No expiry date';
+  if(level==='none')return'';
+  var bg=level==='critical'?'#fff0f1':level==='warning'?'#fff7e5':'#eef5ff';
+  var border=level==='critical'?'#e5a3aa':level==='warning'?'#e8ca83':'#c8dcf5';
+  return '<div class="panel" style="background:'+bg+';border-color:'+border+'"><div class="section"><div><b>'+esc(l.warningMessage||'Licence notice')+'</b><div class="muted">'+esc(l.planName||l.plan||'Revolt-X School')+' • '+esc(String(l.status||'').replace(/_/g,' '))+' • '+esc(date)+'</div></div><button class="ghost" data-open-licence>View licence</button></div></div>';
+}
 var financeTabCaps={
   overview:'finance.overview.view',student:'finance.student_payments.view',requests:'finance.parent_payment_requests.view',
   transactions:'finance.parent_payment_requests.view',setup:'finance.setup.view',expenses:'finance.expenses.view',journals:'finance.journals.view',taxes:'finance.taxes.view',
@@ -219,8 +231,10 @@ async function boot(){try{
   E('schoolName').textContent=ctx.profile.school_name;
   E('who').textContent=ctx.core.first_name+' '+ctx.core.last_name+' • '+ctx.core.organisation_name;
   E('role').textContent=ctx.schoolRole.replace('_',' ');
+  E('licenceStatus').textContent=(ctx.license&&ctx.license.status?ctx.license.status:'unlicensed').replace(/_/g,' ');
+  E('licenceButton').onclick=function(){page('licence')};
 
-  var visibleNav=nav.filter(function(n){return n[0]==='core'||canAny(n[3])});
+  var visibleNav=nav.filter(navAllowed);
   E('nav').innerHTML=visibleNav.map(function(n){return n[0]==='core'?'<small>'+n[1]+'</small>':'<button data-p="'+n[0]+'" data-i="'+n[2]+'">'+n[1]+'</button>'}).join('');
   E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
@@ -260,7 +274,7 @@ async function boot(){try{
   }
 }}
 async function page(p){
- var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!canAny(navItem[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role does not have permission to open this screen.</p></div>';return}
+ var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!navAllowed(navItem)){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">This screen is not available under your current role or Revolt-X School plan.</p></div>';return}
  if(p==='studentdetail'&&!can('students.profile.view')){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role cannot open full student profiles.</p></div>';return}
  current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('pageTitle').textContent=(navItem||['',p])[1];E('content').innerHTML='<p class="muted">Loading...</p>';
  try{
@@ -268,12 +282,26 @@ async function page(p){
    var d=await raw('/api/dashboard');
    var quick=[['students','Student records','Find a student or open Student 360'],['attendance','Attendance','Open the daily class register'],['finance','Finance & Accounts','Manage fees, payments and accounts'],['approvals','Approvals','Review submitted requests']].filter(function(x){var n=nav.find(function(n){return n[0]===x[0]});return n&&canAny(n[3])});
    var stats=[['Students',d.students,'students','Enrolled learners'],['Classes',d.classes,'classes','Learning groups'],['Subjects',d.subjects,'subjects','School curriculum'],['School staff',d.staff_users,'staff','Connected staff accounts'],['Present today',d.present_today,'check','Daily attendance'],['Absent today',d.absent_today,'attendance','Daily attendance'],['Fees billed',Number(d.fees_billed||0),'finance','Recorded school fees'],['Payments received',Number(d.payments_received||0),'money','Recorded collections']];
-   E('content').innerHTML='<div class="rx-page-head"><div><div class="rx-kicker">Your school at a glance</div><h1>School Dashboard</h1><p>A clear view of the people and work that make your school.</p></div><div class="rx-date"><span data-school-icon="calendar"></span><span data-school-date></span></div></div>'+
+   E('content').innerHTML=licenceNotice()+'<div class="rx-page-head"><div><div class="rx-kicker">Your school at a glance</div><h1>School Dashboard</h1><p>A clear view of the people and work that make your school.</p></div><div class="rx-date"><span data-school-icon="calendar"></span><span data-school-date></span></div></div>'+
     '<div class="rx-welcome"><div><div class="rx-kicker">Welcome to your workspace</div><h2>Hello, '+esc(ctx.core.first_name)+'.</h2><p>Everything you need for a well-run school day. Pick up with your students, academic work or school accounts.</p></div><div class="rx-welcome-emblem" data-school-icon="school"></div></div>'+
     '<div class="rx-section-label"><h2>School overview</h2><span>Current school records</span></div><div class="grid rx-metrics">'+stats.map(function(x){return'<div class="panel stat"><span class="rx-stat-icon" data-school-icon="'+x[2]+'"></span><span class="muted">'+esc(x[0])+'</span><b>'+((x[2]==='finance'||x[2]==='money')?'<span class="rx-currency">GHS</span>'+Number(x[1]).toLocaleString('en-GH',{minimumFractionDigits:2,maximumFractionDigits:2}):esc(x[1]))+'</b><small>'+esc(x[3])+'</small></div>'}).join('')+'</div>'+
     '<div class="rx-lower"><div class="panel"><div class="rx-kicker">Everyday work</div><h3>Go straight to what matters</h3><p class="muted" style="font-size:12px">Your frequently used school workspaces.</p><div class="rx-shortcuts">'+quick.map(function(x){return'<button class="rx-shortcut" data-dashboard-page="'+x[0]+'"><span data-school-icon="'+x[0]+'"></span><span>'+esc(x[1])+'<small>'+esc(x[2])+'</small></span></button>'}).join('')+'</div></div><div class="rx-term"><div class="panel"><div class="rx-kicker">Academic year</div><h3>'+esc(d.activeYear?d.activeYear.name:'No active academic year')+'</h3><p>'+esc(d.activeYear?String(d.activeYear.start_date).slice(0,10)+' — '+String(d.activeYear.end_date).slice(0,10):'Configure your academic calendar in School Setup.')+'</p></div><div class="panel"><div class="rx-kicker">Current term</div><h3>'+esc(d.activeTerm?d.activeTerm.name:'No active term')+'</h3><p>'+esc(d.activeTerm?String(d.activeTerm.start_date).slice(0,10)+' — '+String(d.activeTerm.end_date).slice(0,10):'Your active term will appear here.')+'</p></div></div></div>';
    E('content').onclick=function(e){var b=e.target.closest('[data-dashboard-page]');if(b)page(b.dataset.dashboardPage)};
 
+ }
+ else if(p==='licence'){
+   var l=await raw('/api/license?refresh=true');ctx.license=l;
+   var target=licenceTargetDate(l),expiry=target?new Date(target).toLocaleString():'No expiry date';
+   var modules=Array.isArray(l.modules)?l.modules:[];
+   E('content').innerHTML='<div class="rx-page-head"><div><div class="rx-kicker">Commercial licence</div><h1>Licence & Plan</h1><p>Your Revolt-X OS subscription controls the features available in this School workspace.</p></div></div>'+
+    licenceNotice()+
+    '<div class="grid rx-metrics"><div class="panel stat"><span class="muted">Plan</span><b>'+esc(l.planName||l.plan||'—')+'</b><small>Assigned in Revolt-X OS</small></div>'+
+    '<div class="panel stat"><span class="muted">Licence status</span><b>'+esc(String(l.status||'').replace(/_/g,' '))+'</b><small>'+esc(l.licenseCode||'Centrally managed')+'</small></div>'+
+    '<div class="panel stat"><span class="muted">Expires / renews</span><b style="font-size:18px">'+esc(expiry)+'</b><small>'+(l.daysRemaining==null?'No countdown':esc(l.daysRemaining)+' day(s) remaining')+'</small></div>'+
+    '<div class="panel stat"><span class="muted">Billing</span><b style="font-size:18px">'+esc(l.currency||'GHS')+' '+Number(l.recurringAmount||0).toLocaleString('en-GH',{minimumFractionDigits:2,maximumFractionDigits:2})+'</b><small>'+esc(l.billingFrequency||'—')+'</small></div></div>'+
+    '<div class="panel"><h3>Licensed modules</h3><div class="grid">'+modules.map(function(m){return'<div style="padding:10px;border:1px solid #e3e8ef;border-radius:10px"><b>✓ '+esc(m.replace(/^school\./,'').replace(/_/g,' '))+'</b></div>'}).join('')+'</div></div>'+
+    '<div class="panel"><h3>Usage limits</h3>'+table(Object.keys(l.limits||{}).map(function(k){return{limit:k,value:l.limits[k]}}),[{key:'limit',render:function(r){return esc(r.limit.replace(/([A-Z])/g,' $1'))}},{key:'value'}])+'</div>';
+   var btn=E('content').querySelector('[data-open-licence]');if(btn)btn.onclick=function(){page('licence')};
  }
  else if(p==='setup'){
    var rs=await Promise.all([raw('/api/school/profile'),raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels')]);var prof=rs[0],years=rs[1],terms=rs[2],grades=rs[3];

@@ -52,6 +52,8 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <h2>Welcome back.</h2>
         <p class="muted">Sign in with your school account to open your workspace.</p>
         <div id="message"></div>
+        <label>School code</label>
+        <input id="schoolSlug" autocomplete="organization" placeholder="your-school-code">
         <label>Email address</label>
         <input id="email" type="email" autocomplete="username" placeholder="name@school.edu">
         <label>Password</label>
@@ -115,7 +117,7 @@ async function signIn(){
   if(!email||!password){E('message').innerHTML='<div class="error">Enter your email address and password.</div>';return}
   btn.disabled=true;btn.textContent='Signing in...';status.style.display='block';status.textContent='Authenticating your School account...';
   try{
-    var x=await json('/api/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password})});
+    var x=await json('/api/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password,schoolSlug:E('schoolSlug').value.trim()||undefined})});
     status.textContent='Signed in as '+(x.user?x.user.firstName+' '+x.user.lastName:'School user')+'. Opening your workspace...';
     try{sessionStorage.setItem('rx_school_token',x.accessToken);if(x.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken);else sessionStorage.removeItem('rx_teacher_token')}catch(e){}
     var next=new URLSearchParams(location.search).get('next')||'';
@@ -172,13 +174,15 @@ async function setup(){
   btn.disabled=true;btn.textContent='Creating password...';
   try{
     await json('/api/auth/set-password',{method:'POST',body:JSON.stringify({token:token,password:p1})});
-    history.replaceState({},document.title,'/login');
+    var school=new URLSearchParams(location.search).get('school')||E('schoolSlug')&&E('schoolSlug').value||'';history.replaceState({},document.title,'/login'+(school?'?school='+encodeURIComponent(school):''));
     E('setupView').style.display='none';E('signinView').style.display='block';
     E('message').innerHTML='<div class="success">Password created successfully. Sign in with your email address and new password.</div>'
   }catch(err){E('setupMessage').innerHTML='<div class="error">'+esc(err.message)+'</div>';btn.disabled=false;btn.textContent='Create password'}
 }
 async function boot(){
-  var setupToken=new URLSearchParams(location.search).get('setup');
+  var params=new URLSearchParams(location.search),schoolCode=params.get('school')||'';
+  if(E('schoolSlug'))E('schoolSlug').value=schoolCode;
+  var setupToken=params.get('setup');
   if(setupToken){E('signinView').style.display='none';E('setupView').style.display='block';E('savePassword').onclick=setup;return}
   if(await existingSession())return;
   E('signin').onclick=signIn;E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};

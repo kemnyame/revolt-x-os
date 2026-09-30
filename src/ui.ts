@@ -22,7 +22,7 @@ input,select,textarea{width:100%;padding:10px;background:#07131c;border:1px soli
 <section id="os" class="layout hide">
 <aside class="side"><div class="brand"><span class="rx">RX</span>REVOLT-X</div><nav id="nav" class="nav"></nav></aside>
 <main class="main">
-<header class="top"><div><b id="org">Revolt-X OS</b><div class="muted">Core business operating platform</div></div><div class="top-actions"><button id="refreshPage" class="ghost">Refresh</button><span class="badge">LIVE DATA</span></div></header>
+<header class="top"><div><b id="org">Revolt-X OS</b><div class="muted">Core business operating platform</div></div><div class="top-actions"><button id="refreshPage" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button><span class="badge">LIVE DATA</span></div></header>
 <div id="content"></div>
 </main>
 </section>
@@ -81,15 +81,11 @@ function downloadJson(name,obj){var b=new Blob([JSON.stringify(obj,null,2)],{typ
 async function boot(){
  try{
    token=sessionStorage.getItem('rx_access')||'';refresh=sessionStorage.getItem('rx_refresh')||'';
-   if(!token){
-     var x=await fetch('/v1/auth/preview-session',{method:'POST'});
-     if(!x.ok){var d={};try{d=await x.json()}catch(e){}throw Error('Development access unavailable ('+x.status+'): '+(d&&d.error&&d.error.message?d.error.message:'Preview session request failed'))}
-     var j=await x.json();token=j.accessToken;refresh=j.refreshToken||'';sessionStorage.setItem('rx_access',token);sessionStorage.setItem('rx_refresh',refresh)
-   }
+   if(!token){location.replace('/login');return}
    data.org=await raw('/v1/organisation');E('org').textContent=data.org.name;
    E('nav').innerHTML=pages.map(function(p){if(p[0]==='group')return '<div class="group">'+esc(p[1])+'</div>';return '<button data-p="'+p[0]+'" data-icon="'+esc(p[2])+'" class="'+(p[0]==='dashboard'?'active':'')+'">'+esc(p[1])+'</button>'}).join('');
    E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
-   E('refreshPage').onclick=function(){page(currentPage)};
+   E('refreshPage').onclick=function(){page(currentPage)};E('signOut').onclick=async function(){try{await raw('/v1/auth/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_access');sessionStorage.removeItem('rx_refresh');location.replace('/login')};
    E('loading').classList.add('hide');E('os').classList.remove('hide');await page('dashboard');
  }catch(e){E('loading').innerHTML='<div><h2>Workspace unavailable</h2><p>'+esc(e.message)+'</p></div>'}
 }
