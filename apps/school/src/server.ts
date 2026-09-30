@@ -1643,7 +1643,7 @@ async function handleSchoolPasswordSetup(request:any,reply:any){
   if(!res)throw fail(503,'Core OS could not be reached');
   const payload=await res.json().catch(()=>null) as any;
   if(!res.ok)throw fail(res.status,payload?.error?.message||'Password setup failed');
-  return reply.send({reset:true});
+  return reply.send({reset:true,email:payload?.email??null,organisationId:payload?.organisationId??null});
 }
 app.post('/api/auth/set-password',handleSchoolPasswordSetup);
 app.post('/api/auth/teacher-set-password',handleSchoolPasswordSetup);
