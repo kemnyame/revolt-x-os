@@ -418,8 +418,8 @@ app.addHook('preHandler',async request=>{
   const actor=await requestActor(request);
   if(!actor.organisationId||actor.actorType==='public')return;
   const licence=await schoolLicence(actor.organisationId);
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status))){
-    throw fail(403,'Revolt-X School licence is '+String(licence.status).replace(/_/g,' ')+'. Renew or reactivate the licence in Revolt-X OS.');
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status))&&String(request.method).toUpperCase()!=='GET'){
+    throw fail(403,'Revolt-X School licence is '+String(licence.status).replace(/_/g,' ')+'. The workspace is read-only until the licence is renewed or reactivated in Revolt-X OS.');
   }
   const required=requiredCommercialModule(path);
   if(required&&licence.status!=='legacy'&&!licence.modules.includes(required)){
