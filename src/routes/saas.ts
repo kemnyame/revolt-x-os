@@ -167,6 +167,97 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     return { ...row, subscriptionStatus, renewals };
   });
 
+  app.get('/v1/commercial-control/importable-school-tenants', async request => {
+    const a = requirePermission(request, 'commercial.read');
+    const response = await fetch(schoolApplicationBase(config) + '/api/internal/tenants', {
+      headers: schoolServiceHeaders(config),
+      signal: AbortSignal.timeout(20000)
+    }).catch(() => null);
+    if (!response) throw new AppError(503, 'SCHOOL_UNAVAILABLE', 'Revolt-X School could not be reached');
+    const payload = await response.json().catch(() => null) as any;
+    if (!response.ok) throw new AppError(response.status, 'SCHOOL_TENANT_LOOKUP_FAILED', payload?.error?.message || 'Could not read School tenants');
+    const tenants = Array.isArray(payload) ? payload : [];
+    const managed = (await db.query(
+      'SELECT customer_organisation_id FROM saas_customers WHERE provider_organisation_id=$1',
+      [a.organisationId]
+    )).rows.map((x:any)=>String(x.customer_organisation_id));
+    const managedSet = new Set(managed);
+    const available:any[] = [];
+    for (const tenant of tenants) {
+      if (!tenant?.organisationId || managedSet.has(String(tenant.organisationId)) || tenant.organisationId === a.organisationId) continue;
+      const org = await maybeOne<any>(db, 'SELECT id,name,slug,status FROM organisations WHERE id=$1', [tenant.organisationId]);
+      if (!org) continue;
+      available.push({ ...tenant, organisation: org });
+    }
+    return available;
+  });
+
+  app.post('/v1/commercial-control/adopt-school', async (request, reply) => {
+    const a = requirePermission(request, 'commercial.manage');
+    const b = z.object({
+      organisationId: z.string().uuid(),
+      planId: z.string().uuid(),
+      billingFrequency: z.enum(['monthly','termly','annual']).default('monthly'),
+      licenceStatus: z.enum(['trial','active']).default('active'),
+      schoolType: z.string().max(80).optional()
+    }).parse(request.body);
+    if (b.organisationId === a.organisationId) throw conflict('Provider organisation cannot be its own School customer');
+
+    const response = await fetch(schoolApplicationBase(config) + '/api/internal/tenants', {
+      headers: schoolServiceHeaders(config),
+      signal: AbortSignal.timeout(20000)
+    }).catch(() => null);
+    if (!response) throw new AppError(503, 'SCHOOL_UNAVAILABLE', 'Revolt-X School could not be reached');
+    const tenantsPayload = await response.json().catch(() => null) as any;
+    if (!response.ok) throw new AppError(response.status, 'SCHOOL_TENANT_LOOKUP_FAILED', tenantsPayload?.error?.message || 'Could not read School tenants');
+    const tenant = (Array.isArray(tenantsPayload) ? tenantsPayload : []).find((x:any)=>x?.organisationId===b.organisationId);
+    if (!tenant) throw notFound('Existing School tenant');
+
+    const product = await one<any>(db, "SELECT id FROM saas_products WHERE product_key='school'");
+    const org = await one<any>(db, 'SELECT id,name,slug,status FROM organisations WHERE id=$1', [b.organisationId]);
+    const subscription = await transaction(db, async c => {
+      await c.query(
+        `INSERT INTO saas_customers(
+          provider_organisation_id,customer_organisation_id,customer_type,school_type,
+          primary_contact_name,primary_contact_email,primary_contact_phone,address,status,created_by
+        ) VALUES($1,$2,'school',$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT(provider_organisation_id,customer_organisation_id) DO UPDATE SET
+          school_type=COALESCE(EXCLUDED.school_type,saas_customers.school_type),
+          primary_contact_name=COALESCE(EXCLUDED.primary_contact_name,saas_customers.primary_contact_name),
+          primary_contact_email=COALESCE(EXCLUDED.primary_contact_email,saas_customers.primary_contact_email),
+          primary_contact_phone=COALESCE(EXCLUDED.primary_contact_phone,saas_customers.primary_contact_phone),
+          address=COALESCE(EXCLUDED.address,saas_customers.address),
+          status=EXCLUDED.status,updated_at=now()`,
+        [
+          a.organisationId,b.organisationId,b.schoolType??null,tenant.schoolName??org.name,
+          tenant.email??null,tenant.phone??null,tenant.address??null,b.licenceStatus==='trial'?'trial':'active',a.userId
+        ]
+      );
+      const sub = await assignSubscription(c,{
+        providerId:a.organisationId,customerId:b.organisationId,productId:product.id,planId:b.planId,
+        frequency:b.billingFrequency,status:b.licenceStatus,actorId:a.userId
+      });
+      if (tenant.tenantSlug) {
+        const domain = tenant.tenantSlug + '.school.revolt-x.app';
+        await c.query(
+          "INSERT INTO saas_customer_domains(provider_organisation_id,customer_organisation_id,domain,domain_type,status) VALUES($1,$2,$3,'subdomain','pending') ON CONFLICT(domain) DO NOTHING",
+          [a.organisationId,b.organisationId,domain]
+        );
+      }
+      await c.query('UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),updated_at=now() WHERE id=$1',[sub.id]);
+      return sub;
+    });
+
+    const licenseSync = await pushLicenseSnapshot(db,config,a.organisationId,b.organisationId);
+    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(tenant.tenantSlug || org.slug);
+    const result = { organisation:org, tenant, subscription, licenseSync, accessUrl };
+    await audit(db,{
+      organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
+      action:'commercial.school.adopted',resourceType:'organisation',resourceId:b.organisationId,afterState:result
+    });
+    return reply.code(201).send(result);
+  });
+
   app.get('/v1/commercial-control/catalog', async request => {
     requirePermission(request, 'commercial.read');
     const product = await one<any>(db, "SELECT * FROM saas_products WHERE product_key='school'");
