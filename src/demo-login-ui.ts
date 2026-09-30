@@ -40,7 +40,7 @@ async function login(){
   var r=await fetch("/v1/auth/preview-session",{method:"POST"}),j=await r.json().catch(function(){return{}});
   if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:"Demo access is unavailable");
   sessionStorage.setItem("rx_access",j.accessToken);sessionStorage.setItem("rx_refresh",j.refreshToken||"");
-  location.href="/commercial-control";
+  location.href="/commercial-control?demo=1";
  }catch(e){err.textContent=e.message;err.style.display="block";b.disabled=false;b.textContent="Enter Revolt-X OS"}
 }
 E("login").onclick=login;E("password").onkeydown=function(e){if(e.key==="Enter")login()};
