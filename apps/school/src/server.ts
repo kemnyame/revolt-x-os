@@ -161,6 +161,272 @@ function coreServiceHeaders(){
   return {'x-revolt-service-key':config.CORE_SERVICE_KEY};
 }
 
+function requireCoreServiceRequest(request:any){
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const supplied=String(request.headers?.['x-revolt-service-key']||'');
+  if(!supplied)throw fail(401,'Core service credential required');
+  const a=Buffer.from(supplied),b=Buffer.from(config.CORE_SERVICE_KEY);
+  if(a.length!==b.length||!timingSafeEqual(a,b))throw fail(401,'Invalid Core service credential');
+}
+
+const ALL_COMMERCIAL_MODULES=[
+  'school.core','school.admissions','school.students','school.academics','school.attendance','school.teaching',
+  'school.timetable','school.fees','school.payments','school.finance','school.parent_portal','school.student_portal',
+  'school.communications','school.staff','school.controls','school.analytics'
+];
+
+function normalizedLicence(entitlement:any){
+  return{
+    licensed:Boolean(entitlement?.licensed),
+    licenseCode:entitlement?.licenseCode??null,
+    product:entitlement?.product??'school',
+    plan:entitlement?.plan??null,
+    planName:entitlement?.planName??null,
+    status:entitlement?.status??'unlicensed',
+    billingFrequency:entitlement?.billingFrequency??null,
+    recurringAmount:Number(entitlement?.recurringAmount||0),
+    currency:entitlement?.currency??'GHS',
+    periodEnd:entitlement?.periodEnd??null,
+    trialEndsAt:entitlement?.trialEndsAt??null,
+    graceEndsAt:entitlement?.graceEndsAt??null,
+    limits:entitlement?.limits??{},
+    modules:Array.isArray(entitlement?.modules)?entitlement.modules:[]
+  };
+}
+
+async function persistLicence(organisationId:string,entitlement:any,source='core_os'){
+  const e=normalizedLicence(entitlement);
+  await db.query(`INSERT INTO school_license_state(
+    organisation_id,license_code,product_key,plan_key,plan_name,status,billing_frequency,recurring_amount,currency,
+    period_end,trial_ends_at,grace_ends_at,limits,modules,synced_at,source
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),$15)
+  ON CONFLICT(organisation_id) DO UPDATE SET
+    license_code=EXCLUDED.license_code,product_key=EXCLUDED.product_key,plan_key=EXCLUDED.plan_key,
+    plan_name=EXCLUDED.plan_name,status=EXCLUDED.status,billing_frequency=EXCLUDED.billing_frequency,
+    recurring_amount=EXCLUDED.recurring_amount,currency=EXCLUDED.currency,period_end=EXCLUDED.period_end,
+    trial_ends_at=EXCLUDED.trial_ends_at,grace_ends_at=EXCLUDED.grace_ends_at,limits=EXCLUDED.limits,
+    modules=EXCLUDED.modules,synced_at=now(),source=EXCLUDED.source`,[
+      organisationId,e.licenseCode,e.product,e.plan,e.planName,e.status,e.billingFrequency,e.recurringAmount,e.currency,
+      e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules),source
+    ]);
+  return e;
+}
+
+async function readLocalLicence(organisationId:string){
+  const row=await maybeOne<any>(db,'SELECT * FROM school_license_state WHERE organisation_id=$1',[organisationId]);
+  if(!row)return null;
+  return{
+    licensed:!['expired','cancelled','suspended','unlicensed'].includes(String(row.status)),
+    licenseCode:row.license_code,product:row.product_key,plan:row.plan_key,planName:row.plan_name,status:row.status,
+    billingFrequency:row.billing_frequency,recurringAmount:Number(row.recurring_amount||0),currency:row.currency,
+    periodEnd:row.period_end,trialEndsAt:row.trial_ends_at,graceEndsAt:row.grace_ends_at,
+    limits:row.limits||{},modules:Array.isArray(row.modules)?row.modules:[],syncedAt:row.synced_at,source:row.source
+  };
+}
+
+async function fetchCoreLicence(organisationId:string){
+  if(!config.CORE_SERVICE_KEY)return null;
+  const res=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/commercial/entitlements?organisationId='+encodeURIComponent(organisationId),{
+    headers:coreServiceHeaders(),signal:AbortSignal.timeout(12000)
+  }).catch(()=>null);
+  if(!res?.ok)return null;
+  return res.json().catch(()=>null);
+}
+
+async function schoolLicence(organisationId:string,force=false){
+  const local=await readLocalLicence(organisationId);
+  const age=local?.syncedAt?Date.now()-new Date(local.syncedAt).getTime():Number.POSITIVE_INFINITY;
+  if(!force&&local&&age<300000)return local;
+  const remote=await fetchCoreLicence(organisationId);
+  if(remote&&remote.status&&remote.status!=='unlicensed')return persistLicence(organisationId,remote,'core_os');
+  if(local)return local;
+  // Existing pre-commercial tenants remain operational until explicitly adopted into OS licensing.
+  return{
+    licensed:true,licenseCode:null,product:'school',plan:'legacy',planName:'Legacy Commercial Transition',
+    status:'legacy',billingFrequency:null,recurringAmount:0,currency:'GHS',periodEnd:null,trialEndsAt:null,graceEndsAt:null,
+    limits:{},modules:ALL_COMMERCIAL_MODULES,syncedAt:null,source:'legacy_transition'
+  };
+}
+
+function licenceDaysRemaining(licence:any){
+  const target=licence?.status==='trial'?licence?.trialEndsAt:licence?.status==='grace'?licence?.graceEndsAt:licence?.periodEnd;
+  if(!target)return null;
+  return Math.ceil((new Date(target).getTime()-Date.now())/86400000);
+}
+
+function licenceWithWarning(licence:any){
+  const daysRemaining=licenceDaysRemaining(licence);
+  let warningLevel='none',warningMessage='';
+  if(licence?.status==='legacy'){
+    warningLevel='info';warningMessage='This existing School workspace has not yet been attached to a commercial OS subscription.';
+  }else if(['suspended','expired','cancelled','unlicensed'].includes(String(licence?.status))){
+    warningLevel='critical';warningMessage='This Revolt-X School licence is '+String(licence?.status).replace(/_/g,' ')+'. Contact your system provider to restore access.';
+  }else if(daysRemaining!=null&&daysRemaining<=0){
+    warningLevel='critical';warningMessage='The current licence period has ended. Renewal is required.';
+  }else if(daysRemaining!=null&&daysRemaining<=7){
+    warningLevel='critical';warningMessage='Licence expires in '+daysRemaining+' day'+(daysRemaining===1?'':'s')+'.';
+  }else if(daysRemaining!=null&&daysRemaining<=30){
+    warningLevel='warning';warningMessage='Licence expires in '+daysRemaining+' days.';
+  }else if(licence?.status==='grace'){
+    warningLevel='warning';warningMessage='The School licence is in a grace period.';
+  }
+  return{...licence,daysRemaining,warningLevel,warningMessage};
+}
+
+function requiredCommercialModule(path:string){
+  const p=path.split('?')[0];
+  if(/^\/api\/(admissions|public\/admissions)/.test(p))return 'school.admissions';
+  if(/^\/api\/(students|student-status|guardians)/.test(p))return 'school.students';
+  if(/^\/api\/attendance/.test(p))return 'school.attendance';
+  if(/^\/api\/(homework|lesson-notes|teaching-assignments|teacher\/classes|teacher\/homework|teacher\/lesson)/.test(p))return 'school.teaching';
+  if(/^\/api\/(timetable|teacher\/timetable)/.test(p))return 'school.timetable';
+  if(/^\/api\/(fee-items|fees\/|student-fees)/.test(p))return 'school.fees';
+  if(/^\/api\/(payment-intents|payments\/paystack|payments\/online|fees\/payment-requests)/.test(p))return 'school.payments';
+  if(/^\/api\/(finance|accounting|tax|expenses|journals|budgets|vendors|eod)/.test(p))return 'school.finance';
+  if(/^\/api\/parent\//.test(p))return 'school.parent_portal';
+  if(/^\/api\/student\//.test(p))return 'school.student_portal';
+  if(/^\/api\/(announcements|communications|notification)/.test(p))return 'school.communications';
+  if(/^\/api\/(staff|leave)/.test(p))return 'school.staff';
+  if(/^\/api\/(roles|approvals|system\/audit)/.test(p))return 'school.controls';
+  if(/^\/api\/(reports|analytics)/.test(p))return 'school.analytics';
+  if(/^\/api\/(academic-years|terms|grade-levels|classes|subjects|assessments|grading|promotions|report-cards)/.test(p))return 'school.academics';
+  return null;
+}
+
+app.post('/api/internal/license-sync',async request=>{
+  requireCoreServiceRequest(request);
+  const b=z.object({organisationId:z.string().uuid(),entitlement:z.any()}).parse(request.body);
+  const licence=await persistLicence(b.organisationId,b.entitlement,'core_os_push');
+  await db.query('INSERT INTO school_provisioning_events(organisation_id,event_type,status,details) VALUES($1,\'license.synced\',\'completed\',$2)',[b.organisationId,JSON.stringify({status:licence.status,plan:licence.plan})]);
+  return{ok:true,licence:licenceWithWarning(licence)};
+});
+
+app.post('/api/internal/provision',async request=>{
+  requireCoreServiceRequest(request);
+  const b=z.object({
+    organisationId:z.string().uuid(),tenantSlug:z.string().min(2).max(100),schoolName:z.string().min(2).max(240),
+    schoolType:z.string().max(80).nullable().optional(),adminUserId:z.string().uuid(),adminEmail:z.string().email(),
+    adminFirstName:z.string().min(1).max(100),adminLastName:z.string().min(1).max(100),
+    phone:z.string().max(60).nullable().optional(),address:z.string().max(2000).nullable().optional(),entitlement:z.any()
+  }).parse(request.body);
+
+  await tx(db,async client=>{
+    await client.query(`INSERT INTO school_profiles(organisation_id,school_name,phone,email,address,settings,tenant_slug)
+      VALUES($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT(organisation_id) DO UPDATE SET
+        school_name=EXCLUDED.school_name,phone=COALESCE(EXCLUDED.phone,school_profiles.phone),
+        email=COALESCE(EXCLUDED.email,school_profiles.email),address=COALESCE(EXCLUDED.address,school_profiles.address),
+        settings=school_profiles.settings||EXCLUDED.settings,tenant_slug=EXCLUDED.tenant_slug,updated_at=now()`,[
+      b.organisationId,b.schoolName,b.phone??null,b.adminEmail,b.address??null,JSON.stringify({schoolType:b.schoolType??null,commercial:true}),b.tenantSlug
+    ]);
+
+    const roles=[
+      ['school_admin','School Administrator','Full School administration access','admin',true],
+      ['headteacher','Headteacher','School leadership, teaching and report approval','teacher',true],
+      ['teacher','Teacher','Teaching, assessment and class responsibilities','teacher',true],
+      ['bursar','Bursar','Fees, payments and financial operations','admin',false],
+      ['registrar','Registrar','Admissions, records and academic administration','admin',false],
+      ['accountant','Accountant','Finance, accounting, tax and financial reporting','admin',false]
+    ];
+    for(const r of roles)await client.query(`INSERT INTO school_roles(organisation_id,key,name,description,portal_mode,can_teach,is_system,is_active)
+      VALUES($1,$2,$3,$4,$5,$6,true,true) ON CONFLICT(organisation_id,key) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,portal_mode=EXCLUDED.portal_mode,can_teach=EXCLUDED.can_teach,is_active=true,updated_at=now()`,
+      [b.organisationId,...r]);
+
+    await client.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+      VALUES($1,$2,'school_admin','active')
+      ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='school_admin',status='active',updated_at=now()`,[b.organisationId,b.adminUserId]);
+
+    await client.query(`INSERT INTO school_user_directory(
+      organisation_id,os_user_id,first_name,last_name,email,job_title,user_status,membership_status,roles,synced_at
+    ) VALUES($1,$2,$3,$4,$5,'School Administrator','active','active',$6,now())
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,
+      email=EXCLUDED.email,job_title=EXCLUDED.job_title,user_status='active',membership_status='active',roles=EXCLUDED.roles,synced_at=now()`,
+      [b.organisationId,b.adminUserId,b.adminFirstName,b.adminLastName,b.adminEmail,JSON.stringify(['owner'])]);
+
+    const roleRules:Record<string,string[]>={
+      headteacher:['academic.','students.','attendance.','assessment.','reports.','homework.','lesson_notes.','timetable.','communications.','promotion.','approvals.','leave.','screen.','students.profile','students.360'],
+      teacher:['academic.view','students.view','attendance.','assessment.','reports.','homework.','lesson_notes.','timetable.view','communications.view','leave.view','leave.apply','screen.dashboard','screen.attendance','screen.assessments','screen.homework','screen.lesson_notes','screen.report_cards','screen.timetable','screen.teacher_schedule'],
+      bursar:['fees.','finance.','tax.','students.view','reports.view','academic.view','screen.dashboard','screen.finance','screen.student_statements'],
+      accountant:['fees.view','finance.','tax.','students.view','reports.view','academic.view','screen.dashboard','screen.finance','screen.student_statements'],
+      registrar:['academic.','students.','reports.','admissions.','timetable.','communications.','promotion.','portals.','screen.dashboard','screen.setup','screen.admissions','screen.students','screen.academic_manager','screen.promotions','screen.report_cards','screen.timetable','screen.communications','screen.portals','students.profile','students.360']
+    };
+    const caps=(await client.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>String(x.key));
+    for(const [role,prefixes] of Object.entries(roleRules)){
+      for(const key of caps){
+        const allowed=prefixes.some(prefix=>key===prefix||key.startsWith(prefix));
+        await client.query(`INSERT INTO school_role_capabilities(organisation_id,role,capability_key,allowed)
+          VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,role,capability_key) DO UPDATE SET allowed=EXCLUDED.allowed,updated_at=now()`,
+          [b.organisationId,role,key,allowed]);
+      }
+    }
+
+    const accounts=[
+      ['1000','Cash on Hand','asset','cash',true],['1010','Bank Account','asset','bank',true],
+      ['1020','Mobile Money Clearing','asset','mobile_money',true],['1030','Card Clearing','asset','card',true],
+      ['1100','Accounts Receivable','asset','receivable',false],['2000','Accounts Payable','liability','payable',false],
+      ['2100','Tax Payable','liability','tax',false],['3000','Accumulated Fund','equity','equity',false],
+      ['4000','Tuition & School Fees Income','income','school_fees',false],['4100','Other Income','income','other_income',false],
+      ['5000','Salaries & Wages','expense','payroll',false],['5100','Utilities','expense','utilities',false],
+      ['5200','Teaching & Learning Materials','expense','learning_materials',false],['5300','Maintenance & Repairs','expense','maintenance',false],
+      ['5400','Transport & Travel','expense','transport',false],['5500','Administrative Expenses','expense','administration',false],
+      ['5600','Taxes, Levies & Statutory Charges','expense','tax_expense',false],['5900','Other Expenses','expense','other_expense',false]
+    ];
+    for(const x of accounts)await client.query(`INSERT INTO finance_accounts(organisation_id,code,name,account_type,subtype,is_cash_account,is_system)
+      VALUES($1,$2,$3,$4,$5,$6,true) ON CONFLICT(organisation_id,code) DO NOTHING`,[b.organisationId,...x]);
+
+    const payable=(await client.query("SELECT id FROM finance_accounts WHERE organisation_id=$1 AND code='2100'",[b.organisationId])).rows[0];
+    if(payable)for(const tax of [['PAYE','PAYE'],['VAT','VAT'],['WHT','Withholding Tax'],['CIT','Corporate Income Tax'],['LEVY','Statutory Levy']])
+      await client.query(`INSERT INTO finance_tax_types(organisation_id,code,name,authority,payable_account_id)
+        VALUES($1,$2,$3,'Ghana Revenue Authority',$4) ON CONFLICT(organisation_id,code) DO NOTHING`,[b.organisationId,tax[0],tax[1],payable.id]);
+
+    const e=normalizedLicence(b.entitlement);
+    await client.query(`INSERT INTO school_license_state(
+      organisation_id,license_code,product_key,plan_key,plan_name,status,billing_frequency,recurring_amount,currency,
+      period_end,trial_ends_at,grace_ends_at,limits,modules,synced_at,source
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),'core_os_provision')
+    ON CONFLICT(organisation_id) DO UPDATE SET license_code=EXCLUDED.license_code,product_key=EXCLUDED.product_key,
+      plan_key=EXCLUDED.plan_key,plan_name=EXCLUDED.plan_name,status=EXCLUDED.status,billing_frequency=EXCLUDED.billing_frequency,
+      recurring_amount=EXCLUDED.recurring_amount,currency=EXCLUDED.currency,period_end=EXCLUDED.period_end,
+      trial_ends_at=EXCLUDED.trial_ends_at,grace_ends_at=EXCLUDED.grace_ends_at,limits=EXCLUDED.limits,
+      modules=EXCLUDED.modules,synced_at=now(),source=EXCLUDED.source`,[
+        b.organisationId,e.licenseCode,e.product,e.plan,e.planName,e.status,e.billingFrequency,e.recurringAmount,e.currency,
+        e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules)
+      ]);
+    await client.query("INSERT INTO school_provisioning_events(organisation_id,event_type,status,details) VALUES($1,'tenant.provisioned','completed',$2)",
+      [b.organisationId,JSON.stringify({tenantSlug:b.tenantSlug,adminUserId:b.adminUserId,plan:e.plan})]);
+  });
+
+  return{
+    ok:true,organisationId:b.organisationId,tenantSlug:b.tenantSlug,
+    emptyWorkspace:true,
+    operationalData:{students:0,academicYears:0,classes:0,fees:0,payments:0},
+    message:'School tenant provisioned with system configuration and empty operational data.'
+  };
+});
+
+app.get('/api/license',async request=>{
+  const a=await authorize(request,db,config);
+  const q=z.object({refresh:z.coerce.boolean().optional()}).parse(request.query);
+  return licenceWithWarning(await schoolLicence(a.core.organisation_id,q.refresh===true));
+});
+
+app.addHook('preHandler',async request=>{
+  const path=String(request.url).split('?')[0];
+  if(!path.startsWith('/api/'))return;
+  if(path.startsWith('/api/internal/')||path.startsWith('/api/auth/')||path==='/api/context'||path==='/api/license'||path.startsWith('/api/system/core-')||path.startsWith('/api/test-access/'))return;
+  if(path==='/api/parent/login'||path==='/api/student/login'||path.startsWith('/api/public/'))return;
+  const actor=await requestActor(request);
+  if(!actor.organisationId||actor.actorType==='public')return;
+  const licence=await schoolLicence(actor.organisationId);
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status))){
+    throw fail(403,'Revolt-X School licence is '+String(licence.status).replace(/_/g,' ')+'. Renew or reactivate the licence in Revolt-X OS.');
+  }
+  const required=requiredCommercialModule(path);
+  if(required&&licence.status!=='legacy'&&!licence.modules.includes(required)){
+    throw fail(403,'This feature is not included in the current Revolt-X School plan.');
+  }
+});
+
 const coreUsersCache=new Map<string,{value:any[];expiresAt:number}>();
 const CORE_USERS_CACHE_MS=300_000;
 const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
