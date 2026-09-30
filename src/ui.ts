@@ -34,7 +34,8 @@ var token='',refresh='',data={},currentPage='dashboard';
 var pages=[
 ['group','Core'],['dashboard','Command Centre','⌂'],['organisation','Organisation Hub','O'],['people','People & Access','P'],['operations','Operations Hub','W'],['workflows','Workflow Engine','F'],
 ['group','Business Services'],['documents','Documents','D'],['assets','Assets','A'],['automation','Automation','↻'],['analytics','Analytics','∿'],['integrations','Integrations','I'],['communication','Communication','C'],['data','Data Hub','H'],
-['group','Commercial'],['commercial-control','Customers & Licensing','₵'],
+['group','Commercial'],['commercial-control','Customers & Licensing','₵'],['customer-organisations','Customer Organisations','O'],['reports','Reports Centre','R'],
+['group','Assurance'],['audit-assurance','Audit & Assurance','✓'],['backups','Organisation Backups','B'],
 ['group','Platform'],['developer','Developer Platform','</>'],['ai','AI Gateway','AI'],['security','Security & Governance','S'],['administration','Administration','⚙'],['search','Search Centre','⌕']
 ];
 function E(x){return document.getElementById(x)}
@@ -78,6 +79,9 @@ function form(title,fields,values,onSave){
 }
 function confirmAction(message,fn){if(confirm(message))fn().catch(function(e){toast(e.message,true)})}
 function downloadJson(name,obj){var b=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(function(){URL.revokeObjectURL(u)},1000)}
+function money(v,c){return (c||'GHS')+' '+Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function bytes(v){var n=Number(v||0);if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB'}
+function progress(v){var n=Math.max(0,Math.min(100,Number(v||0)));return '<div style="min-width:120px"><div style="height:7px;background:#07131c;border-radius:9px;overflow:hidden"><div style="height:100%;width:'+n+'%;background:linear-gradient(90deg,var(--accent),var(--blue))"></div></div><div class="small muted" style="margin-top:4px">'+n+'%</div></div>'}
 async function boot(){
  try{
    token=sessionStorage.getItem('rx_access')||'';refresh=sessionStorage.getItem('rx_refresh')||'';
@@ -94,10 +98,98 @@ async function page(p){
  try{
  if(p==='commercial-control'){location.href='/commercial-control';return}
  else if(p==='dashboard'){
-   var rs=await Promise.all([raw('/v1/analytics/summary'),raw('/v1/operations?limit=8'),raw('/v1/notifications?limit=6')]);var a=rs[0],ops=rs[1],notes=rs[2];
-   E('content').innerHTML='<h1>Command Centre</h1><div class="grid">'+
-   [['People',a.users],['Operations',a.operations],['Documents',a.documents],['Assets',a.assets],['Workflow runs',a.workflow_runs],['Active automations',a.active_automations],['Active integrations',a.active_integrations],['Unread notifications',a.unread_notifications]].map(function(v){return '<div class="panel stat"><span class="muted">'+esc(v[0])+'</span><b>'+esc(v[1])+'</b></div>'}).join('')+
-   '</div><div class="two" style="margin-top:12px"><div class="panel"><div class="section-title"><h3>Recent operations</h3></div>'+table(ops,[{key:'title',label:'Operation'},{key:'status',render:function(r){return badge(r.status)}},{key:'priority',render:function(r){return badge(r.priority)}}])+'</div><div class="panel"><div class="section-title"><h3>Notifications</h3></div>'+table(notes,[{key:'title'},{key:'created_at',label:'Created',render:function(r){return esc(fmt(r.created_at))}}])+'</div></div>';
+   var x=await raw('/v1/executive/overview'),c=x.commercial||{},au=x.audit||{},inn=x.internal||{};
+   E('content').innerHTML='<div class="section-title"><div><h1>Executive Command Centre</h1><div class="muted">Commercial, operational and assurance position across all Revolt-X customer organisations.</div></div><button class="primary" id="dashBackupAll">Backup All Organisations</button></div>'+
+   '<div class="grid">'+
+    [['Customer organisations',c.organisations],['Active licences',c.active_licences],['Trials',c.trials],['Licence attention',c.licence_attention],
+     ['Monthly recurring revenue',money(c.mrr)],['Annual recurring revenue',money(c.arr)],['Collections this month',money(c.collections_month)],['Outstanding invoices',money(c.outstanding)]]
+    .map(function(v){return '<div class="panel stat"><span class="muted">'+esc(v[0])+'</span><b>'+esc(v[1]||0)+'</b></div>'}).join('')+
+   '</div>'+
+   '<div class="three" style="margin-top:12px">'+
+    '<div class="panel"><h3>Licence Health</h3>'+Object.keys(x.licences||{}).map(function(k){return '<div class="row" style="justify-content:space-between;margin:8px 0"><span>'+badge(k)+'</span><b>'+esc(x.licences[k])+'</b></div>'}).join('')+'</div>'+
+    '<div class="panel"><h3>Service Delivery</h3><div class="row" style="justify-content:space-between"><span>Provisioning failed</span><b>'+esc((x.provisioning||{}).failed||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Provisioning completed</span><b>'+esc((x.provisioning||{}).completed||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Reports completed</span><b>'+esc((x.reports||{}).completed||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Reports failed</span><b>'+esc((x.reports||{}).failed||0)+'</b></div></div>'+
+    '<div class="panel"><h3>Assurance</h3><div class="row" style="justify-content:space-between"><span>Backups completed</span><b>'+esc((x.backups||{}).completed||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Backups failed</span><b>'+esc((x.backups||{}).failed||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Audit failures (30d)</span><b>'+esc(au.failures_30_days||0)+'</b></div><div class="row" style="justify-content:space-between;margin-top:8px"><span>Integrity protected events</span><b>'+esc(au.integrity_protected||0)+'</b></div></div>'+
+   '</div>'+
+   '<div class="section-title"><h2>Customer Organisations</h2><button class="ghost" id="openOrganisations">View all organisations</button></div>'+
+   '<div class="panel">'+table((x.organisations||[]).slice(0,12),[
+     {key:'name',label:'Organisation'},{key:'plan_name',label:'Plan'},{key:'licence_status',label:'Licence',render:function(r){return badge(r.licence_status)}},
+     {key:'students',label:'Students'},{key:'current_period_end',label:'Expiry',render:function(r){return esc(fmt(r.current_period_end))}},
+     {key:'last_backup_status',label:'Last backup',render:function(r){return badge(r.last_backup_status||'not run')}}
+   ])+'</div>'+
+   '<div class="two" style="margin-top:12px"><div class="panel"><h3>Renewals Due Within 60 Days</h3>'+table(x.renewals||[],[
+     {key:'name',label:'School'},{key:'plan_name',label:'Plan'},{key:'status',render:function(r){return badge(r.status)}},
+     {key:'current_period_end',label:'Renewal',render:function(r){return esc(fmt(r.current_period_end))},{key:'recurring_amount',label:'Value',render:function(r){return esc(money(r.recurring_amount,r.currency))}}
+   ])+'</div>'+
+   '<div class="panel"><h3>Revolt-X Internal Operations</h3>'+[
+     ['People',inn.people],['Operations',inn.operations],['Documents',inn.documents],['Assets',inn.assets],['Workflows',inn.workflows],['Integrations',inn.integrations],['Automations',inn.automations]
+   ].map(function(v){return '<div class="row" style="justify-content:space-between;margin:8px 0"><span>'+esc(v[0])+'</span><b>'+esc(v[1]||0)+'</b></div>'}).join('')+'</div></div>';
+   E('dashBackupAll').onclick=async function(){var b=E('dashBackupAll');b.disabled=true;b.textContent='Starting backups...';try{var r=await raw('/v1/assurance/backups/run-all',{method:'POST',body:'{}'});toast('Backup jobs started for '+r.count+' organisation(s)');page('backups')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Backup All Organisations'}};
+   E('openOrganisations').onclick=function(){page('customer-organisations')};
+ }
+ else if(p==='customer-organisations'){
+   var orgs=await raw('/v1/assurance/organisations');
+   E('content').innerHTML='<div class="section-title"><div><h1>Customer Organisations</h1><div class="muted">Commercial, contact, licence, reporting and backup position for every organisation.</div></div></div>'+
+   '<div class="panel">'+table(orgs,[
+     {key:'name',label:'Organisation'},{key:'school_type',label:'Type'},{key:'primary_contact_name',label:'Primary contact'},
+     {key:'primary_contact_email',label:'Email'},{key:'plan_name',label:'Plan'},
+     {key:'licence_status',label:'Licence',render:function(r){return badge(r.licence_status)}},
+     {key:'current_period_end',label:'Expiry',render:function(r){return esc(fmt(r.current_period_end))},
+     {key:'last_backup_status',label:'Backup',render:function(r){return badge(r.last_backup_status||'not run')},
+     {key:'report_count',label:'Reports'}
+   ],function(r){return '<button class="mini" data-report-org="'+r.id+'">Report</button><button class="mini" data-backup-org="'+r.id+'">Backup</button>'})+'</div>';
+   E('content').onclick=async function(e){
+     var rid=e.target.dataset.reportOrg;if(rid){sessionStorage.setItem('rx_report_org',rid);page('reports');return}
+     var bid=e.target.dataset.backupOrg;if(bid){var b=e.target;b.disabled=true;try{await raw('/v1/assurance/backups/organisations/'+bid,{method:'POST',body:'{}'});toast('Backup queued');page('backups')}catch(err){toast(err.message,true);b.disabled=false}}
+   };
+ }
+ else if(p==='reports'){
+   var rr=await Promise.all([raw('/v1/assurance/reports/catalog'),raw('/v1/assurance/reports'),raw('/v1/assurance/organisations')]),catalog=rr[0],requests=rr[1],reportOrgs=rr[2];
+   var categories={};catalog.forEach(function(r){(categories[r.category]=categories[r.category]||[]).push(r)});
+   E('content').innerHTML='<div class="section-title"><div><h1>Reports Centre</h1><div class="muted">'+catalog.length+' high-level reports available for customer organisations.</div></div><button class="primary" id="newReport">Request Report</button></div>'+
+   '<div class="grid">'+Object.keys(categories).map(function(k){return '<div class="panel"><b>'+esc(k)+'</b><div class="stat"><b>'+categories[k].length+'</b></div><div class="small muted">'+categories[k].map(function(x){return esc(x.name)}).join(' • ')+'</div></div>'}).join('')+'</div>'+
+   '<div class="section-title"><h2>Report Requests</h2></div><div class="panel">'+table(requests,[
+     {key:'report_name',label:'Report'},{key:'customer_name',label:'Organisation'},{key:'category'},
+     {key:'status',render:function(r){return badge(r.status)}},{key:'progress',render:function(r){return progress(r.progress)}},
+     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))},
+     {key:'completed_at',label:'Completed',render:function(r){return esc(fmt(r.completed_at))}}
+   ],function(r){return r.status==='completed'?'<button class="mini" data-download-report="'+r.id+'">Download JSON</button>':r.status==='failed'?'<span class="small">'+esc(r.error||'Failed')+'</span>':''})+'</div>';
+   E('newReport').onclick=function(){
+     var selected=sessionStorage.getItem('rx_report_org')||'';sessionStorage.removeItem('rx_report_org');
+     showModal('<h2>Request Organisation Report</h2><label>Organisation</label><select id="reportOrg">'+reportOrgs.map(function(o){return '<option value="'+esc(o.id)+'"'+(o.id===selected?' selected':'')+'>'+esc(o.name)+'</option>'}).join('')+'</select><label>Report</label><select id="reportKey">'+catalog.map(function(r){return '<option value="'+esc(r.key)+'">'+esc(r.category+' — '+r.name)+'</option>'}).join('')+'</select><div id="reportDescription" class="notice" style="margin-bottom:12px"></div><button class="primary" id="submitReport" style="width:100%">Generate Report</button>');
+     function desc(){var x=catalog.find(function(r){return r.key===E('reportKey').value});E('reportDescription').innerHTML='<b>'+esc(x.name)+'</b><br><span class="small">'+esc(x.description)+'</span>'}desc();E('reportKey').onchange=desc;
+     E('submitReport').onclick=async function(){var b=E('submitReport');b.disabled=true;b.textContent='Queueing...';try{await raw('/v1/assurance/reports',{method:'POST',body:JSON.stringify({customerOrganisationId:E('reportOrg').value,reportKey:E('reportKey').value})});closeModal();toast('Report request queued');page('reports')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Generate Report'}};
+   };
+   E('content').onclick=async function(e){var id=e.target.dataset.downloadReport;if(id){try{var d=await raw('/v1/assurance/reports/'+id+'/download');downloadJson('revolt-x-organisation-report-'+id+'.json',d)}catch(err){toast(err.message,true)}}};
+   if(requests.some(function(r){return r.status==='queued'||r.status==='running'}))setTimeout(function(){if(currentPage==='reports')page('reports')},3000);
+ }
+ else if(p==='audit-assurance'){
+   var ar=await raw('/v1/assurance/audit/summary'),sm=ar.summary||{};
+   E('content').innerHTML='<div class="section-title"><div><h1>Audit & Assurance</h1><div class="muted">Tamper-evident OS audit trail, failure monitoring and control evidence.</div></div><button class="primary" id="verifyAudit">Verify Audit Integrity</button></div>'+
+   '<div class="grid">'+[['Audit events',sm.total],['Last 30 days',sm.last_30_days],['Failures 30 days',sm.failures_30_days],['Critical 30 days',sm.critical_30_days],['Hash protected',sm.hashed],['Historical unhashed',sm.historical_unhashed]].map(function(v){return '<div class="panel stat"><span class="muted">'+esc(v[0])+'</span><b>'+esc(v[1]||0)+'</b></div>'}).join('')+'</div>'+
+   '<div class="two" style="margin-top:12px"><div class="panel"><h3>Top Audit Actions — 30 Days</h3>'+table(ar.topActions||[],[{key:'action'},{key:'count'}])+'</div><div class="panel"><h3>Recent Audit Events</h3>'+table(ar.recent||[],[
+     {key:'created_at',label:'Time',render:function(r){return esc(fmt(r.created_at))},{key:'action'},
+     {key:'outcome',render:function(r){return badge(r.outcome)}},{key:'severity',render:function(r){return badge(r.severity)}},{key:'email',label:'Actor'}
+   ])+'</div></div>';
+   E('verifyAudit').onclick=async function(){var b=E('verifyAudit');b.disabled=true;b.textContent='Verifying...';try{var v=await raw('/v1/assurance/audit/verify');showModal('<h2>Audit Integrity Verification</h2><div class="notice '+(v.ok?'':'danger')+'"><b>'+(v.ok?'Integrity verification passed':'Integrity verification failed')+'</b><br>Hash-protected events: '+esc(v.hashedEvents)+'<br>Verified events: '+esc(v.verifiedEvents)+'<br>Historical pre-chain events: '+esc(v.historicalUnhashed)+(v.brokenAt?'<br>Break detected: '+esc(fmt(v.brokenAt.createdAt)):'')+'</div>')}catch(e){toast(e.message,true)}finally{b.disabled=false;b.textContent='Verify Audit Integrity'}};
+ }
+ else if(p==='backups'){
+   var br=await Promise.all([raw('/v1/assurance/backups'),raw('/v1/assurance/organisations')]),jobs=br[0],backupOrgs=br[1];
+   var complete=jobs.filter(function(x){return x.status==='completed'}).length,failed=jobs.filter(function(x){return x.status==='failed'}).length,running=jobs.filter(function(x){return x.status==='running'||x.status==='queued'}).length;
+   E('content').innerHTML='<div class="section-title"><div><h1>Organisation Backups</h1><div class="muted">Independent OS-stored logical tenant backups with checksum, retention and job progress.</div></div><div class="top-actions"><button class="ghost" id="oneBackup">Backup Organisation</button><button class="primary" id="allBackups">Backup All Organisations</button></div></div>'+
+   '<div class="grid"><div class="panel stat"><span class="muted">Completed</span><b>'+complete+'</b></div><div class="panel stat"><span class="muted">Running / queued</span><b>'+running+'</b></div><div class="panel stat"><span class="muted">Failed</span><b>'+failed+'</b></div><div class="panel stat"><span class="muted">Customer organisations</span><b>'+backupOrgs.length+'</b></div></div>'+
+   '<div class="notice" style="margin-top:12px"><b>Backup type:</b> Tenant logical snapshot. Each backup contains only that organisation\'s School data and is stored independently in Revolt-X OS. Completed snapshots currently retain for 30 days.</div>'+
+   '<div class="section-title"><h2>Backup Jobs</h2></div><div class="panel">'+table(jobs,[
+     {key:'customer_name',label:'Organisation'},{key:'status',render:function(r){return badge(r.status)}},{key:'progress',render:function(r){return progress(r.progress)}},{key:'phase'},
+     {key:'row_count',label:'Rows'},{key:'table_count',label:'Tables'},{key:'size_bytes',label:'Size',render:function(r){return esc(bytes(r.size_bytes))}},
+     {key:'requested_at',label:'Requested',render:function(r){return esc(fmt(r.requested_at))},{key:'completed_at',label:'Completed',render:function(r){return esc(fmt(r.completed_at))}}
+   ],function(r){return r.status==='completed'?'<button class="mini" data-download-backup="'+r.id+'">Download</button>':r.status==='failed'?'<button class="mini" data-retry-backup="'+r.id+'">Retry</button>':''})+'</div>';
+   E('allBackups').onclick=async function(){var b=E('allBackups');b.disabled=true;b.textContent='Starting...';try{var x=await raw('/v1/assurance/backups/run-all',{method:'POST',body:'{}'});toast('Backup jobs queued for '+x.count+' organisation(s)');page('backups')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Backup All Organisations'}};
+   E('oneBackup').onclick=function(){showModal('<h2>Backup Organisation</h2><label>Organisation</label><select id="backupOrg">'+backupOrgs.map(function(o){return '<option value="'+esc(o.id)+'">'+esc(o.name)+'</option>'}).join('')+'</select><button class="primary" id="startBackup" style="width:100%">Start Backup</button>');E('startBackup').onclick=async function(){var b=E('startBackup');b.disabled=true;b.textContent='Queueing...';try{await raw('/v1/assurance/backups/organisations/'+E('backupOrg').value,{method:'POST',body:'{}'});closeModal();toast('Backup queued');page('backups')}catch(e){toast(e.message,true);b.disabled=false;b.textContent='Start Backup'}}};
+   E('content').onclick=async function(e){
+     var id=e.target.dataset.downloadBackup;if(id){try{var d=await raw('/v1/assurance/backups/'+id+'/download');downloadJson('revolt-x-organisation-backup-'+id+'.json',d)}catch(err){toast(err.message,true)}}
+     id=e.target.dataset.retryBackup;if(id){try{await raw('/v1/assurance/backups/'+id+'/retry',{method:'POST',body:'{}'});toast('Backup retry queued');page('backups')}catch(err){toast(err.message,true)}}
+   };
+   if(jobs.some(function(r){return r.status==='queued'||r.status==='running'}))setTimeout(function(){if(currentPage==='backups')page('backups')},3000);
  }
  else if(p==='organisation'){
    var rr=await Promise.all([raw('/v1/branches'),raw('/v1/departments'),raw('/v1/teams')]);var branches=rr[0],deps=rr[1],teams=rr[2];
