@@ -14,15 +14,15 @@ export const parentFrontend=applySchoolDesign(`<!doctype html>
 <div class="wrap">
 <div class="brand"><span>RX</span> REVOLT-X SCHOOL <span class="muted">Parent Portal</span></div>
 <section id="login" class="panel" style="max-width:480px;margin:70px auto">
-<h2>Parent / Guardian Sign In</h2><p class="muted">Use your mobile number and the Student ID of any child linked to you. After sign-in, every child linked to the same guardian account will be available to switch between.</p>
-<label>Mobile number</label><input id="phone" autocomplete="tel" placeholder="e.g. 024... or +233..."><label>Student ID</label><input id="admission" autocomplete="off" placeholder="Enter any linked child's Student ID">
+<h2>Parent / Guardian Sign In</h2><p class="muted">Use your school code, mobile number and the Student ID of any child linked to you.</p>
+<label>School code</label><input id="schoolSlug" autocomplete="organization" placeholder="your-school-code"><label>Mobile number</label><input id="phone" autocomplete="tel" placeholder="e.g. 024... or +233..."><label>Student ID</label><input id="admission" autocomplete="off" placeholder="Enter any linked child's Student ID">
 <button id="signin" class="primary" style="width:100%">Sign in</button><p id="loginError" class="error"></p>
 </section>
 <section id="portal" class="hide"><div class="top"><div><h2 id="guardianName"></h2><div class="muted" id="schoolName"></div></div><button id="logout" class="ghost">Sign out</button></div><div class="children-head"><div><h3>My Children</h3><div id="childrenHelp" class="muted"></div></div></div><div id="children" class="grid"></div><div id="studentArea"></div></section>
 </div><div id="toast" class="toast hide"></div>
 <script>
 (function(){
-var token=sessionStorage.getItem('rx_parent_token')||'',me=null,currentStudent=null;
+var token=sessionStorage.getItem('rx_parent_token')||'',me=null,currentStudent=null;var schoolSlug=new URLSearchParams(location.search).get('school')||'';
 function E(i){return document.getElementById(i)}function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function statusBadge(v){var s=String(v||'not_submitted'),cls=/late/.test(s)?'warn':/not_submitted/.test(s)?'gray':/submitted/.test(s)?'info':/graded/.test(s)?'':'gray';return'<span class="badge '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>'}function toast(m,b){var t=E('toast');if(!t)return;t.textContent=m;t.style.borderColor=b?'#71323a':'#2c6d5c';t.classList.remove('hide');setTimeout(function(){t.classList.add('hide')},3200)}
 async function raw(path,opt){opt=opt||{};var method=String(opt.method||'GET').toUpperCase();var baseHeaders=opt.body==null?{}:{'content-type':'application/json'};opt.headers=Object.assign(baseHeaders,opt.headers||{},token?{authorization:'Bearer '+token}:{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var msg=j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')';if(j&&j.error&&j.error.errorId)msg+=' • Error ref: '+j.error.errorId;toast(msg,true);throw Error(msg)}if(method!=='GET'&&method!=='HEAD'&&!opt.silent){var msgOk=path.indexOf('/login')>=0?'Signed in successfully':path.indexOf('academic-statement')>=0?'Request submitted successfully':path.indexOf('/logout')>=0?'Signed out successfully':'Action completed successfully';toast(msgOk,false)}return j}
 function table(rows,cols,act){if(!rows||!rows.length)return'<p class="muted">No records yet.</p>';return'<div class="table"><table><thead><tr>'+cols.map(function(c){return'<th>'+esc(c.label||c.key)+'</th>'}).join('')+(act?'<th>Actions</th>':'')+'</tr></thead><tbody>'+rows.map(function(r){return'<tr>'+cols.map(function(c){var v=c.render?c.render(r):r[c.key];return'<td>'+String(v==null?'':v)+'</td>'}).join('')+(act?'<td>'+act(r)+'</td>':'')+'</tr>'}).join('')+'</tbody></table></div>'}
@@ -99,7 +99,8 @@ async function loadStudent(id){
  E('tabNews').onclick=function(){E('detail').innerHTML='<div class="panel"><h3>Announcements</h3>'+table(d.announcements,[{key:'title'},{key:'body'},{key:'published_at',label:'Published',render:function(r){return esc(r.published_at?new Date(r.published_at).toLocaleDateString():'')}}])+'</div>'};
  E('tabHomework').click();
 }
-E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({phone:E('phone').value,admissionNo:E('admission').value})});token=x.token;sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
+if(E('schoolSlug'))E('schoolSlug').value=schoolSlug;
+E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({schoolSlug:E('schoolSlug').value.trim()||undefined,phone:E('phone').value,admissionNo:E('admission').value})});token=x.token;sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
 E('logout').onclick=async function(){try{await raw('/api/parent/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_parent_token');location.reload()};
 boot();
 })();
