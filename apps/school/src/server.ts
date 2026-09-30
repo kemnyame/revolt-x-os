@@ -286,7 +286,7 @@ function licenceWithWarning(licence:any){
 }
 
 function requiredCommercialModule(path:string){
-  const p=path.split('?')[0];
+  const p=path.split('?')[0] || path;
   if(/^\/api\/(admissions|public\/admissions)/.test(p))return 'school.admissions';
   if(/^\/api\/(students|student-status|guardians)/.test(p))return 'school.students';
   if(/^\/api\/attendance/.test(p))return 'school.attendance';
@@ -423,13 +423,14 @@ app.get('/api/license',async request=>{
 });
 
 app.addHook('preHandler',async request=>{
-  const path=String(request.url).split('?')[0];
+  const path=String(request.url).split('?')[0] || String(request.url);
   if(!path.startsWith('/api/'))return;
   if(path.startsWith('/api/internal/')||path.startsWith('/api/auth/')||path==='/api/context'||path==='/api/license'||path.startsWith('/api/system/core-')||path.startsWith('/api/test-access/'))return;
   if(path==='/api/parent/login'||path==='/api/student/login'||path.startsWith('/api/public/'))return;
   const actor=await requestActor(request);
-  if(!actor.organisationId||actor.actorType==='public')return;
-  const licence=await schoolLicence(actor.organisationId);
+  const organisationId=actor.organisationId;
+  if(!organisationId||actor.actorType==='public')return;
+  const licence=await schoolLicence(organisationId);
   if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status))&&String(request.method).toUpperCase()!=='GET'){
     throw fail(403,'Revolt-X School licence is '+String(licence.status).replace(/_/g,' ')+'. The workspace is read-only until the licence is renewed or reactivated in Revolt-X OS.');
   }
