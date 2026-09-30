@@ -202,8 +202,9 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       name: z.string().trim().min(2).max(200),
       slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
       schoolType: z.string().max(80).optional(),
-      contactName: z.string().max(180).optional(),
-      contactEmail: z.string().email().optional(),
+      adminFirstName: z.string().trim().min(1).max(100),
+      adminLastName: z.string().trim().min(1).max(100),
+      adminEmail: z.string().trim().toLowerCase().email(),
       contactPhone: z.string().max(50).optional(),
       address: z.string().max(1000).optional(),
       planId: z.string().uuid(),
@@ -212,21 +213,154 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     }).parse(request.body);
 
     const product = await one<any>(db, "SELECT id FROM saas_products WHERE product_key='school'");
-    const result = await transaction(db, async c => {
+    const created = await transaction(db, async c => {
       const slug = b.slug || await uniqueSlug(c, b.name);
       if (await maybeOne(c, 'SELECT id FROM organisations WHERE slug=$1', [slug])) throw conflict('School slug is already in use');
-      const org = await one<any>(c, 'INSERT INTO organisations(name,slug,status,settings) VALUES($1,$2,\'active\',$3) RETURNING *', [b.name, slug, JSON.stringify({ application: 'school', managedBy: a.organisationId })]);
+
+      const org = await one<any>(
+        c,
+        "INSERT INTO organisations(name,slug,status,settings) VALUES($1,$2,'active',$3) RETURNING *",
+        [b.name, slug, JSON.stringify({ application: 'school', managedBy: a.organisationId })]
+      );
+
+      let admin = await maybeOne<any>(c, 'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1', [b.adminEmail]);
+      let setupToken: string | null = null;
+      let newAdministrator = false;
+
+      if (!admin) {
+        const generatedPassword = randomBytes(48).toString('base64url');
+        admin = await one<any>(
+          c,
+          "INSERT INTO users(email,password_hash,first_name,last_name,status) VALUES($1,$2,$3,$4,'active') RETURNING id,email,first_name,last_name,status",
+          [b.adminEmail, await bcrypt.hash(generatedPassword, 12), b.adminFirstName, b.adminLastName]
+        );
+        setupToken = randomBytes(32).toString('base64url');
+        await c.query(
+          "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours')",
+          [admin.id, tokenHash(setupToken)]
+        );
+        newAdministrator = true;
+      } else {
+        if (admin.status !== 'active') throw conflict('The administrator email belongs to an inactive OS user');
+        await c.query(
+          'UPDATE users SET first_name=$1,last_name=$2,updated_at=now() WHERE id=$3',
+          [b.adminFirstName, b.adminLastName, admin.id]
+        );
+      }
+
+      const membership = await one<any>(
+        c,
+        "INSERT INTO organisation_memberships(organisation_id,user_id,status,job_title,employee_number) VALUES($1,$2,'active','School Administrator','SCH-ADMIN-001') ON CONFLICT(organisation_id,user_id) DO UPDATE SET status='active',job_title='School Administrator' RETURNING id",
+        [org.id, admin.id]
+      );
+      await c.query(
+        "INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id,granted_by) SELECT $1,r.id,'organisation',$2,$3 FROM roles r WHERE r.organisation_id IS NULL AND r.key='owner' ON CONFLICT DO NOTHING",
+        [membership.id, org.id, a.userId]
+      );
+      await c.query(
+        'UPDATE organisations SET settings=$1,updated_at=now() WHERE id=$2',
+        [JSON.stringify({ application: 'school', managedBy: a.organisationId, primaryAdminUserId: admin.id }), org.id]
+      );
+
       await c.query(
         "INSERT INTO saas_customers(provider_organisation_id,customer_organisation_id,customer_type,school_type,primary_contact_name,primary_contact_email,primary_contact_phone,address,status,created_by) VALUES($1,$2,'school',$3,$4,$5,$6,$7,$8,$9)",
-        [a.organisationId, org.id, b.schoolType ?? null, b.contactName ?? null, b.contactEmail ?? null, b.contactPhone ?? null, b.address ?? null, b.licenceStatus === 'trial' ? 'trial' : 'active', a.userId]
+        [a.organisationId, org.id, b.schoolType ?? null, b.adminFirstName + ' ' + b.adminLastName, b.adminEmail, b.contactPhone ?? null, b.address ?? null, b.licenceStatus === 'trial' ? 'trial' : 'active', a.userId]
       );
-      const subscription = await assignSubscription(c, { providerId: a.organisationId, customerId: org.id, productId: product.id, planId: b.planId, frequency: b.billingFrequency, status: b.licenceStatus, actorId: a.userId });
+
+      const subscription = await assignSubscription(c, {
+        providerId: a.organisationId,
+        customerId: org.id,
+        productId: product.id,
+        planId: b.planId,
+        frequency: b.billingFrequency,
+        status: b.licenceStatus,
+        actorId: a.userId
+      });
+
       const domain = slug + '.school.revolt-x.app';
-      await c.query("INSERT INTO saas_customer_domains(provider_organisation_id,customer_organisation_id,domain,domain_type,status) VALUES($1,$2,$3,'subdomain','pending') ON CONFLICT(domain) DO NOTHING", [a.organisationId, org.id, domain]);
-      await c.query("INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by) VALUES($1,$2,$3,'create_school_tenant','queued',$4,$5)", [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id, nextStep: 'Provision the School application workspace and activate the tenant domain' }), a.userId]);
-      return { organisation: org, subscription, domain };
+      await c.query(
+        "INSERT INTO saas_customer_domains(provider_organisation_id,customer_organisation_id,domain,domain_type,status) VALUES($1,$2,$3,'subdomain','pending') ON CONFLICT(domain) DO NOTHING",
+        [a.organisationId, org.id, domain]
+      );
+      const job = await one<any>(
+        c,
+        "INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by) VALUES($1,$2,$3,'create_school_tenant','queued',$4,$5) RETURNING id",
+        [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id }), a.userId]
+      );
+
+      return { organisation: org, subscription, domain, jobId: job.id, admin, setupToken, newAdministrator };
     });
-    await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.school.created', resourceType: 'organisation', resourceId: result.organisation.id, afterState: result });
+
+    const entitlement = await getEntitlements(db, a.organisationId, created.organisation.id);
+    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(created.organisation.slug);
+    const setupUrl = created.setupToken
+      ? accessUrl + '&setup=' + encodeURIComponent(created.setupToken)
+      : null;
+
+    let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
+    try {
+      const response = await fetch(schoolApplicationBase(config) + '/api/internal/provision', {
+        method: 'POST',
+        headers: schoolServiceHeaders(config),
+        body: JSON.stringify({
+          organisationId: created.organisation.id,
+          tenantSlug: created.organisation.slug,
+          schoolName: created.organisation.name,
+          schoolType: b.schoolType ?? null,
+          adminUserId: created.admin.id,
+          adminEmail: b.adminEmail,
+          adminFirstName: b.adminFirstName,
+          adminLastName: b.adminLastName,
+          phone: b.contactPhone ?? null,
+          address: b.address ?? null,
+          entitlement
+        }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const payload = await response.json().catch(() => null) as any;
+      if (!response.ok) throw new Error(payload?.error?.message || 'Revolt-X School rejected the provisioning request');
+      provisioning = { status: 'completed', ...payload };
+      await db.query(
+        "UPDATE saas_provisioning_jobs SET status='completed',details=$1,error=NULL,completed_at=now(),updated_at=now() WHERE id=$2",
+        [JSON.stringify(payload ?? {}), created.jobId]
+      );
+      await db.query(
+        'UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),last_synced_at=now(),updated_at=now() WHERE id=$1',
+        [created.subscription.id]
+      );
+    } catch (error: any) {
+      provisioning = { status: 'failed', message: String(error?.message || error) };
+      await db.query(
+        "UPDATE saas_provisioning_jobs SET status='failed',error=$1,updated_at=now() WHERE id=$2",
+        [provisioning.message, created.jobId]
+      );
+    }
+
+    const result = {
+      organisation: created.organisation,
+      subscription: created.subscription,
+      entitlement,
+      domain: created.domain,
+      accessUrl,
+      setupUrl,
+      administrator: {
+        id: created.admin.id,
+        email: created.admin.email,
+        firstName: b.adminFirstName,
+        lastName: b.adminLastName,
+        existingUser: !created.newAdministrator
+      },
+      provisioning
+    };
+    await audit(db, {
+      organisationId: a.organisationId,
+      actorUserId: a.userId,
+      sessionId: a.sessionId,
+      action: 'commercial.school.created',
+      resourceType: 'organisation',
+      resourceId: created.organisation.id,
+      afterState: result
+    });
     return reply.code(201).send(result);
   });
 
