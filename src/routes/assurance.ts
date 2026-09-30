@@ -81,12 +81,13 @@ async function managedCustomer(db:Db,providerId:string,customerId:string){
 }
 async function commercialPack(db:Db,providerId:string,customerId:string){
   const customer=await managedCustomer(db,providerId,customerId);
-  const [subscription,invoices,payments,domains,provisioning,usage,modules,backups,audits]=await Promise.all([
-    maybeOne<any>(db,`SELECT s.*,p.product_key,p.name product_name,pl.plan_key,pl.name plan_name
-      FROM saas_subscriptions s JOIN saas_products p ON p.id=s.product_id
-      LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id
-      WHERE s.provider_organisation_id=$1 AND s.customer_organisation_id=$2
-      ORDER BY s.created_at DESC LIMIT 1`,[providerId,customerId]),
+  const subscription=await maybeOne<any>(db,`SELECT s.*,p.product_key,p.name product_name,pl.plan_key,pl.name plan_name
+    FROM saas_subscriptions s JOIN saas_products p ON p.id=s.product_id
+    LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id
+    WHERE s.provider_organisation_id=$1 AND s.customer_organisation_id=$2
+    ORDER BY s.created_at DESC LIMIT 1`,[providerId,customerId]);
+
+  const [invoices,payments,domains,provisioning,usage,modules,backups,audits]=await Promise.all([
     db.query('SELECT invoice_no,status,currency,total,amount_paid,issued_at,due_at,paid_at,created_at FROM saas_invoices WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC',[providerId,customerId]),
     db.query('SELECT amount,currency,payment_method,provider,provider_reference,paid_at FROM saas_subscription_payments WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY paid_at DESC',[providerId,customerId]),
     db.query('SELECT domain,domain_type,status,verified_at,created_at FROM saas_customer_domains WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC',[providerId,customerId]),
@@ -118,6 +119,7 @@ async function commercialPack(db:Db,providerId:string,customerId:string){
     modules:modules.rows,backups:backups.rows,audit:audits.rows
   };
 }
+
 function reportSelection(key:string,commercial:any,school:any){
   const licence={subscription:commercial.subscription,modules:commercial.modules,usage:commercial.usage};
   const billing={invoices:commercial.invoices,payments:commercial.payments};
