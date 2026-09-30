@@ -134,7 +134,7 @@ async function page(p){
      {key:'primary_contact_email',label:'Email'},{key:'plan_name',label:'Plan'},
      {key:'licence_status',label:'Licence',render:function(r){return badge(r.licence_status)}},
      {key:'current_period_end',label:'Expiry',render:function(r){return esc(fmt(r.current_period_end))}},
-     {key:'last_backup_status',label:'Backup',render:function(r){return badge(r.last_backup_status||'not run')},
+     {key:'last_backup_status',label:'Backup',render:function(r){return badge(r.last_backup_status||'not run')}},
      {key:'report_count',label:'Reports'}
    ],function(r){return '<button class="mini" data-report-org="'+r.id+'">Report</button><button class="mini" data-backup-org="'+r.id+'">Backup</button>'})+'</div>';
    E('content').onclick=async function(e){
