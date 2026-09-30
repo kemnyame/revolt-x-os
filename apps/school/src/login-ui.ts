@@ -50,8 +50,12 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
       <div id="signinView">
         <div class="eyebrow">Staff access</div>
         <h2>Welcome back.</h2>
-        <p class="muted">Sign in with your school account to open your workspace.</p>
+        <p class="muted">Sign in with your school administrator or staff account.</p>
         <div id="message"></div>
+        <div class="demo-box" style="margin-top:14px">
+          <div class="eyebrow">What do I use to sign in?</div>
+          <p class="muted" style="margin:6px 0 0"><b>School code:</b> comes from the school link and is normally filled automatically.<br><b>Email:</b> use the administrator email entered in Revolt-X OS when the school was created.<br><b>Password:</b> use the new password you created from the administrator setup link. There is no separate default School password.</p>
+        </div>
         <label>School code</label>
         <input id="schoolSlug" autocomplete="organization" placeholder="your-school-code">
         <label>Email address</label>
@@ -81,7 +85,7 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
       <div id="setupView" style="display:none">
         <div class="eyebrow">Account activation</div>
         <h2>Create your password</h2>
-        <p class="muted">Set a password for your School staff account, then use this same sign-in page going forward.</p>
+        <p class="muted">Create the password for the administrator email that was entered in Revolt-X OS. After this step, Revolt-X School will sign you in automatically.</p>
         <div id="setupMessage"></div>
         <label>New password</label>
         <input id="newPassword" type="password" autocomplete="new-password">
@@ -173,10 +177,17 @@ async function setup(){
   if(p1!==p2){E('setupMessage').innerHTML='<div class="error">The passwords do not match.</div>';return}
   btn.disabled=true;btn.textContent='Creating password...';
   try{
-    await json('/api/auth/set-password',{method:'POST',body:JSON.stringify({token:token,password:p1})});
-    var school=new URLSearchParams(location.search).get('school')||E('schoolSlug')&&E('schoolSlug').value||'';history.replaceState({},document.title,'/login'+(school?'?school='+encodeURIComponent(school):''));
+    var result=await json('/api/auth/set-password',{method:'POST',body:JSON.stringify({token:token,password:p1})});
+    var school=new URLSearchParams(location.search).get('school')||E('schoolSlug')&&E('schoolSlug').value||'';
+    history.replaceState({},document.title,'/login'+(school?'?school='+encodeURIComponent(school):''));
     E('setupView').style.display='none';E('signinView').style.display='block';
-    E('message').innerHTML='<div class="success">Password created successfully. Sign in with your email address and new password.</div>'
+    if(E('schoolSlug'))E('schoolSlug').value=school;
+    if(result&&result.email)E('email').value=result.email;
+    E('password').value=p1;
+    E('signin').onclick=signIn;
+    E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
+    E('message').innerHTML='<div class="success">Password created successfully. Signing you in with the administrator email and the password you just created...</div>';
+    await signIn()
   }catch(err){E('setupMessage').innerHTML='<div class="error">'+esc(err.message)+'</div>';btn.disabled=false;btn.textContent='Create password'}
 }
 async function boot(){
