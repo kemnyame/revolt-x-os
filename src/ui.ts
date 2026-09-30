@@ -34,6 +34,7 @@ var token='',refresh='',data={},currentPage='dashboard';
 var pages=[
 ['group','Core'],['dashboard','Command Centre','⌂'],['organisation','Organisation Hub','O'],['people','People & Access','P'],['operations','Operations Hub','W'],['workflows','Workflow Engine','F'],
 ['group','Business Services'],['documents','Documents','D'],['assets','Assets','A'],['automation','Automation','↻'],['analytics','Analytics','∿'],['integrations','Integrations','I'],['communication','Communication','C'],['data','Data Hub','H'],
+['group','Commercial'],['commercial-control','Customers & Licensing','₵'],
 ['group','Platform'],['developer','Developer Platform','</>'],['ai','AI Gateway','AI'],['security','Security & Governance','S'],['administration','Administration','⚙'],['search','Search Centre','⌕']
 ];
 function E(x){return document.getElementById(x)}
@@ -95,7 +96,8 @@ async function boot(){
 async function page(p){
  currentPage=p;document.querySelectorAll('.nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';
  try{
- if(p==='dashboard'){
+ if(p==='commercial-control'){location.href='/commercial-control';return}
+ else if(p==='dashboard'){
    var rs=await Promise.all([raw('/v1/analytics/summary'),raw('/v1/operations?limit=8'),raw('/v1/notifications?limit=6')]);var a=rs[0],ops=rs[1],notes=rs[2];
    E('content').innerHTML='<h1>Command Centre</h1><div class="grid">'+
    [['People',a.users],['Operations',a.operations],['Documents',a.documents],['Assets',a.assets],['Workflow runs',a.workflow_runs],['Active automations',a.active_automations],['Active integrations',a.active_integrations],['Unread notifications',a.unread_notifications]].map(function(v){return '<div class="panel stat"><span class="muted">'+esc(v[0])+'</span><b>'+esc(v[1])+'</b></div>'}).join('')+
