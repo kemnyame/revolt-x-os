@@ -12,5 +12,17 @@ describe('commercial control browser script', () => {
     expect(commercialControlFrontend).toContain('E("newSchool").onclick=openNewSchool');
     expect(commercialControlFrontend).toContain('document.querySelector(".nav").onclick');
     expect(commercialControlFrontend).toContain('E("refresh").onclick');
+    expect(commercialControlFrontend).toContain('id="extendLicense"');
+    expect(commercialControlFrontend).toContain('E("extendLicense").onclick');
+    expect(commercialControlFrontend).toContain('data-license="active"');
+    expect(commercialControlFrontend).toContain('data-license="grace"');
+    expect(commercialControlFrontend).toContain('data-license="suspended"');
+    expect(commercialControlFrontend).toContain('data-license="expired"');
+    expect(commercialControlFrontend).toContain('data-license="cancelled"');
+    expect(commercialControlFrontend).toContain('querySelectorAll("[data-license]")');
+    expect(commercialControlFrontend).toContain('E("changePlan").onclick');
+    expect(commercialControlFrontend).toContain('E("syncLicense").onclick');
+    expect(commercialControlFrontend).toContain('E("retryProvision").onclick');
+    expect(commercialControlFrontend).toContain('E("issueInvoice").onclick');
   });
 });
