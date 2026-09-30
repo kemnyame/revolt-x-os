@@ -88,9 +88,20 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
     [sub.plan_id, sub.id, sub.product_id]
   )).rows;
 
+  let effectiveStatus=String(sub.status);
+  const now=Date.now();
+  const expiredByDate=
+    (effectiveStatus==='trial'&&sub.trial_ends_at&&new Date(sub.trial_ends_at).getTime()<=now)||
+    (effectiveStatus==='active'&&sub.current_period_end&&new Date(sub.current_period_end).getTime()<=now)||
+    (effectiveStatus==='grace'&&sub.grace_ends_at&&new Date(sub.grace_ends_at).getTime()<=now);
+  if(expiredByDate){
+    effectiveStatus='expired';
+    await db.query("UPDATE saas_subscriptions SET status='expired',updated_at=now() WHERE id=$1 AND status<>'expired'",[sub.id]).catch(()=>null);
+  }
+
   return {
-    licensed: sub.status !== 'expired' && sub.status !== 'cancelled',
-    status: sub.status,
+    licensed: !['expired','cancelled','suspended','unlicensed'].includes(effectiveStatus),
+    status: effectiveStatus,
     subscriptionId: sub.id,
     licenseCode: sub.license_code,
     product: sub.product_key,
@@ -539,40 +550,6 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       ? await pushLicenseSnapshot(db, config, a.organisationId, result.invoice.customer_organisation_id)
       : null;
     return reply.code(201).send({ ...result, licenseSync });
-  });
-
-  app.post('/v1/commercial-control/demo-seed', async request => {
-    const a = requirePermission(request, 'commercial.manage');
-    const product = await one<any>(db, "SELECT id FROM saas_products WHERE product_key='school'");
-    const plans = (await db.query('SELECT id,plan_key FROM saas_pricing_plans WHERE product_id=$1', [product.id])).rows;
-    const planMap: Record<string,string> = Object.fromEntries(plans.map((x: any) => [x.plan_key, x.id]));
-    const samples: Array<[string,string,string,string,string,'starter'|'growth'|'professional'|'enterprise','trial'|'active'|'grace'|'suspended',number,number]> = [
-      ['Adom Academy','adom-academy','Basic & JHS','Professional School','0534001001','professional','active',820,65],
-      ['Victory School','victory-school','Basic School','Mabel Ofori','0534001002','starter','active',185,22],
-      ['Grace Preparatory','grace-preparatory','Preparatory School','Samuel Mensah','0534001003','growth','active',420,41],
-      ['Royal Academy','royal-academy','Basic & JHS','Angela Boateng','0534001004','professional','grace',870,73],
-      ['Future Leaders School','future-leaders-school','Basic & JHS','Daniel Asare','0534001005','enterprise','active',1620,132],
-      ['Wisdom Gate Academy','wisdom-gate-academy','Preparatory School','Esi Amankwah','0534001006','growth','trial',355,36],
-      ['Golden Star School','golden-star-school','Basic School','Michael Addo','0534001007','starter','active',240,27],
-      ['Premier Montessori','premier-montessori','Montessori','Naa Korkoi','0534001008','growth','active',310,31],
-      ['Kingdom Heritage School','kingdom-heritage-school','Basic & JHS','Rebecca Owusu','0534001009','professional','suspended',760,68],
-      ['Legacy International School','legacy-international-school','International School','Josephine Tetteh','0534001010','enterprise','active',1980,174]
-    ];
-    let created = 0, updated = 0;
-    for (const x of samples) {
-      let org = await maybeOne<any>(db, 'SELECT * FROM organisations WHERE slug=$1', [x[1]]);
-      if (!org) {
-        org = await one<any>(db, "INSERT INTO organisations(name,slug,status,settings) VALUES($1,$2,'active',$3) RETURNING *", [x[0], x[1], JSON.stringify({ application: 'school', demo: true, managedBy: a.organisationId })]);
-        created++;
-      } else updated++;
-      await db.query(
-        "INSERT INTO saas_customers(provider_organisation_id,customer_organisation_id,customer_type,school_type,primary_contact_name,primary_contact_phone,status,created_by) VALUES($1,$2,'school',$3,$4,$5,$6,$7) ON CONFLICT(provider_organisation_id,customer_organisation_id) DO UPDATE SET school_type=EXCLUDED.school_type,primary_contact_name=EXCLUDED.primary_contact_name,primary_contact_phone=EXCLUDED.primary_contact_phone,status=EXCLUDED.status,updated_at=now()",
-        [a.organisationId, org.id, x[2], x[3], x[4], x[6] === 'trial' ? 'trial' : x[6] === 'suspended' ? 'suspended' : 'active', a.userId]
-      );
-      await assignSubscription(db, { providerId: a.organisationId, customerId: org.id, productId: product.id, planId: planMap[x[5]]!, frequency: 'monthly', status: x[6], actorId: a.userId });
-      await db.query("INSERT INTO saas_usage_snapshots(provider_organisation_id,customer_organisation_id,product_id,metric_key,metric_value) VALUES($1,$2,$3,'students',$4),($1,$2,$3,'staff',$5)", [a.organisationId, org.id, product.id, x[7], x[8]]);
-    }
-    return { created, updated, total: samples.length };
   });
 
   app.get('/v1/internal/commercial/entitlements', { config: { rateLimit: { max: 1200, timeWindow: '1 minute' } } }, async request => {
