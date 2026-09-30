@@ -367,15 +367,76 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
   app.get('/v1/commercial-control/schools/:id', async request => {
     const a = requirePermission(request, 'commercial.read');
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const customer = await maybeOne<any>(db, 'SELECT c.*,o.name,o.slug,o.status organisation_status FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2', [a.organisationId, id]);
+    const customer = await maybeOne<any>(db, 'SELECT c.*,o.name,o.slug,o.status organisation_status,o.settings FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2', [a.organisationId, id]);
     if (!customer) throw notFound('School customer');
-    const [license, domains, invoices, usage] = await Promise.all([
+    const [license, domains, invoices, usage, provisioning] = await Promise.all([
       getEntitlements(db, a.organisationId, id),
       db.query('SELECT * FROM saas_customer_domains WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC', [a.organisationId, id]),
       db.query('SELECT * FROM saas_invoices WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 30', [a.organisationId, id]),
-      db.query('SELECT DISTINCT ON(metric_key) metric_key,metric_value,measured_at FROM saas_usage_snapshots WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY metric_key,measured_at DESC', [a.organisationId, id])
+      db.query('SELECT DISTINCT ON(metric_key) metric_key,metric_value,measured_at FROM saas_usage_snapshots WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY metric_key,measured_at DESC', [a.organisationId, id]),
+      db.query('SELECT * FROM saas_provisioning_jobs WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id])
     ]);
-    return { customer, license, domains: domains.rows, invoices: invoices.rows, usage: usage.rows };
+    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug);
+    return { customer, license, domains: domains.rows, invoices: invoices.rows, usage: usage.rows, provisioning: provisioning.rows[0] ?? null, accessUrl };
+  });
+
+  app.post('/v1/commercial-control/schools/:id/sync-license', async request => {
+    const a = requirePermission(request, 'commercial.manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    if (!await maybeOne(db, 'SELECT 1 FROM saas_customers WHERE provider_organisation_id=$1 AND customer_organisation_id=$2', [a.organisationId, id])) throw notFound('School customer');
+    const sync = await pushLicenseSnapshot(db, config, a.organisationId, id);
+    await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.license.synced', resourceType: 'organisation', resourceId: id, afterState: sync });
+    return sync;
+  });
+
+  app.post('/v1/commercial-control/schools/:id/admin-invite', async request => {
+    const a = requirePermission(request, 'commercial.manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const org = await maybeOne<any>(db, 'SELECT id,slug,settings FROM organisations WHERE id=$1', [id]);
+    if (!org) throw notFound('School organisation');
+    const adminId = org.settings?.primaryAdminUserId;
+    if (!adminId) throw notFound('Primary school administrator');
+    const user = await one<any>(db, 'SELECT id,email,first_name,last_name FROM users WHERE id=$1', [adminId]);
+    const setupToken = randomBytes(32).toString('base64url');
+    await transaction(db, async c => {
+      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [user.id]);
+      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours')", [user.id, tokenHash(setupToken)]);
+    });
+    const setupUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(org.slug) + '&setup=' + encodeURIComponent(setupToken);
+    await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.school_admin.invited', resourceType: 'organisation', resourceId: id, afterState: { email: user.email } });
+    return { setupUrl, expiresInHours: 24, administrator: user };
+  });
+
+  app.post('/v1/commercial-control/schools/:id/provision', async request => {
+    const a = requirePermission(request, 'commercial.manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const customer = await maybeOne<any>(db, 'SELECT c.*,o.name,o.slug,o.settings FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2', [a.organisationId, id]);
+    if (!customer) throw notFound('School customer');
+    const adminId = customer.settings?.primaryAdminUserId;
+    if (!adminId) throw notFound('Primary school administrator');
+    const admin = await one<any>(db, 'SELECT id,email,first_name,last_name FROM users WHERE id=$1', [adminId]);
+    const entitlement = await getEntitlements(db, a.organisationId, id);
+    const job = await one<any>(db, "INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by) SELECT $1,$2,p.id,'create_school_tenant','running',$3,$4 FROM saas_products p WHERE p.product_key='school' RETURNING id", [a.organisationId, id, JSON.stringify({ retry: true }), a.userId]);
+    try {
+      const response = await fetch(schoolApplicationBase(config) + '/api/internal/provision', {
+        method: 'POST',
+        headers: schoolServiceHeaders(config),
+        body: JSON.stringify({
+          organisationId: id, tenantSlug: customer.slug, schoolName: customer.name, schoolType: customer.school_type ?? null,
+          adminUserId: admin.id, adminEmail: admin.email, adminFirstName: admin.first_name, adminLastName: admin.last_name,
+          phone: customer.primary_contact_phone ?? null, address: customer.address ?? null, entitlement
+        }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const payload = await response.json().catch(() => null) as any;
+      if (!response.ok) throw new Error(payload?.error?.message || 'School provisioning failed');
+      await db.query("UPDATE saas_provisioning_jobs SET status='completed',details=$1,error=NULL,completed_at=now(),updated_at=now() WHERE id=$2", [JSON.stringify(payload ?? {}), job.id]);
+      await db.query('UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),last_synced_at=now(),updated_at=now() WHERE id=$1', [entitlement.subscriptionId]);
+      return { ok: true, provisioning: payload, accessUrl: schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug) };
+    } catch (error: any) {
+      await db.query("UPDATE saas_provisioning_jobs SET status='failed',error=$1,updated_at=now() WHERE id=$2", [String(error?.message || error), job.id]);
+      return { ok: false, message: String(error?.message || error) };
+    }
   });
 
   app.put('/v1/commercial-control/schools/:id/subscription', async request => {
