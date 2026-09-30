@@ -448,8 +448,9 @@ app.get('/api/internal/report-summary',async request=>{
       (SELECT count(*) FROM classrooms WHERE organisation_id=$1)::int classrooms,
       (SELECT count(*) FROM subjects WHERE organisation_id=$1)::int subjects,
       (SELECT count(*) FROM assessments WHERE organisation_id=$1)::int assessments,
-      (SELECT count(*) FROM assessment_scores WHERE organisation_id=$1)::int scores,
-      (SELECT count(*) FROM homework_assignments WHERE organisation_id=$1)::int homework`,[org]),
+      (SELECT count(*) FROM assessment_scores sc JOIN assessments a ON a.id=sc.assessment_id WHERE a.organisation_id=$1)::int scores,
+      (SELECT count(*) FROM homework_assignments WHERE organisation_id=$1)::int homework,
+      (SELECT count(*) FROM homework_submissions hs JOIN homework_assignments h ON h.id=hs.homework_id WHERE h.organisation_id=$1)::int homework_submissions`,[org]),
     safeValue(`SELECT count(*)::int fee_records,
       COALESCE(sum(amount_due-discount),0)::numeric billed,
       COALESCE(sum(CASE WHEN status='paid' THEN amount_due-discount ELSE 0 END),0)::numeric marked_paid
