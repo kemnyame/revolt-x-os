@@ -56,22 +56,43 @@ function closeModal(){E("modal").classList.add("hidden");E("modalBody").innerHTM
 function showModal(html){E("modalBody").innerHTML=html;E("modal").classList.remove("hidden")}
 function closeDrawer(){E("drawer").classList.add("hidden");E("drawerBody").innerHTML=""}
 function table(rows,cols,action){if(!rows||!rows.length)return '<div class="empty">No records yet.</div>';return '<div class="tablewrap"><table><thead><tr>'+cols.map(function(c){return"<th>"+esc(c.label||c.key)+"</th>"}).join("")+(action?"<th>Action</th>":"")+'</tr></thead><tbody>'+rows.map(function(r){return"<tr>"+cols.map(function(c){var v=c.render?c.render(r):r[c.key];return"<td>"+(v==null?"":v)+"</td>"}).join("")+(action?"<td>"+action(r)+"</td>":"")+"</tr>"}).join("")+"</tbody></table></div>"}
-async function loadBase(){if(!token){location.href="/demo-login";return false}catalog=await raw("/v1/commercial-control/catalog");schools=await raw("/v1/commercial-control/schools");var q=new URLSearchParams(location.search);if(q.get("demo")==="1"&&schools.length===0){await raw("/v1/commercial-control/demo-seed",{method:"POST",body:"{}"});schools=await raw("/v1/commercial-control/schools")}return true}
+async function loadBase(){if(!token){location.href="/login";return false}catalog=await raw("/v1/commercial-control/catalog");schools=await raw("/v1/commercial-control/schools");return true}
 function planById(id){return (catalog.plans||[]).find(function(p){return p.id===id})}
 function openNewSchool(){
  var opts=catalog.plans.map(function(p){return '<option value="'+p.id+'">'+esc(p.name)+" · "+money(p.monthly_price,p.currency)+"/month</option>"}).join("");
- showModal('<h2>Create a School Tenant</h2><div class="notice">This creates a real organisation in Revolt-X OS, attaches a School subscription and prepares a tenant domain record.</div><div class="fields" style="margin-top:14px">'+
+ showModal('<h2>Create Commercial School</h2><div class="notice">Revolt-X OS will create the customer organisation, administrator, subscription and an empty Revolt-X School workspace. No sample students, fees or academic records will be added.</div><div class="fields" style="margin-top:14px">'+
  '<div class="field full"><label>School name</label><input id="fName" placeholder="e.g. Grace Preparatory School"></div>'+
- '<div class="field"><label>School type</label><input id="fType" placeholder="Basic & JHS"></div>'+
- '<div class="field"><label>Contact person</label><input id="fContact" placeholder="School administrator"></div>'+
- '<div class="field"><label>Contact email</label><input id="fEmail" type="email"></div>'+
+ '<div class="field"><label>School type</label><input id="fType" placeholder="Basic, JHS, SHS, Montessori..."></div>'+
  '<div class="field"><label>Contact phone</label><input id="fPhone"></div>'+
+ '<div class="field"><label>Administrator first name</label><input id="fAdminFirst"></div>'+
+ '<div class="field"><label>Administrator last name</label><input id="fAdminLast"></div>'+
+ '<div class="field full"><label>Administrator email</label><input id="fAdminEmail" type="email" placeholder="admin@school.edu.gh"></div>'+
  '<div class="field"><label>Plan</label><select id="fPlan">'+opts+'</select></div>'+
  '<div class="field"><label>Billing</label><select id="fBilling"><option value="monthly">Monthly</option><option value="termly">Termly</option><option value="annual">Annual</option></select></div>'+
- '<div class="field"><label>Licence</label><select id="fStatus"><option value="trial">14-day Trial</option><option value="active">Active</option></select></div>'+
+ '<div class="field"><label>Initial licence status</label><select id="fStatus"><option value="active">Active</option><option value="trial">14-day Trial</option></select></div>'+
  '<div class="field full"><label>Address</label><textarea id="fAddress" rows="2"></textarea></div></div>'+
- '<div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Create School</button></div>');
- E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){var b=E("mSave");b.disabled=true;try{await raw("/v1/commercial-control/schools",{method:"POST",body:JSON.stringify({name:E("fName").value,schoolType:E("fType").value||undefined,contactName:E("fContact").value||undefined,contactEmail:E("fEmail").value||undefined,contactPhone:E("fPhone").value||undefined,address:E("fAddress").value||undefined,planId:E("fPlan").value,billingFrequency:E("fBilling").value,licenceStatus:E("fStatus").value})});closeModal();toast("School tenant created");await loadBase();page("schools")}catch(e){toast(e.message,true);b.disabled=false}}
+ '<div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Create & Provision School</button></div>');
+ E("mCancel").onclick=closeModal;
+ E("mSave").onclick=async function(){
+   var b=E("mSave");b.disabled=true;b.textContent="Creating school...";
+   try{
+     var x=await raw("/v1/commercial-control/schools",{method:"POST",body:JSON.stringify({
+       name:E("fName").value,schoolType:E("fType").value||undefined,adminFirstName:E("fAdminFirst").value,
+       adminLastName:E("fAdminLast").value,adminEmail:E("fAdminEmail").value,contactPhone:E("fPhone").value||undefined,
+       address:E("fAddress").value||undefined,planId:E("fPlan").value,billingFrequency:E("fBilling").value,licenceStatus:E("fStatus").value
+     })});
+     await loadBase();
+     var setup=x.setupUrl?'<div class="notice" style="margin-top:12px"><b>Administrator setup link</b><p class="sub">Valid for 24 hours. Send this securely to the first school administrator.</p><input id="createdSetupUrl" value="'+esc(x.setupUrl)+'" readonly style="width:100%"><div class="actions" style="margin-top:8px"><button class="btn ghost" id="copySetup">Copy setup link</button><a class="btn primary" href="'+esc(x.setupUrl)+'" target="_blank">Open setup</a></div></div>':'<div class="notice" style="margin-top:12px">This administrator already has a Revolt-X OS account and can use the existing password.</div>';
+     E("modalBody").innerHTML='<h2>School Created</h2><div class="notice"><b>'+esc(x.organisation.name)+'</b><br>Plan: '+esc(x.entitlement.planName||x.entitlement.plan||"—")+' · Licence: '+esc(x.entitlement.status)+'<br>Provisioning: '+esc(x.provisioning.status)+'</div>'+
+       '<div class="field full" style="margin-top:12px"><label>School access URL</label><input id="createdAccessUrl" value="'+esc(x.accessUrl)+'" readonly></div>'+
+       '<div class="actions" style="margin-top:8px"><button class="btn ghost" id="copyAccess">Copy access URL</button><a class="btn primary" href="'+esc(x.accessUrl)+'" target="_blank">Open School</a></div>'+setup+
+       (x.provisioning.status!=="completed"?'<div class="notice" style="margin-top:12px"><b>Provisioning needs attention.</b><br>'+esc(x.provisioning.message||"Open the school record and retry provisioning.")+'</div>':'')+
+       '<div class="modal-actions"><button class="btn primary" id="createdDone">Done</button></div>';
+     E("copyAccess").onclick=function(){navigator.clipboard.writeText(x.accessUrl);toast("Access URL copied")};
+     if(E("copySetup"))E("copySetup").onclick=function(){navigator.clipboard.writeText(x.setupUrl);toast("Setup link copied")};
+     E("createdDone").onclick=function(){closeModal();page("schools")};
+   }catch(e){toast(e.message,true);b.disabled=false;b.textContent="Create & Provision School"}
+ }
 }
 async function openSchool(id){
  var d=await raw("/v1/commercial-control/schools/"+id),lic=d.license,u={};(d.usage||[]).forEach(function(x){u[x.metric_key]=Number(x.metric_value)});
