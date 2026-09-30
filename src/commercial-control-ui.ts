@@ -118,7 +118,18 @@ async function openSchool(id){
  E("drawerBody").querySelectorAll("[data-license]").forEach(function(b){b.onclick=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/license",{method:"PATCH",body:JSON.stringify({status:b.dataset.license})});toast("Licence updated and synced");await loadBase();openSchool(id)}catch(e){toast(e.message,true)}}});
  E("drawerBody").querySelectorAll("[data-module]").forEach(function(c){c.onchange=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/modules",{method:"PUT",body:JSON.stringify({moduleKey:c.dataset.module,enabled:c.checked})});toast("Module entitlement updated and synced")}catch(e){c.checked=!c.checked;toast(e.message,true)}}});
  E("issueInvoice").onclick=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/invoices",{method:"POST",body:JSON.stringify({dueDays:14})});toast("Invoice issued");await openSchool(id)}catch(e){toast(e.message,true)}};
- E("drawerBody").querySelectorAll("[data-pay-invoice]").forEach(function(b){b.onclick=function(){showModal('<h2>Record Subscription Payment</h2><div class="fields"><div class="field"><label>Amount</label><input id="payAmount" type="number" step="0.01" value="'+b.dataset.balance+'"></div><div class="field"><label>Method</label><select id="payMethod"><option value="bank_transfer">Bank Transfer</option><option value="mobile_money">Mobile Money</option><option value="card">Card</option><option value="cash">Cash</option></select></div><div class="field full"><label>Reference</label><input id="payRef"></div></div><div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Post Payment</button></div>');E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){try{await raw("/v1/commercial-control/invoices/"+b.dataset.payInvoice+"/payments",{method:"POST",body:JSON.stringify({amount:Number(E("payAmount").value),paymentMethod:E("payMethod").value,providerReference:E("payRef").value||undefined})});closeModal();toast("Payment recorded. Paid subscriptions are renewed and synced.");await loadBase();openSchool(id)}catch(e){toast(e.message,true)}}}})}
+ E("drawerBody").querySelectorAll("[data-pay-invoice]").forEach(function(b){
+   b.onclick=function(){
+     showModal('<h2>Record Subscription Payment</h2><div class="fields"><div class="field"><label>Amount</label><input id="payAmount" type="number" step="0.01" value="'+b.dataset.balance+'"></div><div class="field"><label>Method</label><select id="payMethod"><option value="bank_transfer">Bank Transfer</option><option value="mobile_money">Mobile Money</option><option value="card">Card</option><option value="cash">Cash</option></select></div><div class="field full"><label>Reference</label><input id="payRef"></div></div><div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Post Payment</button></div>');
+     E("mCancel").onclick=closeModal;
+     E("mSave").onclick=async function(){
+       try{
+         await raw("/v1/commercial-control/invoices/"+b.dataset.payInvoice+"/payments",{method:"POST",body:JSON.stringify({amount:Number(E("payAmount").value),paymentMethod:E("payMethod").value,providerReference:E("payRef").value||undefined})});
+         closeModal();toast("Payment recorded. Paid subscriptions are renewed and synced.");await loadBase();await openSchool(id);
+       }catch(e){toast(e.message,true)}
+     };
+   };
+ });
 }
 async function overview(){
  var o=await raw("/v1/commercial-control/overview");E("pageTitle").textContent="Commercial Overview";
