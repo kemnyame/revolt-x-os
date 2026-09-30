@@ -5803,16 +5803,18 @@ async function createAdmissionApplication(input:{
   return row;
 }
 
-app.get('/api/public/school',async()=>{
-  const school=await maybeOne<any>(db,'SELECT organisation_id,school_name,short_name,motto,phone,email,address FROM school_profiles ORDER BY created_at LIMIT 1');
-  if(!school)throw fail(404,'School admissions are not configured');
+app.get('/api/public/school',async request=>{
+  const q=z.object({school:z.string().min(2).max(100).optional()}).parse(request.query);
+  const school=await resolveTenantSchool(q.school);
+  const licence=await schoolLicence(school.organisation_id);
+  if(licence.status!=='legacy'&&!licence.modules.includes('school.admissions'))throw fail(403,'Admissions is not included in this school plan');
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
   const grades=(await db.query('SELECT code,name,stage FROM grade_levels WHERE organisation_id=$1 AND is_active=true ORDER BY level_order',[school.organisation_id])).rows;
-  return{school,grades};
+  return{school:{organisation_id:school.organisation_id,tenant_slug:school.tenant_slug,school_name:school.school_name,short_name:school.short_name,motto:school.motto,phone:school.phone,email:school.email,address:school.address},grades};
 });
 app.post('/api/public/admissions',async(request,reply)=>{
-  const school=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
-  if(!school)throw fail(404,'School admissions are not configured');
   const b=z.object({
+    schoolSlug:z.string().trim().min(2).max(100).optional(),
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
@@ -5820,13 +5822,18 @@ app.post('/api/public/admissions',async(request,reply)=>{
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
+  const school=await resolveTenantSchool(b.schoolSlug);
+  const licence=await schoolLicence(school.organisation_id);
+  if(licence.status!=='legacy'&&!licence.modules.includes('school.admissions'))throw fail(403,'Admissions is not included in this school plan');
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
   const row=await createAdmissionApplication({organisationId:school.organisation_id,source:'external',data:b});
   return reply.code(201).send({id:row.id,applicationNo:row.application_no,status:row.status});
 });
 app.get('/api/public/admissions/status',async request=>{
-  const q=z.object({applicationNo:z.string().trim().min(1).max(40)}).parse(request.query);
+  const q=z.object({applicationNo:z.string().trim().min(1).max(40),school:z.string().min(2).max(100).optional()}).parse(request.query);
+  const school=await resolveTenantSchool(q.school);
   const row=await maybeOne<any>(db,`SELECT id,application_no,status,submitted_at,updated_at
-    FROM admission_applications WHERE upper(application_no)=upper($1)`,[q.applicationNo]);
+    FROM admission_applications WHERE organisation_id=$1 AND upper(application_no)=upper($2)`,[school.organisation_id,q.applicationNo]);
   if(!row)throw fail(404,'Application reference not found');
   const history=(await db.query(`SELECT new_status,created_at FROM admission_status_history
     WHERE application_id=$1 ORDER BY created_at`,[row.id])).rows;
