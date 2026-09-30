@@ -248,6 +248,18 @@ async function schoolLicence(organisationId:string,force=false){
   };
 }
 
+async function resolveTenantSchool(slug?:string|null){
+  if(slug){
+    const school=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE tenant_slug=$1',[slug]);
+    if(!school)throw fail(404,'School code was not found');
+    return school;
+  }
+  const rows=(await db.query('SELECT * FROM school_profiles ORDER BY created_at LIMIT 2')).rows;
+  if(rows.length===1)return rows[0];
+  if(!rows.length)throw fail(404,'School workspace is not configured');
+  throw fail(400,'School code is required');
+}
+
 function licenceDaysRemaining(licence:any){
   const target=licence?.status==='trial'?licence?.trialEndsAt:licence?.status==='grace'?licence?.graceEndsAt:licence?.periodEnd;
   if(!target)return null;
@@ -5211,9 +5223,18 @@ app.post('/api/promotions/batch',async request=>{
 app.get('/api/promotions',async request=>{const a=await authorize(request,db,config,'reports.view');return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,fc.name from_class,tc.name to_class,fy.name from_year,ty.name to_year FROM student_promotions p JOIN students s ON s.id=p.student_id LEFT JOIN classrooms fc ON fc.id=p.from_classroom_id LEFT JOIN classrooms tc ON tc.id=p.to_classroom_id JOIN academic_years fy ON fy.id=p.from_academic_year_id JOIN academic_years ty ON ty.id=p.to_academic_year_id WHERE p.organisation_id=$1 ORDER BY p.created_at DESC`,[a.core.organisation_id])).rows});
 
 app.post('/api/parent/login',async request=>{
-  const b=z.object({phone:z.string().trim().min(5).max(60),admissionNo:z.string().trim().min(1).max(60)}).parse(request.body);
-  const normalizedPhone=b.phone.replace(/\\D/g,'');
-  const identityKey=throttleFingerprint(normalizedPhone+'|'+b.admissionNo.toLowerCase());
+  const b=z.object({
+    phone:z.string().trim().min(5).max(60),
+    admissionNo:z.string().trim().min(1).max(60),
+    schoolSlug:z.string().trim().min(2).max(100).optional()
+  }).parse(request.body);
+  const tenant=await resolveTenantSchool(b.schoolSlug);
+  const licence=await schoolLicence(tenant.organisation_id);
+  if(licence.status!=='legacy'&&!licence.modules.includes('school.parent_portal'))throw fail(403,'Parent Portal is not included in this school plan');
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+
+  const normalizedPhone=b.phone.replace(/\D/g,'');
+  const identityKey=throttleFingerprint(tenant.organisation_id+'|'+normalizedPhone+'|'+b.admissionNo.toLowerCase());
   const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
   await assertPortalLoginAllowed(db,'parent_identity',identityKey);
   await assertPortalLoginAllowed(db,'parent_ip',ipKey);
@@ -5224,9 +5245,10 @@ app.post('/api/parent/login',async request=>{
     JOIN student_guardians sg ON sg.guardian_id=g.id
     JOIN students s ON s.id=sg.student_id
     WHERE g.organisation_id=s.organisation_id
+      AND g.organisation_id=$3
       AND regexp_replace(g.phone,'\\D','','g')=regexp_replace($1,'\\D','','g')
       AND lower(s.admission_no)=lower($2)
-    LIMIT 1`,[b.phone,b.admissionNo]);
+    LIMIT 1`,[b.phone,b.admissionNo,tenant.organisation_id]);
 
   if(!row){
     await Promise.all([
@@ -5240,12 +5262,12 @@ app.post('/api/parent/login',async request=>{
     clearPortalLoginThrottle(db,'parent_identity',identityKey),
     clearPortalLoginThrottle(db,'parent_ip',ipKey)
   ]);
-
   const token=randomBytes(48).toString('base64url');
   await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE guardian_id=$1 AND revoked_at IS NULL',[row.id]);
   await db.query(`INSERT INTO guardian_portal_sessions(guardian_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800};
+  return{token,expiresIn:28800,schoolSlug:tenant.tenant_slug};
 });
+
 app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request);await db.query('UPDATE guardian_portal_sessions SET revoked_at=now() WHERE id=$1',[g.session_id]);return{ok:true}});
 app.get('/api/parent/me',async request=>{
   const g=await guardianAuth(request);
@@ -5695,14 +5717,25 @@ app.post('/api/students/:id/portal-reset',async request=>{
   return{studentId:id,pin};
 });
 app.post('/api/student/login',async request=>{
-  const b=z.object({admissionNo:z.string().min(1).max(60),pin:z.string().regex(/^\d{6}$/)}).parse(request.body);
-  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active FROM students s JOIN student_portal_access spa ON spa.student_id=s.id WHERE s.admission_no=$1 AND s.status='active' LIMIT 1`,[b.admissionNo]);
+  const b=z.object({
+    admissionNo:z.string().min(1).max(60),
+    pin:z.string().regex(/^\d{6}$/),
+    schoolSlug:z.string().trim().min(2).max(100).optional()
+  }).parse(request.body);
+  const tenant=await resolveTenantSchool(b.schoolSlug);
+  const licence=await schoolLicence(tenant.organisation_id);
+  if(licence.status!=='legacy'&&!licence.modules.includes('school.student_portal'))throw fail(403,'Student Portal is not included in this school plan');
+  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+  const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active
+    FROM students s JOIN student_portal_access spa ON spa.student_id=s.id
+    WHERE s.organisation_id=$1 AND s.admission_no=$2 AND s.status='active' LIMIT 1`,[tenant.organisation_id,b.admissionNo]);
   if(!row||!row.is_active||!verifyPortalPin(b.pin,row.pin_hash))throw fail(401,'Invalid student portal credentials');
   const token=randomBytes(48).toString('base64url');
   await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at) VALUES($1,$2,now()+interval '8 hours')`,[row.id,hashPortalToken(token)]);
   await db.query('UPDATE student_portal_access SET last_login_at=now() WHERE student_id=$1',[row.id]);
-  return{token,expiresIn:28800};
+  return{token,expiresIn:28800,schoolSlug:tenant.tenant_slug};
 });
+
 app.post('/api/student/logout',async request=>{const s=await studentAuth(request);await db.query('UPDATE student_portal_sessions SET revoked_at=now() WHERE id=$1',[s.session_id]);return{ok:true}});
 app.get('/api/student/me',async request=>{
   const s=await studentAuth(request);
