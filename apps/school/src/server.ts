@@ -1994,7 +1994,7 @@ app.post('/api/academic-years',async(request,reply)=>{
 });
 async function academicYearPromotionEvidence(queryDb:any,organisationId:string,academicYearId:string,classroomId?:string|null){
   const terms=(await queryDb.query(`SELECT id,term_no,name,start_date,end_date
-    FROM terms WHERE organisation_id=$1 AND academic_year_id=$2
+    FROM terms WHERE organisation_id=$1 AND academic_year_id=$2 AND term_no IN (1,2,3)
     ORDER BY term_no,start_date`,[organisationId,academicYearId])).rows;
   const thresholdRow=await one<any>(queryDb,'SELECT COALESCE(promotion_threshold_percent,50)::numeric threshold FROM school_profiles WHERE organisation_id=$1',[organisationId]);
   const threshold=Number(thresholdRow.threshold||50);
@@ -2004,7 +2004,7 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
     WITH year_terms AS (
       SELECT id term_id,term_no,name term_name
       FROM terms
-      WHERE organisation_id=$1 AND academic_year_id=$2
+      WHERE organisation_id=$1 AND academic_year_id=$2 AND term_no IN (1,2,3)
     ),
     source_students AS (
       SELECT e.student_id,e.classroom_id
@@ -2085,7 +2085,12 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
       COUNT(*)::int configured_terms,
       COUNT(*) FILTER(WHERE academic_complete)::int complete_terms,
       COUNT(*) FILTER(WHERE academic_complete AND report_released)::int ready_terms,
-      ROUND(AVG(term_average) FILTER(WHERE academic_complete)::numeric,2) academic_average,
+      CASE WHEN COUNT(*) FILTER(WHERE academic_complete)=3
+        THEN ROUND(SUM(term_average) FILTER(WHERE academic_complete)::numeric,2)
+        ELSE NULL END academic_aggregate_score,
+      CASE WHEN COUNT(*) FILTER(WHERE academic_complete)=3
+        THEN ROUND((SUM(term_average) FILTER(WHERE academic_complete)/3.0)::numeric,2)
+        ELSE NULL END academic_average,
       jsonb_agg(jsonb_build_object(
         'termId',term_id,'termNo',term_no,'termName',term_name,
         'average',term_average,'academicComplete',academic_complete,
@@ -2101,14 +2106,16 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
     const configuredTerms=Number(row.configured_terms||0);
     const completeTerms=Number(row.complete_terms||0);
     const readyTerms=Number(row.ready_terms||0);
+    const annualAggregate=row.academic_aggregate_score==null?null:Number(row.academic_aggregate_score);
     const annualAverage=row.academic_average==null?null:Number(row.academic_average);
-    const ready=configuredTerms===3&&completeTerms===3&&readyTerms===3&&annualAverage!=null;
+    const ready=configuredTerms===3&&completeTerms===3&&readyTerms===3&&annualAggregate!=null&&annualAverage!=null;
     let reason:string|null=null;
     if(configuredTerms<3)reason='All three terms must be configured before promotion';
     else if(completeTerms<3)reason='All three terms must have complete assessment results';
     else if(readyTerms<3)reason='All three term reports must be approved and released';
     byStudent.set(row.student_id,{
-      configuredTerms,completeTerms,readyTerms,annualAverage,
+      configuredTerms,completeTerms,readyTerms,annualAggregate,annualAverage,
+      promotionScore:annualAverage,
       termAverages:row.term_averages||[],ready,reason,threshold
     });
   }
