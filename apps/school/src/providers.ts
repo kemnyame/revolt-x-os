@@ -173,14 +173,20 @@ export async function sendMessage(config:SchoolConfig,input:{
         }
 
         if(!config.RESEND_API_KEY||!config.RESEND_FROM_EMAIL)throw new Error('Resend email provider is not configured');
+        const resendTesting=/(@|<)[^>]*resend\.dev>?$/i.test(config.RESEND_FROM_EMAIL);
+        const resendTo=resendTesting?(config.RESEND_TEST_RECIPIENT||input.to):input.to;
+        const resendSubject=resendTesting&&resendTo!==input.to?'[TEST for '+input.to+'] '+subject:subject;
+        const resendHtml=resendTesting&&resendTo!==input.to
+          ?'<div style="padding:8px 12px;background:#fff5e8;border:1px solid #e8ca83;margin-bottom:14px"><b>Resend test mode:</b> original recipient '+htmlEscape(input.to)+'</div>'+htmlContent
+          :htmlContent;
         const res=await fetch('https://api.resend.com/emails',{
           method:'POST',
           headers:{authorization:'Bearer '+config.RESEND_API_KEY,'content-type':'application/json'},
           body:JSON.stringify({
             from:config.RESEND_FROM_EMAIL,
-            to:[input.to],
-            subject,
-            html:htmlContent
+            to:[resendTo],
+            subject:resendSubject,
+            html:resendHtml
           }),
           signal:AbortSignal.timeout(15000)
         });
