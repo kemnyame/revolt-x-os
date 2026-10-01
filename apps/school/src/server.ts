@@ -3913,7 +3913,7 @@ app.post('/api/staff/users',async(request,reply)=>{
   const b=z.object({
     firstName:z.string().trim().min(1).max(100),
     lastName:z.string().trim().min(1).max(100),
-    email:z.string().trim().toLowerCase().email(),
+    email:z.string().trim().toLowerCase().email().optional(),
     jobTitle:z.string().trim().max(160).optional(),
     schoolRole:z.string().min(1).max(40)
   }).parse(request.body);
@@ -3930,7 +3930,7 @@ app.post('/api/staff/users',async(request,reply)=>{
       actorUserId:a.core.id,
       firstName:b.firstName,
       lastName:b.lastName,
-      email:b.email,
+      ...(b.email?{email:b.email}:{}),
       jobTitle:b.jobTitle||role.name,
       roleKey:'member'
     }),
@@ -3954,24 +3954,11 @@ app.post('/api/staff/users',async(request,reply)=>{
     RETURNING *`,[a.core.organisation_id,payload.user_id,b.schoolRole]);
   await persistCoreUsers(a.core.organisation_id,[{
     id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
-    email:b.email,job_title:b.jobTitle||role.name,employee_number:payload.employee_number??null,
+    email:b.email??null,job_title:b.jobTitle||role.name,employee_number:payload.employee_number??null,
     status:'active',membership_status:'active',roles:['member']
   }]);
 
-  const genericReset=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-reset',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({
-      organisationId:a.core.organisation_id,
-      actorUserId:a.core.id,
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
-    }),
-    signal:AbortSignal.timeout(15000)
-  }).catch(()=>null);
-  if(!genericReset)throw fail(503,'User was created but the temporary School password could not be set');
-  const genericPayload=await genericReset.json().catch(()=>null) as any;
-  if(!genericReset.ok)throw fail(genericReset.status,genericPayload?.error?.message||'User was created but the temporary School password could not be set');
-  const invitation={status:'generic_password_set'};
+
 
   coreUsersCache.delete(a.core.organisation_id);
   await audit(a.core.organisation_id,a.core.id,'school_user.created','school_membership',schoolMembership.id,{
@@ -3984,7 +3971,7 @@ app.post('/api/staff/users',async(request,reply)=>{
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
-    email:b.email,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,invitation,temporaryPassword:config.STAFF_GENERIC_PASSWORD
+    email:b.email??null,staffId:payload.employee_number,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name
   });
 });
 
@@ -3992,7 +3979,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.create');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   const b=z.object({
-    email:z.string().email(),
+    email:z.string().email().optional(),
     firstName:z.string().min(1).max(100),
     lastName:z.string().min(1).max(100),
     jobTitle:z.string().min(2).max(160).default('Teacher')
@@ -4027,126 +4014,25 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     RETURNING *`,[a.core.organisation_id,payload.user_id]);
   await persistCoreUsers(a.core.organisation_id,[{
     id:payload.user_id,membership_id:payload.id,first_name:b.firstName,last_name:b.lastName,
-    email:b.email,job_title:b.jobTitle,employee_number:payload.employee_number??null,
+    email:b.email??null,job_title:b.jobTitle,employee_number:payload.employee_number??null,
     status:'active',membership_status:'active',roles:['member']
   }]);
 
-  const genericReset=await fetch(base+'/v1/internal/school/users/'+payload.id+'/password-reset',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({
-      organisationId:a.core.organisation_id,
-      actorUserId:a.core.id,
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
-    }),
-    signal:AbortSignal.timeout(15000)
-  }).catch(()=>null);
-  if(!genericReset)throw fail(503,'Teacher was created but the temporary School password could not be set');
-  const genericPayload=await genericReset.json().catch(()=>null) as any;
-  if(!genericReset.ok)throw fail(genericReset.status,genericPayload?.error?.message||'Teacher was created but the temporary School password could not be set');
-  const invitation={status:'generic_password_set'};
+
 
   coreUsersCache.delete(a.core.organisation_id);
-  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',schoolMembership.id,{email:b.email,osUserId:payload.user_id,invitationStatus:invitation.status});
+  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',schoolMembership.id,{email:b.email??null,osUserId:payload.user_id,staffId:payload.employee_number});
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.created',
     resourceType:'teacher',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
     oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:payload.employee_number??null,schoolRole:'teacher',status:'active'},
-    metadata:{invitationStatus:invitation.status}
+    metadata:{loginMethod:'school_id_staff_id'}
   });
   return reply.code(201).send({
-    osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email,firstName:b.firstName,lastName:b.lastName,
-    jobTitle:b.jobTitle,invitation,temporaryPassword:config.STAFF_GENERIC_PASSWORD
+    osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email??null,staffId:payload.employee_number,firstName:b.firstName,lastName:b.lastName,
+    jobTitle:b.jobTitle
   });
 });
-app.post('/api/staff/teachers/:osUserId/send-invitation',async request=>{
-  const a=await authorize(request,db,config,'staff.edit');
-  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
-  const {osUserId}=z.object({osUserId:z.string().uuid()}).parse(request.params);
-  const schoolMembership=await one<any>(db,`SELECT sm.* FROM school_memberships sm
-    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true AND sr.can_teach=true`,
-    [a.core.organisation_id,osUserId]);
-  const users=await fetchCoreUsers(a.core.organisation_id);
-  const teacher=users.find((u:any)=>u.id===osUserId);
-  if(!teacher?.membership_id)throw fail(404,'Teacher Core OS membership was not found');
-
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const activated=await fetch(base+'/v1/internal/school/users/'+teacher.membership_id+'/status',{
-    method:'PATCH',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id,status:'active'}),
-    signal:AbortSignal.timeout(15000)
-  }).catch(()=>null);
-  if(!activated?.ok)throw fail(activated?.status||503,'Teacher Core OS access could not be activated');
-
-  const setupRes=await fetch(base+'/v1/internal/school/users/'+teacher.membership_id+'/password-setup',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id}),
-    signal:AbortSignal.timeout(15000)
-  }).catch(()=>null);
-  if(!setupRes)throw fail(503,'Core OS could not create a password setup invitation');
-  const setup=await setupRes.json().catch(()=>null) as any;
-  if(!setupRes.ok)throw fail(setupRes.status,setup?.error?.message||'Could not create password setup invitation');
-
-  const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-  const setupUrl=publicBase+'/login?next='+encodeURIComponent('/teacher')+'&setup='+encodeURIComponent(setup.setupToken);
-  const delivered=await deliverCommunication({
-    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
-    recipientName:(teacher.first_name+' '+teacher.last_name).trim(),recipientAddress:teacher.email,
-    subject:'Set up your Revolt-X Teacher account',
-    body:`Hello ${teacher.first_name},
-
-A secure password-setup link has been generated for your Revolt-X School Teacher account.
-
-Create your password here:
-${setupUrl}
-
-This link expires in 24 hours. After setting your password, sign in at ${publicBase}/login using ${teacher.email}.
-
-If you did not request or expect this message, contact your school administrator.`,
-    templateKey:'teacher.invitation',relatedType:'school_membership',relatedId:schoolMembership.id
-  });
-  await audit(a.core.organisation_id,a.core.id,'teacher.invitation_sent','school_membership',schoolMembership.id,{email:teacher.email,status:delivered.status});
-  await changeLog({
-    organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.invitation_sent',
-    resourceType:'teacher',resourceId:osUserId,performedOn:(teacher.first_name+' '+teacher.last_name).trim(),
-    oldValue:null,newValue:{invitationStatus:delivered.status,expiresInHours:24}
-  });
-  return{status:delivered.status,error:delivered.last_error??null,expiresInHours:24};
-});
-
-app.post('/api/staff/users/:membershipId/password-reset',async request=>{
-  const a=await authorize(request,db,config,'staff.password_reset');
-  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
-  const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
-  const users=await fetchCoreUsers(a.core.organisation_id);
-  const coreUser=users.find((u:any)=>u.membership_id===membershipId);
-  if(!coreUser)throw fail(404,'School user was not found');
-  if(!coreUser.email)throw fail(409,'Add a real email address before resetting this user');
-
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const resetRes=await fetch(base+'/v1/internal/school/users/'+membershipId+'/password-reset',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({
-      organisationId:a.core.organisation_id,
-      actorUserId:a.core.id,
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
-    }),
-    signal:AbortSignal.timeout(15000)
-  }).catch(()=>null);
-  if(!resetRes)throw fail(503,'Core OS could not reset the user password');
-  const payload=await resetRes.json().catch(()=>null) as any;
-  if(!resetRes.ok)throw fail(resetRes.status,payload?.error?.message||'Could not reset the user password');
-
-  await db.query('UPDATE school_sessions SET revoked_at=now() WHERE organisation_id=$1 AND os_user_id=$2 AND revoked_at IS NULL',
-    [a.core.organisation_id,coreUser.id]);
-  await audit(a.core.organisation_id,a.core.id,'school_user.password_reset','school_membership',membershipId,{osUserId:coreUser.id});
-  return{status:'reset',email:coreUser.email,temporaryPassword:config.STAFF_GENERIC_PASSWORD};
-});
-
 app.get('/api/staff/module-memberships',async request=>{
   const a=await authorize(request,db,config,'staff.view');
   return (await db.query(`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach
