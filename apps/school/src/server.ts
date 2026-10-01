@@ -15,7 +15,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
-import { loginFrontend, passwordChangeFrontend } from './login-ui.js';
+import { loginFrontend, adminLoginFrontend, passwordChangeFrontend } from './login-ui.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
@@ -131,7 +131,7 @@ async function changeLog(input:{
     JSON.stringify(input.metadata??{})
   ]);
 }
-async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'|'quick_login'|'staff_id'='core_exchange'){
+async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'|'quick_login'|'staff_id'|'admin_email'='core_exchange'){
   const localToken='rxs_'+randomBytes(48).toString('base64url');
   const tokenHash=createHash('sha256').update(localToken).digest('hex');
   const expiresAt=new Date(Date.now()+8*60*60*1000);
@@ -1623,7 +1623,7 @@ app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
-app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
 app.get('/teacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/headteacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/bursar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
@@ -1758,6 +1758,98 @@ app.get('/api/auth/schools',async()=>{
   });
   return [...merged.values()].sort((a,b)=>a.name.localeCompare(b.name));
 });
+
+async function handleSchoolAdminLogin(request:any,reply:any){
+  const b=z.object({
+    schoolId:z.string().trim().min(1).max(120),
+    email:z.string().trim().toLowerCase().email(),
+    password:z.string().min(1).max(200)
+  }).parse(request.body);
+
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const authRes=await fetch(base+'/v1/internal/school/authenticate-admin',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({schoolId:b.schoolId,email:b.email,password:b.password}),
+    signal:AbortSignal.timeout(20000)
+  }).catch(()=>null);
+
+  if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
+  const user=await authRes.json().catch(()=>null) as any;
+  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid School Administrator credentials');
+
+  let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
+  if(!school){
+    const repaired=await fetch(base+'/v1/internal/school/ensure-tenant',{
+      method:'POST',
+      headers:{...coreServiceHeaders(),'content-type':'application/json'},
+      body:JSON.stringify({schoolName:user.organisation_slug}),
+      signal:AbortSignal.timeout(35000)
+    }).catch(()=>null);
+    if(!repaired?.ok)throw fail(503,'Your School workspace could not be prepared');
+    school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
+  }
+  if(!school)throw fail(503,'Your School workspace could not be prepared');
+
+  await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+    VALUES($1,$2,'school_admin','active')
+    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='school_admin',status='active',updated_at=now()`,
+    [user.organisation_id,user.id]);
+  const membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
+    FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
+    [user.organisation_id,user.id]);
+
+  await persistCoreUsers(user.organisation_id,[{
+    id:user.id,membership_id:user.membership_id,first_name:user.first_name,last_name:user.last_name,
+    email:user.email??null,job_title:user.job_title??'School Administrator',employee_number:user.employee_number??null,
+    login_staff_id:user.staff_id??null,status:user.status,membership_status:user.membership_status,roles:user.roles||[]
+  }]).catch(()=>null);
+
+  const coreContext={
+    id:user.id,
+    email:user.email,
+    first_name:user.first_name||'School',
+    last_name:user.last_name||'Administrator',
+    status:user.status||'active',
+    membership_id:user.membership_id,
+    membership_status:user.membership_status||'active',
+    employee_number:user.employee_number??null,
+    login_staff_id:user.staff_id??null,
+    organisation_id:user.organisation_id,
+    organisation_name:user.organisation_name,
+    organisation_slug:user.organisation_slug,
+    sessionId:'school-admin-'+randomBytes(12).toString('hex'),
+    permissions:[],
+    preview:false,
+    must_change_password:Boolean(user.must_change_password),
+    dedicated_admin:true
+  };
+
+  const session=await createSchoolStaffSession(coreContext,'admin_email');
+  const secure=config.NODE_ENV==='production'?'; Secure':'';
+  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+
+  await audit(user.organisation_id,user.id,'school.admin_signed_in','school_session',null,{
+    role:'school_admin',email:user.email,school:school.school_name
+  });
+
+  return reply.send({
+    accessToken:session.localToken,
+    expiresIn:8*60*60,
+    schoolRole:'school_admin',
+    roleProfile:{key:'school_admin',name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
+    user:{id:user.id,email:user.email,firstName:coreContext.first_name,lastName:coreContext.last_name},
+    school:{id:school.tenant_slug,name:school.school_name},
+    requiresPasswordChange:Boolean(user.must_change_password),
+    passwordChangeUrl:'/change-password',
+    redirectTo:'/'
+  });
+}
+
+app.post('/api/auth/admin-login',handleSchoolAdminLogin);
 
 async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
