@@ -1,6 +1,6 @@
 import { applySchoolDesign } from './school-design.js';
 
-const sharedStyles=\`
+const sharedStyles=`
 :root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172334;background:#eef3f7}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:linear-gradient(135deg,#eef4f7 0%,#f8fbfc 55%,#edf2f5 100%);display:flex;align-items:center;justify-content:center;padding:24px}
@@ -19,15 +19,15 @@ button:disabled{opacity:.6;cursor:wait}.status{margin-top:14px;border-radius:10p
 .error{background:#fff1f0;color:#a22c22;border:1px solid #ffd2cf}.success{background:#edf8f1;color:#23623d;border:1px solid #ccebd7}
 .help{margin-top:20px;padding:14px;border:1px solid #dbe5eb;border-radius:12px;background:#f7fafb;color:#617583;font-size:13px;line-height:1.55}
 @media(max-width:760px){body{padding:0}.shell{grid-template-columns:1fr;border-radius:0;min-height:100vh}.brand{min-height:auto;padding:32px}.brand-card{display:none}.form-side{padding:34px 28px}.brand h1{font-size:30px}}
-\`;
+`;
 
-export const loginFrontend=applySchoolDesign(\`<!doctype html>
+export const loginFrontend=applySchoolDesign(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revolt-X School • Staff Login</title>
-<style>\${sharedStyles}</style>
+<style>${sharedStyles}</style>
 </head>
 <body>
 <main class="shell">
@@ -118,15 +118,15 @@ export const loginFrontend=applySchoolDesign(\`<!doctype html>
 })();
 </script>
 </body>
-</html>\`,'login');
+</html>`,'login');
 
-export const passwordChangeFrontend=applySchoolDesign(\`<!doctype html>
+export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revolt-X School • Change Password</title>
-<style>\${sharedStyles}</style>
+<style>${sharedStyles}</style>
 </head>
 <body>
 <main class="shell">
@@ -178,4 +178,4 @@ export const passwordChangeFrontend=applySchoolDesign(\`<!doctype html>
 })();
 </script>
 </body>
-</html>\`,'login');
+</html>`,'login');
