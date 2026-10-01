@@ -30,7 +30,6 @@ button:disabled{opacity:.6;cursor:wait}
 .error{background:#fff1f0;color:#a22c22;border:1px solid #ffd2cf}
 .success{background:#edf8f1;color:#23623d;border:1px solid #ccebd7}
 .help{margin-top:20px;padding:14px;border:1px solid #dbe5eb;border-radius:12px;background:#f7fafb;color:#617583;font-size:13px;line-height:1.55}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 @media(max-width:760px){body{padding:0}.shell{grid-template-columns:1fr;border-radius:0;min-height:100vh}.brand{min-height:auto;padding:32px}.brand-card{display:none}.form-side{padding:34px 28px}.brand h1{font-size:30px}}
 </style>
 </head>
@@ -39,30 +38,30 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   <section class="brand">
     <div>
       <div class="mark">REVOLT-X SCHOOL</div>
-      <h1>One login for every school staff profile.</h1>
-      <p>Revolt-X School now uses the School ID and the automatically assigned Staff ID. Email addresses and passwords are not used for staff sign-in.</p>
+      <h1>One secure login for every staff member.</h1>
+      <p>Use the Staff ID automatically assigned to your profile and your password. Email is not used for Revolt-X School staff sign-in.</p>
     </div>
     <div class="brand-card">
-      <b>How it works</b>
-      <p style="margin:8px 0 0">Your School ID identifies the tenant. Your Staff ID identifies your profile inside that school and opens the workspace assigned to your role.</p>
+      <b>Staff ID + Password</b>
+      <p style="margin:8px 0 0">Each Staff ID is unique across Revolt-X School tenants, so you do not need to select or enter a school before signing in.</p>
     </div>
   </section>
   <section class="form-side">
     <div class="form-wrap">
       <div class="eyebrow">Staff access</div>
-      <h2>Sign in to your school</h2>
-      <p class="muted">Enter the School ID and Staff ID provided by your school administrator.</p>
-
-      <label for="schoolId">School ID</label>
-      <input id="schoolId" autocomplete="organization" placeholder="e.g. kem-company">
+      <h2>Sign in to Revolt-X School</h2>
+      <p class="muted">Enter your Staff ID and password.</p>
 
       <label for="staffId">Staff ID</label>
-      <input id="staffId" autocomplete="username" placeholder="e.g. STF-000001">
+      <input id="staffId" autocomplete="username" autocapitalize="characters" placeholder="e.g. KEM-COMPANY-STF-000001">
+
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password">
 
       <button id="signin" type="button">Sign in to Revolt-X School</button>
       <div id="status"></div>
 
-      <div class="help"><b>Staff ID is automatic.</b> A Staff ID is created when a user is added. Existing staff keep their current Staff ID. The School ID is the school's unique tenant code.</div>
+      <div class="help"><b>New staff:</b> your school administrator can see your Staff ID in Access Management and provide your initial password. The administrator can also reset your password when required.</div>
     </div>
   </section>
 </main>
@@ -85,22 +84,22 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     return body;
   }
   async function signIn(){
-    var schoolId=E('schoolId').value.trim();
     var staffId=E('staffId').value.trim();
-    if(!schoolId){show('Enter your School ID.');E('schoolId').focus();return}
+    var password=E('password').value;
     if(!staffId){show('Enter your Staff ID.');E('staffId').focus();return}
+    if(!password){show('Enter your password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;
     btn.disabled=true;btn.textContent='Signing in...';E('status').className='';E('status').textContent='';
     try{
       var result=await json('/api/auth/staff-id-login',{
         method:'POST',
-        body:JSON.stringify({schoolId:schoolId,staffId:staffId})
+        body:JSON.stringify({staffId:staffId,password:password})
       });
       try{
         sessionStorage.setItem('rx_school_token',result.accessToken);
         if(result.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',result.accessToken);
         else sessionStorage.removeItem('rx_teacher_token');
-        localStorage.setItem('rx_school_id',result.school&&result.school.id?result.school.id:schoolId);
+        localStorage.setItem('rx_staff_id',result.user&&result.user.staffId?result.user.staffId:staffId);
       }catch(e){}
       show('Welcome '+(result.user&&result.user.firstName?result.user.firstName:'')+'. Opening your workspace...','success');
       location.replace(result.redirectTo||'/');
@@ -109,13 +108,10 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
       btn.disabled=false;btn.textContent=old;
     }
   }
-  var params=new URLSearchParams(location.search);
-  var school=params.get('school')||'';
-  try{if(!school)school=localStorage.getItem('rx_school_id')||''}catch(e){}
-  E('schoolId').value=school;
+  try{E('staffId').value=localStorage.getItem('rx_staff_id')||''}catch(e){}
   E('signin').onclick=signIn;
-  E('schoolId').onkeydown=function(e){if(e.key==='Enter')E('staffId').focus()};
-  E('staffId').onkeydown=function(e){if(e.key==='Enter')signIn()};
+  E('staffId').onkeydown=function(e){if(e.key==='Enter')E('password').focus()};
+  E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
 })();
 </script>
 </body>
