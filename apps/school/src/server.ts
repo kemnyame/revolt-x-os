@@ -323,6 +323,7 @@ app.post('/api/internal/sync-staff',async request=>{
       lastName:z.string().min(1).max(100),
       email:z.string().email().nullable().optional(),
       jobTitle:z.string().max(160).nullable().optional(),
+      employeeNumber:z.string().max(80).nullable().optional(),
       userStatus:z.string().max(40).optional(),
       coreRoles:z.array(z.string()).default([])
     })).max(500)
@@ -350,13 +351,14 @@ app.post('/api/internal/sync-staff',async request=>{
         [b.organisationId,member.osUserId,role]);
       await client.query(`INSERT INTO school_user_directory(
           organisation_id,os_user_id,first_name,last_name,email,job_title,user_status,membership_status,roles,synced_at
-        ) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,now())
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,now())
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
           first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=COALESCE(EXCLUDED.email,school_user_directory.email),
-          job_title=EXCLUDED.job_title,user_status=EXCLUDED.user_status,membership_status='active',
+          job_title=EXCLUDED.job_title,employee_number=COALESCE(EXCLUDED.employee_number,school_user_directory.employee_number),
+          user_status=EXCLUDED.user_status,membership_status='active',
           roles=EXCLUDED.roles,synced_at=now()`,
         [b.organisationId,member.osUserId,member.firstName,member.lastName,member.email??null,
-          member.jobTitle??null,member.userStatus||'active',JSON.stringify(member.coreRoles||[])]);
+          member.jobTitle??null,member.employeeNumber??null,member.userStatus||'active',JSON.stringify(member.coreRoles||[])]);
       synced++;
     }
   });
