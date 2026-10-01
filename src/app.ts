@@ -24,14 +24,14 @@ import { commercialControlFrontend } from './commercial-control2-ui.js';
 import { osLoginFrontend } from './login-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
-  const issue = error.issues[0];
+  const issue = error.issues[0] as any;
   const field = issue?.path?.length ? issue.path.join('.') : 'This field';
   if (!issue) return 'Please check the form and try again.';
   if (issue.code === 'invalid_type') return `${field} is required or has the wrong format.`;
-  if (issue.code === 'invalid_string' && 'validation' in issue && issue.validation === 'email') return `${field} must be a valid email address.`;
+  if ((issue.code === 'invalid_format' || issue.code === 'invalid_string') && (issue.format === 'email' || issue.validation === 'email')) return `${field} must be a valid email address.`;
   if (issue.code === 'too_small') return `${field} is too short or below the required minimum.`;
   if (issue.code === 'too_big') return `${field} is too long or above the allowed maximum.`;
-  if (issue.code === 'invalid_enum_value') return `${field} has an unsupported option. Please choose from the list provided.`;
+  if (issue.code === 'invalid_value' || issue.code === 'invalid_enum_value') return `${field} has an unsupported option. Please choose from the list provided.`;
   return `${field}: ${issue.message}`;
 }
 
