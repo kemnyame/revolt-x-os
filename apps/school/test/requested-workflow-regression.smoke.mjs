@@ -134,12 +134,15 @@ test('promotion uses complete three-term academic-year evidence',async()=>{
   assert.match(ui,/Term 3/);
 });
 
-test('staff login is routed by active role profile and demo access includes active roles',async()=>{
+test('staff ID login routes users to the workspace configured for their active School role',async()=>{
   const server=await read('server.js');
   const login=await read('login-ui.js');
-  assert.match(server,/roleProfile\.portal_mode\s*===\s*'teacher'\s*\?\s*'\/teacher'\s*:\s*'\/'/);
+  assert.match(server,/function roleWorkspace/);
+  assert.match(server,/portal_mode\s*===\s*['"]teacher['"]\s*\?\s*['"]\/teacher['"]\s*:\s*['"]\/['"]/);
   assert.match(server,/JOIN school_roles sr/);
-  assert.match(login,/profile\s*&&\s*profile\.portal_mode\s*===\s*'teacher'/);
+  assert.match(server,/\/api\/auth\/staff-id-login/);
+  assert.match(login,/School ID/);
+  assert.match(login,/Staff ID/);
 });
 
 test('lesson notes support real attachments',async()=>{
