@@ -15,7 +15,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
-import { loginFrontend } from './login-ui.js';
+import { loginFrontend, passwordChangeFrontend } from './login-ui.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
@@ -1622,6 +1622,7 @@ app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-ag
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/teacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/headteacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
@@ -1738,8 +1739,15 @@ function inferSchoolRoleFromStaff(user:any){
   return 'teacher';
 }
 
+app.get('/api/auth/schools',async()=>{
+  return (await db.query(`SELECT tenant_slug id,school_name name
+    FROM school_profiles
+    ORDER BY lower(school_name),tenant_slug`)).rows;
+});
+
 async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
+    schoolId:z.string().trim().min(1).max(120),
     staffId:z.string().trim().min(4).max(120),
     password:z.string().min(1).max(200)
   }).parse(request.body);
@@ -1749,13 +1757,13 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
   const authRes=await fetch(base+'/v1/internal/school/authenticate-staff',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({staffId:b.staffId,password:b.password}),
+    body:JSON.stringify({schoolId:b.schoolId,staffId:b.staffId,password:b.password}),
     signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
 
   if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
   const user=await authRes.json().catch(()=>null) as any;
-  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid Staff ID or password');
+  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid school, Staff ID or password');
 
   let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
   if(!school){
@@ -1810,7 +1818,8 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     organisation_slug:user.organisation_slug,
     sessionId:'staff-id-'+randomBytes(12).toString('hex'),
     permissions:[],
-    preview:false
+    preview:false,
+    must_change_password:Boolean(user.must_change_password)
   };
 
   const session=await createSchoolStaffSession(coreContext,'staff_id');
@@ -1818,8 +1827,8 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
 
   const redirectTo=roleWorkspace(membership);
-  await audit(user.organisation_id,user.id,'school.staff_id_authenticated','school_session',null,{
-    role:membership.role,portalMode:membership.portal_mode,staffId:user.staff_id
+  await audit(user.organisation_id,user.id,'staff.signed_in','school_session',null,{
+    role:membership.role,portalMode:membership.portal_mode,staffId:user.staff_id,school:school.school_name
   });
 
   return reply.send({
@@ -1829,11 +1838,47 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
     user:{id:user.id,staffId:user.staff_id,firstName:coreContext.first_name,lastName:coreContext.last_name},
     school:{id:school.tenant_slug,name:school.school_name},
+    requiresPasswordChange:Boolean(user.must_change_password),
+    passwordChangeUrl:'/change-password',
     redirectTo
   });
 }
 
 app.post('/api/auth/staff-id-login',handleSchoolStaffIdLogin);
+
+app.post('/api/auth/change-password',async(request,reply)=>{
+  const a=await authorize(request,db,config,undefined,{allowPasswordChange:true});
+  const b=z.object({
+    newPassword:z.string().min(12).max(200)
+      .regex(/[A-Z]/,'Password must contain an uppercase letter')
+      .regex(/[a-z]/,'Password must contain a lowercase letter')
+      .regex(/[0-9]/,'Password must contain a number')
+  }).parse(request.body);
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const changed=await fetch(base+'/v1/internal/school/change-staff-password',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({schoolId:a.core.organisation_slug,userId:a.core.id,newPassword:b.newPassword}),
+    signal:AbortSignal.timeout(20000)
+  }).catch(()=>null);
+  if(!changed)throw fail(503,'Core Revolt-X OS could not update the password');
+  const payload=await changed.json().catch(()=>null) as any;
+  if(!changed.ok)throw fail(changed.status,payload?.error?.message||'Could not update password');
+
+  const token=requestSessionToken(request);
+  if(token&&token.startsWith('rxs_')){
+    const hash=createHash('sha256').update(token).digest('hex');
+    await db.query(`UPDATE school_sessions
+      SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
+      WHERE token_hash=$1 AND revoked_at IS NULL`,[hash]);
+  }
+
+  const profile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  await audit(a.core.organisation_id,a.core.id,'staff.password_changed','user',a.core.id,{staffId:payload?.staffId??a.core.employee_number??null});
+  return reply.send({changed:true,redirectTo:roleWorkspace(profile)});
+});
 
 app.post('/api/auth/logout',async(request,reply)=>{
   const token=requestSessionToken(request);
