@@ -535,14 +535,31 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const adminId = org.settings?.primaryAdminUserId;
     if (!adminId) throw notFound('Primary school administrator');
     const user = await one<any>(db, 'SELECT id,email,first_name,last_name FROM users WHERE id=$1', [adminId]);
-    const setupToken = randomBytes(32).toString('base64url');
+    const temporaryPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
+    const passwordHash = await bcrypt.hash(temporaryPassword,12);
+
     await transaction(db, async c => {
-      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [user.id]);
-      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours')", [user.id, tokenHash(setupToken)]);
+      await c.query('UPDATE users SET password_hash=$1,must_change_password=true,updated_at=now() WHERE id=$2',[passwordHash,user.id]);
+      await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[user.id]);
+      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
     });
-    const setupUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(org.slug) + '&setup=' + encodeURIComponent(setupToken);
-    await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.school_admin.invited', resourceType: 'organisation', resourceId: id, afterState: { email: user.email } });
-    return { setupUrl, expiresInHours: 24, administrator: user };
+
+    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(org.slug);
+    await audit(db, {
+      organisationId: a.organisationId,
+      actorUserId: a.userId,
+      sessionId: a.sessionId,
+      action: 'commercial.school_admin.access_reset',
+      resourceType: 'organisation',
+      resourceId: id,
+      afterState: { administratorId:user.id,email:user.email,adminLoginUrl,mustChangePassword:true }
+    });
+    return {
+      administrator:{id:user.id,email:user.email,firstName:user.first_name,lastName:user.last_name},
+      adminLoginUrl,
+      temporaryPassword,
+      mustChangePassword:true
+    };
   });
 
   app.post('/v1/commercial-control/schools/:id/provision', async request => {
