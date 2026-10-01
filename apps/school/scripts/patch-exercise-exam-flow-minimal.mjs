@@ -20,8 +20,12 @@ source = source.split(broadExamPredicate).join(endTermExamPredicate);
 // Treat classwork, homework, assignments, projects, class tests and mid-term exams as one
 // continuous assessment bucket. These are averaged and contribute 30% to the report.
 source = source.replace(
+  "categoryId:z.string().uuid().optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),",
+  "categoryId:z.string().uuid().optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),assessmentComponent:z.enum(['continuous','end_term_exam']).optional(),"
+);
+source = source.replace(
   "const code=({classwork:'CLASSWORK',homework:'HOMEWORK',project:'PROJECT',test:'MIDTERM',exam:'EXAM',other:'CLASSWORK'} as Record<string,string>)[b.assessmentType||'classwork'];",
-  "const code=({classwork:'CLASSWORK',homework:'CLASSWORK',project:'CLASSWORK',test:'CLASSWORK',exam:'EXAM',other:'CLASSWORK'} as Record<string,string>)[b.assessmentType||'classwork'];"
+  "const code=b.assessmentComponent==='end_term_exam'?'EXAM':({classwork:'CLASSWORK',homework:'CLASSWORK',project:'CLASSWORK',test:'CLASSWORK',exam:'EXAM',other:'CLASSWORK'} as Record<string,string>)[b.assessmentType||'classwork'];"
 );
 
 // Force the creation flow into the two-component model:
@@ -31,7 +35,10 @@ const currentBlock = "  const type=category.code==='CLASSWORK'?'classwork':categ
 const newBlock = [
   "  const cleanName=b.name.trim();",
   "  const lowerName=cleanName.toLowerCase();",
-  "  const isEndTermExam=category.code==='EXAM'||b.assessmentType==='exam'||lowerName.includes('end of term')||lowerName.includes('end-term')||lowerName.includes('terminal')||lowerName.includes('final exam');",
+  "  if(b.assessmentComponent==='continuous'&&category.code==='EXAM')throw fail(400,'Continuous Assessment cannot use the End-of-Term Exam category');",
+  "  if(b.assessmentComponent==='end_term_exam'&&category.code!=='EXAM')throw fail(400,'End-of-Term Exam must use the Exam category');",
+  "  const isMidTerm=/mid[ -]?(term|semester)/i.test(cleanName);",
+  "  const isEndTermExam=b.assessmentComponent==='end_term_exam'||(b.assessmentComponent!=='continuous'&&!isMidTerm&&(category.code==='EXAM'||b.assessmentType==='exam'||lowerName.includes('end of term')||lowerName.includes('end-term')||lowerName.includes('terminal')||lowerName.includes('final exam')));",
   "  const type=isEndTermExam?'exam':'classwork';",
   "  const maxScore=b.maxScore??(isEndTermExam?70:Number(category.default_max_score||30));",
   "  if(isEndTermExam&&Number(maxScore)!==70)throw fail(400,'End-of-Term Exam must be marked out of 70');",
@@ -50,6 +57,22 @@ if (source.includes(currentBlock)) {
 } else if (!source.includes('const isEndTermExam=')) {
   throw new Error('Missing patch anchor: exam and continuous assessment creation block');
 }
+
+// Continuous Assessment is the arithmetic average of every non-final assessment.
+// Class exercises, homework, assignments/projects, class tests and mid-term exams all have
+// equal assessment-level influence before the resulting average is scaled to 30%.
+source = source.replace(
+  "COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,\n        AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END) category_average",
+  "COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,\n        COUNT(a.id)::int assessment_count,\n        AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END) category_average"
+);
+source = source.replaceAll(
+  "SUM(category_average*weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)",
+  "SUM(category_average*assessment_count) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)"
+);
+source = source.replaceAll(
+  "SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)",
+  "SUM(assessment_count) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)"
+);
 
 // Use fixed report weights: continuous assessment bucket = 30%, end-of-term exam = 70%.
 source = source.replaceAll('(isExam?70:30)', '(isEndTermExam?70:30)');
