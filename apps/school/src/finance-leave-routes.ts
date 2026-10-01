@@ -107,7 +107,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     return payload;
   });
 
-  app.post('/api/staff/users/:membershipId/password-reset',async request=>{
+  app.post('/api/staff/users/:membershipId/password-reset-link',async request=>{
     const a=await authorize(request,db,config,'staff.password_reset');
     const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
     const base=config.CORE_OS_URL.replace(/\/$/,'');
