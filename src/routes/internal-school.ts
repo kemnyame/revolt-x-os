@@ -146,12 +146,64 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     };
   });
 
+  app.post('/v1/internal/school/authenticate-staff',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const b=z.object({
+      staffId:z.string().trim().min(4).max(120),
+      password:z.string().min(1).max(200)
+    }).parse(request.body);
+
+    const row=await maybeOne<any>(db,`SELECT
+        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,
+        m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
+        o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
+        COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
+      FROM organisation_memberships m
+      JOIN users u ON u.id=m.user_id
+      JOIN organisations o ON o.id=m.organisation_id
+      LEFT JOIN membership_roles mr ON mr.membership_id=m.id
+      LEFT JOIN roles r ON r.id=mr.role_id
+      WHERE lower(m.login_staff_id)=lower($1)
+      GROUP BY u.id,m.id,o.id
+      LIMIT 1`,[b.staffId]);
+
+    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid Staff ID or password');
+    if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')
+      throw new AppError(403,'ACCOUNT_INACTIVE','This staff account is not active');
+
+    const valid=await bcrypt.compare(b.password,row.password_hash);
+    if(!valid)throw new AppError(401,'INVALID_CREDENTIALS','Invalid Staff ID or password');
+
+    await audit(db,{
+      organisationId:row.organisation_id,actorUserId:row.user_id,sessionId:null,
+      action:'school_service.staff_id_authenticated',resourceType:'membership',resourceId:row.membership_id,
+      afterState:{staffId:row.login_staff_id}
+    });
+
+    return{
+      id:row.user_id,
+      membership_id:row.membership_id,
+      organisation_id:row.organisation_id,
+      organisation_name:row.organisation_name,
+      organisation_slug:row.organisation_slug,
+      email:String(row.email||'').endsWith('@revolt-x.local')?null:row.email,
+      first_name:row.first_name,
+      last_name:row.last_name,
+      job_title:row.job_title,
+      employee_number:row.employee_number,
+      staff_id:row.login_staff_id,
+      status:row.user_status,
+      membership_status:row.membership_status,
+      roles:row.roles
+    };
+  });
+
   app.get('/v1/internal/school/users',{config:{rateLimit:{max:1200,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const q=scopeSchema.parse(request.query);
     return (await db.query(
       `SELECT u.id,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,u.first_name,u.last_name,u.status,
-              m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
+              m.id membership_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,m.joined_at,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
        JOIN users u ON u.id=m.user_id
@@ -173,12 +225,16 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       firstName:z.string().min(1).max(100),
       lastName:z.string().min(1).max(100),
       jobTitle:z.string().max(160).optional(),
-      roleKey:z.string().default('member')
+      roleKey:z.string().default('member'),
+      temporaryPassword:z.string().min(12).max(200)
+        .regex(/[A-Z]/,'Password must contain an uppercase letter')
+        .regex(/[a-z]/,'Password must contain a lowercase letter')
+        .regex(/[0-9]/,'Password must contain a number').optional()
     }).parse(request.body);
 
     try{
       const result=await transaction(db,async c=>{
-        const generated=randomBytes(24).toString('base64url');
+        const generated=b.temporaryPassword||randomBytes(24).toString('base64url');
         const internalEmail=b.email||('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local');
         const user=await one<{id:string}>(
           c,
@@ -229,7 +285,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         await audit(c,{
           organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
           action:'school_service.user_invited',resourceType:'membership',resourceId:membership.id,
-          afterState:{email:b.email??null,role:b.roleKey,emailPending:!b.email,employeeNumber:membership.employee_number}
+          afterState:{email:b.email??null,role:b.roleKey,emailPending:!b.email,employeeNumber:membership.employee_number,staffId:membership.login_staff_id}
         });
         await emitEvent(c,b.organisationId,'core.user.invited.v1','membership',membership.id,{membershipId:membership.id,email:b.email??null,emailPending:!b.email});
         return membership;
@@ -365,7 +421,6 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       const membership=await one<any>(c,`SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
         FROM organisation_memberships m JOIN users u ON u.id=m.user_id
         WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
-      if(String(membership.email||'').endsWith('@revolt-x.local'))throw conflict('Add a real email address before resetting the School login password');
       const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
       await c.query("UPDATE users SET password_hash=$1,status='active',updated_at=now() WHERE id=$2",[passwordHash,membership.user_id]);
       await c.query("UPDATE organisation_memberships SET status='active' WHERE id=$1",[membership.id]);
@@ -375,9 +430,9 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
         action:'school_service.password_reset_to_temporary',resourceType:'user',resourceId:membership.user_id,
-        afterState:{email:membership.email,membershipId:membership.id,sessionsRevoked:true}
+        afterState:{email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,membershipId:membership.id,staffId:membership.login_staff_id,sessionsRevoked:true}
       });
-      return{reset:true,userId:membership.user_id,membershipId:membership.id,email:membership.email};
+      return{reset:true,userId:membership.user_id,membershipId:membership.id,email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,staffId:membership.login_staff_id};
     });
   });
 
