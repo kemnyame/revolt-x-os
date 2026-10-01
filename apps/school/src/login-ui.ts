@@ -182,10 +182,14 @@ async function configureQuickLogin(){
       var result=await json('/api/quick-login/staff'+(slug?'?schoolSlug='+encodeURIComponent(slug):''));
       var staff=result.staff||[];
       E('quickGate').classList.add('hide');E('quickChooser').classList.remove('hide');E('lockQuick').classList.remove('hide');
-      E('quickStatus').textContent=staff.length?((result.school&&result.school.name?result.school.name+' • ':'')+staff.length+' active staff profile'+(staff.length===1?'':'s')):'No active staff profiles are available.';
+      var schoolName=result.school&&result.school.name||'',schoolSlug=result.school&&result.school.slug||'';
+      var gracePrep=/grace\s*prep/i.test(schoolName)||/grace[-_\s]*prep/i.test(schoolSlug);
+      E('quickStatus').textContent=staff.length?((schoolName?schoolName+' • ':'')+staff.length+' active staff profile'+(staff.length===1?'':'s')):'No active staff profiles are available.';
       E('quickProfiles').innerHTML=staff.length?staff.map(function(u){
-        var role=(u.role_name||u.role||'Staff').replace(/_/g,' ');
-        return '<div class="quick-profile"><div><b>'+esc(u.first_name+' '+u.last_name)+'</b><small>'+esc(role)+(u.job_title?' • '+esc(u.job_title):'')+(u.email?' • '+esc(u.email):'')+'</small></div><button data-quick-user="'+esc(u.id)+'">Open</button></div>'
+        var fullName=(u.first_name+' '+u.last_name).trim(),role=(u.role_name||u.role||'Staff').replace(/_/g,' ');
+        return gracePrep
+          ?'<div class="quick-profile"><div><b>'+esc(fullName)+'</b></div><button data-quick-user="'+esc(u.id)+'">Login</button></div>'
+          :'<div class="quick-profile"><div><b>'+esc(fullName)+'</b><small>'+esc(role)+(u.job_title?' • '+esc(u.job_title):'')+(u.email?' • '+esc(u.email):'')+'</small></div><button data-quick-user="'+esc(u.id)+'">Open</button></div>'
       }).join(''):'';
       E('quickProfiles').querySelectorAll('[data-quick-user]').forEach(function(btn){btn.onclick=async function(){
         var old=btn.textContent;btn.disabled=true;btn.textContent='Opening...';E('quickStatus').textContent='';
