@@ -141,8 +141,9 @@ test('staff ID login routes users to the workspace configured for their active S
   assert.match(server,/portal_mode\s*===\s*['"]teacher['"]\s*\?\s*['"]\/teacher['"]\s*:\s*['"]\/['"]/);
   assert.match(server,/JOIN school_roles sr/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
-  assert.match(login,/School ID/);
   assert.match(login,/Staff ID/);
+  assert.match(login,/Password/);
+  assert.doesNotMatch(login,/School ID/);
 });
 
 test('lesson notes support real attachments',async()=>{
