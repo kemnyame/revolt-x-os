@@ -21,5 +21,7 @@ test('Quick Login exposes every active School staff profile behind the generic p
   assert.match(login,/Open any staff profile/);
   assert.match(login,/Generic staff password/);
   assert.match(login,/data-quick-user/);
+  assert.match(login,/grace\\s\*prep/);
+  assert.match(login,/Login<\/button>/);
   assert.match(login,/configureQuickLogin/);
 });
