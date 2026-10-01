@@ -64,7 +64,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
     const members=(await db.query(
       `SELECT u.id,u.email,u.first_name,u.last_name,u.status user_status,
-              m.id membership_id,m.job_title,m.employee_number,m.status membership_status,
+              m.id membership_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
        JOIN users u ON u.id=m.user_id
@@ -141,7 +141,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       members:usableMembers.map((u:any)=>({
         id:u.id,email:String(u.email||'').endsWith('@revolt-x.local')?null:u.email,
         first_name:u.first_name,last_name:u.last_name,user_status:u.user_status,
-        membership_status:u.membership_status,job_title:u.job_title,employee_number:u.employee_number,roles:u.roles
+        membership_status:u.membership_status,job_title:u.job_title,employee_number:u.employee_number,login_staff_id:u.login_staff_id,roles:u.roles
       }))
     };
   });
