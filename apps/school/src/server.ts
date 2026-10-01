@@ -324,6 +324,7 @@ app.post('/api/internal/sync-staff',async request=>{
       email:z.string().email().nullable().optional(),
       jobTitle:z.string().max(160).nullable().optional(),
       employeeNumber:z.string().max(80).nullable().optional(),
+      loginStaffId:z.string().max(120).nullable().optional(),
       userStatus:z.string().max(40).optional(),
       coreRoles:z.array(z.string()).default([])
     })).max(500)
@@ -350,15 +351,16 @@ app.post('/api/internal/sync-staff',async request=>{
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
         [b.organisationId,member.osUserId,role]);
       await client.query(`INSERT INTO school_user_directory(
-          organisation_id,os_user_id,first_name,last_name,email,job_title,employee_number,user_status,membership_status,roles,synced_at
-        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,now())
+          organisation_id,os_user_id,first_name,last_name,email,job_title,employee_number,login_staff_id,user_status,membership_status,roles,synced_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,now())
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
           first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=COALESCE(EXCLUDED.email,school_user_directory.email),
           job_title=EXCLUDED.job_title,employee_number=COALESCE(EXCLUDED.employee_number,school_user_directory.employee_number),
+          login_staff_id=COALESCE(EXCLUDED.login_staff_id,school_user_directory.login_staff_id),
           user_status=EXCLUDED.user_status,membership_status='active',
           roles=EXCLUDED.roles,synced_at=now()`,
         [b.organisationId,member.osUserId,member.firstName,member.lastName,member.email??null,
-          member.jobTitle??null,member.employeeNumber??null,member.userStatus||'active',JSON.stringify(member.coreRoles||[])]);
+          member.jobTitle??null,member.employeeNumber??null,member.loginStaffId??null,member.userStatus||'active',JSON.stringify(member.coreRoles||[])]);
       synced++;
     }
   });
@@ -642,7 +644,7 @@ const CORE_SERVICE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
 async function readPersistentCoreUsers(organisationId:string){
   return (await db.query(`
     SELECT os_user_id id,email,first_name,last_name,user_status status,
-           core_membership_id membership_id,job_title,employee_number,
+           core_membership_id membership_id,job_title,employee_number,login_staff_id,
            membership_status,roles,synced_at
     FROM school_user_directory
     WHERE organisation_id=$1
@@ -657,17 +659,17 @@ async function persistCoreUsers(organisationId:string,users:any[]){
       await client.query(`
         INSERT INTO school_user_directory(
           organisation_id,os_user_id,core_membership_id,first_name,last_name,email,
-          job_title,employee_number,user_status,membership_status,roles,synced_at
-        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now())
+          job_title,employee_number,login_staff_id,user_status,membership_status,roles,synced_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,now())
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
           core_membership_id=EXCLUDED.core_membership_id,
           first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=EXCLUDED.email,
-          job_title=EXCLUDED.job_title,employee_number=EXCLUDED.employee_number,
+          job_title=EXCLUDED.job_title,employee_number=EXCLUDED.employee_number,login_staff_id=EXCLUDED.login_staff_id,
           user_status=EXCLUDED.user_status,membership_status=EXCLUDED.membership_status,
           roles=EXCLUDED.roles,synced_at=now()
       `,[
         organisationId,u.id,u.membership_id??null,u.first_name??'',u.last_name??'',u.email??null,
-        u.job_title??null,u.employee_number??null,u.status??null,u.membership_status??null,
+        u.job_title??null,u.employee_number??null,u.login_staff_id??u.staff_id??null,u.status??null,u.membership_status??null,
         JSON.stringify(Array.isArray(u.roles)?u.roles:[])
       ]);
     }
@@ -1736,80 +1738,61 @@ function inferSchoolRoleFromStaff(user:any){
   return 'teacher';
 }
 
-async function resolveSchoolForStaffIdLogin(schoolId:string){
-  const value=schoolId.trim();
-  let school=await maybeOne<any>(db,`SELECT organisation_id,tenant_slug,school_name
-    FROM school_profiles
-    WHERE lower(tenant_slug)=lower($1) OR lower(school_name)=lower($1)
-    ORDER BY CASE WHEN lower(tenant_slug)=lower($1) THEN 0 ELSE 1 END
-    LIMIT 1`,[value]);
-  if(school)return school;
+async function handleSchoolStaffIdLogin(request:any,reply:any){
+  const b=z.object({
+    staffId:z.string().trim().min(4).max(120),
+    password:z.string().min(1).max(200)
+  }).parse(request.body);
 
-  if(config.CORE_SERVICE_KEY){
-    const base=config.CORE_OS_URL.replace(/\/$/,'');
+  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const authRes=await fetch(base+'/v1/internal/school/authenticate-staff',{
+    method:'POST',
+    headers:{...coreServiceHeaders(),'content-type':'application/json'},
+    body:JSON.stringify({staffId:b.staffId,password:b.password}),
+    signal:AbortSignal.timeout(20000)
+  }).catch(()=>null);
+
+  if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
+  const user=await authRes.json().catch(()=>null) as any;
+  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid Staff ID or password');
+
+  let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
+  if(!school){
     const repaired=await fetch(base+'/v1/internal/school/ensure-tenant',{
       method:'POST',
       headers:{...coreServiceHeaders(),'content-type':'application/json'},
-      body:JSON.stringify({schoolName:value}),
+      body:JSON.stringify({schoolName:user.organisation_slug}),
       signal:AbortSignal.timeout(35000)
     }).catch(()=>null);
-    if(repaired?.ok){
-      const payload=await repaired.json().catch(()=>null) as any;
-      if(payload?.organisation?.id){
-        school=await maybeOne<any>(db,`SELECT organisation_id,tenant_slug,school_name
-          FROM school_profiles WHERE organisation_id=$1`,[payload.organisation.id]);
-        if(school)return school;
-      }
-    }
+    if(!repaired?.ok)throw fail(503,'Your School workspace could not be prepared');
+    school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
   }
-  throw fail(404,'School ID was not found');
-}
-
-async function handleSchoolStaffIdLogin(request:any,reply:any){
-  const b=z.object({
-    schoolId:z.string().trim().min(2).max(160),
-    staffId:z.string().trim().min(2).max(80)
-  }).parse(request.body);
-
-  const school=await resolveSchoolForStaffIdLogin(b.schoolId);
-  const users=await fetchCoreUsers(school.organisation_id).catch(()=>[] as any[]);
-  const normalized=b.staffId.toLowerCase();
-
-  let user=users.find((u:any)=>String(u.employee_number||'').trim().toLowerCase()===normalized);
-  if(!user){
-    user=await maybeOne<any>(db,`SELECT os_user_id id,core_membership_id membership_id,first_name,last_name,email,
-        job_title,employee_number,user_status status,membership_status,roles
-      FROM school_user_directory
-      WHERE organisation_id=$1 AND lower(employee_number)=lower($2)
-      LIMIT 1`,[school.organisation_id,b.staffId]);
-  }
-  if(!user||String(user.email||'').toLowerCase()==='preview@revolt-x.local')throw fail(401,'Invalid School ID or Staff ID');
-  if(String(user.membership_status||'active')!=='active')throw fail(403,'This staff profile is not active');
+  if(!school)throw fail(503,'Your School workspace could not be prepared');
 
   let membership=await maybeOne<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
     FROM school_memberships sm
     JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
     WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
-    [school.organisation_id,user.id]);
+    [user.organisation_id,user.id]);
 
   if(!membership){
     const role=inferSchoolRoleFromStaff(user);
     await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
       VALUES($1,$2,$3,'active')
       ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
-      [school.organisation_id,user.id,role]);
+      [user.organisation_id,user.id,role]);
     membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
       FROM school_memberships sm
       JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
       WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
-      [school.organisation_id,user.id]);
+      [user.organisation_id,user.id]);
   }
 
-  await persistCoreUsers(school.organisation_id,[{
-    ...user,
-    id:user.id,
-    employee_number:user.employee_number||b.staffId,
-    membership_status:'active'
+  await persistCoreUsers(user.organisation_id,[{
+    id:user.id,membership_id:user.membership_id,first_name:user.first_name,last_name:user.last_name,
+    email:user.email??null,job_title:user.job_title??null,employee_number:user.employee_number??null,
+    login_staff_id:user.staff_id,status:user.status,membership_status:user.membership_status,roles:user.roles||[]
   }]).catch(()=>null);
 
   const coreContext={
@@ -1818,12 +1801,13 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     first_name:user.first_name||'School',
     last_name:user.last_name||'User',
     status:user.status||'active',
-    membership_id:user.membership_id||('staff-id-'+user.id),
-    membership_status:'active',
-    employee_number:user.employee_number||b.staffId,
-    organisation_id:school.organisation_id,
-    organisation_name:school.school_name,
-    organisation_slug:school.tenant_slug,
+    membership_id:user.membership_id,
+    membership_status:user.membership_status||'active',
+    employee_number:user.employee_number??null,
+    login_staff_id:user.staff_id,
+    organisation_id:user.organisation_id,
+    organisation_name:user.organisation_name,
+    organisation_slug:user.organisation_slug,
     sessionId:'staff-id-'+randomBytes(12).toString('hex'),
     permissions:[],
     preview:false
@@ -1834,8 +1818,8 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
 
   const redirectTo=roleWorkspace(membership);
-  await audit(school.organisation_id,user.id,'school.staff_id_authenticated','school_session',null,{
-    role:membership.role,portalMode:membership.portal_mode,staffId:user.employee_number||b.staffId,schoolId:school.tenant_slug
+  await audit(user.organisation_id,user.id,'school.staff_id_authenticated','school_session',null,{
+    role:membership.role,portalMode:membership.portal_mode,staffId:user.staff_id
   });
 
   return reply.send({
@@ -1843,7 +1827,7 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     expiresIn:8*60*60,
     schoolRole:membership.role,
     roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
-    user:{id:user.id,staffId:user.employee_number||b.staffId,firstName:coreContext.first_name,lastName:coreContext.last_name},
+    user:{id:user.id,staffId:user.staff_id,firstName:coreContext.first_name,lastName:coreContext.last_name},
     school:{id:school.tenant_slug,name:school.school_name},
     redirectTo
   });
