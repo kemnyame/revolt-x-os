@@ -25,7 +25,7 @@ input:focus{border-color:#4ca5b9;box-shadow:0 0 0 3px #48a9ff1a}
 button{width:100%;border:0;border-radius:10px;padding:13px;margin-top:18px;background:linear-gradient(90deg,var(--green),var(--blue));color:#041018;font-weight:900;cursor:pointer}
 button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px;border-radius:10px;margin-top:14px}.error{background:#fff0f2;border:1px solid #6d3038;color:#a63b4e}.success{background:#edf4ef;border:1px solid #2c6d5c;color:#2a6d48}.status{background:#f7f9fb;border:1px solid var(--line);color:var(--muted)}
 .links{display:flex;justify-content:space-between;gap:12px;margin-top:14px;font-size:12px}.links a{color:#35658d;text-decoration:none}
-.password-rule{color:var(--muted);font-size:11px;margin-top:6px}.demo-box{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.demo-box h3{margin:0 0 4px}.demo-box button.secondary{background:#f7f9fb;color:#35658d;border:1px solid #315466}.demo-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.demo-row button{width:auto;min-width:120px}.hide{display:none!important}
+.password-rule{color:var(--muted);font-size:11px;margin-top:6px}.demo-box{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}.demo-box h3{margin:0 0 4px}.demo-box button.secondary{background:#f7f9fb;color:#35658d;border:1px solid #315466}.demo-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.demo-row button{width:auto;min-width:120px}.quick-grid{display:grid;gap:10px;margin-top:12px}.quick-profile{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:#f7f9fb}.quick-profile b{display:block}.quick-profile small{display:block;color:var(--muted);margin-top:2px}.quick-profile button{width:auto;min-width:92px;margin:0;padding:9px 11px}.quick-head{display:flex;justify-content:space-between;gap:10px;align-items:center}.quick-head button{width:auto;margin:0;padding:7px 9px}.hide{display:none!important}
 @media(max-width:760px){.shell{grid-template-columns:1fr}.hero{min-height:auto;padding:28px}.hero h1{font-size:34px}.role-grid{display:none}.form-side{padding:28px}}
 </style>
 </head>
@@ -65,6 +65,19 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <button id="signin">Sign in to Revolt-X School</button>
         <button id="adminReset" class="secondary hide" type="button">Reset administrator password</button>
         <div id="status" class="status" style="display:none"></div>
+        <div id="quickAccess" class="demo-box hide">
+          <div class="quick-head"><div><div class="eyebrow">Quick Login</div><h3>Open any staff profile</h3></div><button id="lockQuick" class="secondary hide" type="button">Lock</button></div>
+          <p class="muted">Enter the School generic password once, then choose the staff profile you want to open. Active administrators, headteachers, teachers, bursars, registrars and custom staff roles are included.</p>
+          <div id="quickGate">
+            <label>Generic staff password</label>
+            <input id="quickPassword" type="password" autocomplete="current-password">
+            <button id="unlockQuick" class="secondary">Unlock Quick Login</button>
+          </div>
+          <div id="quickChooser" class="hide">
+            <div id="quickProfiles" class="quick-grid"></div>
+          </div>
+          <div id="quickStatus" class="muted" style="margin-top:8px"></div>
+        </div>
         <div id="demoAccess" class="demo-box hide">
           <div class="eyebrow">Demo access</div>
           <h3>Select a School user</h3>
@@ -156,6 +169,58 @@ async function signIn(){
     E('message').innerHTML='<div class="error">'+esc(err.message)+'</div>';status.style.display='none';btn.disabled=false;btn.textContent='Sign in to Revolt-X School'
   }
 }
+async function configureQuickLogin(){
+  var state;
+  try{state=await json('/api/quick-login/status')}catch(e){return}
+  if(!state.enabled)return;
+  E('quickAccess').classList.remove('hide');
+
+  async function loadProfiles(){
+    var slug=E('schoolSlug').value.trim();
+    E('quickStatus').textContent='Loading staff profiles...';
+    try{
+      var result=await json('/api/quick-login/staff'+(slug?'?schoolSlug='+encodeURIComponent(slug):''));
+      var staff=result.staff||[];
+      E('quickGate').classList.add('hide');E('quickChooser').classList.remove('hide');E('lockQuick').classList.remove('hide');
+      E('quickStatus').textContent=staff.length?((result.school&&result.school.name?result.school.name+' • ':'')+staff.length+' active staff profile'+(staff.length===1?'':'s')):'No active staff profiles are available.';
+      E('quickProfiles').innerHTML=staff.length?staff.map(function(u){
+        var role=(u.role_name||u.role||'Staff').replace(/_/g,' ');
+        return '<div class="quick-profile"><div><b>'+esc(u.first_name+' '+u.last_name)+'</b><small>'+esc(role)+(u.job_title?' • '+esc(u.job_title):'')+(u.email?' • '+esc(u.email):'')+'</small></div><button data-quick-user="'+esc(u.id)+'">Open</button></div>'
+      }).join(''):'';
+      E('quickProfiles').querySelectorAll('[data-quick-user]').forEach(function(btn){btn.onclick=async function(){
+        var old=btn.textContent;btn.disabled=true;btn.textContent='Opening...';E('quickStatus').textContent='';
+        try{
+          var x=await json('/api/quick-login/staff-login',{method:'POST',body:JSON.stringify({osUserId:btn.dataset.quickUser,schoolSlug:slug||undefined})});
+          try{
+            sessionStorage.setItem('rx_school_token',x.accessToken);
+            if(x.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken);else sessionStorage.removeItem('rx_teacher_token')
+          }catch(e){}
+          location.replace(x.redirectTo||roleHome(x.roleProfile))
+        }catch(err){E('quickStatus').textContent=err.message;btn.disabled=false;btn.textContent=old}
+      }})
+    }catch(err){
+      if(err.status===401){E('quickGate').classList.remove('hide');E('quickChooser').classList.add('hide');E('lockQuick').classList.add('hide')}
+      E('quickStatus').textContent=err.message
+    }
+  }
+
+  E('unlockQuick').onclick=async function(){
+    var slug=E('schoolSlug').value.trim(),btn=E('unlockQuick');btn.disabled=true;btn.textContent='Unlocking...';E('quickStatus').textContent='';
+    try{
+      await json('/api/quick-login/unlock',{method:'POST',body:JSON.stringify({password:E('quickPassword').value,schoolSlug:slug||undefined})});
+      E('quickPassword').value='';
+      await loadProfiles()
+    }catch(err){E('quickStatus').textContent=err.message}
+    finally{btn.disabled=false;btn.textContent='Unlock Quick Login'}
+  };
+  E('quickPassword').onkeydown=function(e){if(e.key==='Enter')E('unlockQuick').click()};
+  E('lockQuick').onclick=async function(){
+    try{await json('/api/quick-login/lock',{method:'POST',body:'{}'})}catch(e){}
+    E('quickChooser').classList.add('hide');E('quickGate').classList.remove('hide');E('lockQuick').classList.add('hide');E('quickProfiles').innerHTML='';E('quickStatus').textContent='Quick Login locked.'
+  };
+  if(state.unlocked)await loadProfiles()
+}
+
 async function configureDemoAccess(){
   var state;
   try{state=await json('/api/test-access/status')}catch(e){return}
@@ -225,6 +290,7 @@ async function boot(){
   if(setupToken){E('signinView').style.display='none';E('setupView').style.display='block';E('savePassword').onclick=setup;return}
   if(await existingSession())return;
   E('signin').onclick=signIn;E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
+  await configureQuickLogin();
   await configureDemoAccess()
 }
 boot()
