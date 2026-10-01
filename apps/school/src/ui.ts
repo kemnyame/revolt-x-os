@@ -1570,7 +1570,7 @@ else if(p==='attendance'){
    function directoryTable(rows){
      return table(rows,[
        {key:'first_name',label:'User',render:function(u){return '<b>'+esc(u.first_name+' '+u.last_name)+'</b><br><span class="muted">'+esc(u.email||'Email optional')+'</span>'}},
-       {key:'employee_number',label:'Staff ID',render:function(u){return '<b><code>'+esc(u.employee_number||'Pending')+'</code></b>'}},
+       {key:'login_staff_id',label:'Staff ID',render:function(u){return '<b><code>'+esc(u.login_staff_id||'Pending')+'</code></b>'}},
        {key:'job_title',label:'Job Title'},
        {key:'id',label:'School Role',render:function(u){return badge(u.school_role_name||roleName(schoolRole(u.id)))}},
        {key:'membership_status',label:'Core Access',render:function(u){return badge(u.membership_status||'unknown')}},
@@ -1579,6 +1579,7 @@ else if(p==='attendance'){
        if(!u.membership_id)return '';
        var actions='';
        if(can('staff.edit'))actions+='<button class="mini" data-edit-user="'+u.id+'">Edit</button>';
+       if(can('staff.password_reset'))actions+='<button class="mini primary-lite" data-reset-user="'+u.id+'">Reset password</button>';
 
        if(can('staff.status'))actions+='<button class="mini '+(u.membership_status==='active'?'danger':'')+'" data-user-status="'+u.id+'" data-next-status="'+(u.membership_status==='active'?'suspended':'active')+'">'+(u.membership_status==='active'?'Disable':'Enable')+'</button>';
        if(can('staff.status')&&u.membership_status!=='active')actions+='<button class="mini" data-unlock-user="'+u.id+'">Unlock</button>';
@@ -1587,7 +1588,7 @@ else if(p==='attendance'){
    }
 
    E('content').innerHTML='<div class="section"><div><h1>Access Management</h1><p class="muted">Create School users, assign the roles your administrator has configured, and manage access separately from Academic Manager teaching assignments.</p></div><div class="actions">'+(can('staff.create')?'<button id="addUser" class="primary">Add User</button>':'')+(can('roles.manage')?'<button id="quickCreateRole" class="ghost">Create Role</button>':'')+'<button id="openAcademicManager" class="ghost">Academic Manager</button></div></div>'+
-   '<div class="notice"><b>School staff sign in with School ID + Staff ID.</b> Staff IDs are generated automatically and are unique inside each school. Email is optional and is not used to authenticate a Revolt-X School login.</div>'+
+   '<div class="notice"><b>School staff sign in with Staff ID + Password.</b> The Staff ID is generated automatically and is unique across Revolt-X School tenants. Email is optional and is not used for staff authentication. Administrators can reset a staff password from this directory.</div>'+
    (coreUsersError?'<div class="notice warn" style="margin-top:10px">Core staff directory could not be reached. Refresh this page to retry.</div>':'')+
    '<div class="grid staff-stats"><div class="panel stat"><span class="muted">Users</span><b>'+esc(users.length)+'</b></div><div class="panel stat"><span class="muted">Teaching users</span><b>'+esc(teachers.length)+'</b></div><div class="panel stat"><span class="muted">School roles</span><b>'+esc(activeRoles().length)+'</b></div><div class="panel stat"><span class="muted">Active access</span><b>'+esc(memberships.filter(function(m){return m.status==='active'}).length)+'</b></div></div>'+
    '<div class="staff-tabs"><button class="staff-tab active" data-staff-tab="directory">User Directory</button><button class="staff-tab" data-staff-tab="access">User Access</button><button class="staff-tab" data-staff-tab="privileges">Roles & Privileges</button><button class="staff-tab" data-staff-tab="reviewers">Report Reviewers</button></div>'+
@@ -1620,7 +1621,7 @@ else if(p==='attendance'){
      ],{},function(v){return raw('/api/report-reviewers',{method:'POST',body:JSON.stringify({classroomId:v.classroomId,reviewerOsUserId:v.reviewerOsUserId,isActive:true})})})
    };
 
-   E('staffSearch').oninput=function(){var q=this.value.toLowerCase();var rows=users.filter(function(u){return (u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.employee_number||'')+' '+(u.job_title||'')+' '+roleName(schoolRole(u.id))).toLowerCase().includes(q)});E('staffDirectoryTable').innerHTML=directoryTable(rows)};
+   E('staffSearch').oninput=function(){var q=this.value.toLowerCase();var rows=users.filter(function(u){return (u.first_name+' '+u.last_name+' '+(u.email||'')+' '+(u.login_staff_id||'')+' '+(u.employee_number||'')+' '+(u.job_title||'')+' '+roleName(schoolRole(u.id))).toLowerCase().includes(q)});E('staffDirectoryTable').innerHTML=directoryTable(rows)};
 
    E('content').onclick=function(e){
      var uid=e.target.dataset.editUser;if(uid){
@@ -1634,6 +1635,13 @@ else if(p==='attendance'){
            firstName:v.firstName,lastName:v.lastName,email:v.email||null,jobTitle:v.jobTitle||null,schoolRole:v.schoolRole
          })})
        })
+     }
+     uid=e.target.dataset.resetUser;if(uid){
+       var ru=users.find(function(x){return x.id===uid});if(!ru||!ru.membership_id)return;
+       if(!confirm('Reset the password for '+ru.first_name+' '+ru.last_name+'? Existing sessions will be signed out.'))return;
+       return raw('/api/staff/users/'+ru.membership_id+'/password-reset',{method:'POST',body:'{}'}).then(function(x){
+         modal('<h2>Password reset complete</h2><p><b>User:</b> '+esc(ru.first_name+' '+ru.last_name)+'</p><p><b>Staff ID:</b></p><div class="notice"><code style="font-size:18px">'+esc(x.staffId||ru.login_staff_id||'')+'</code></div><p><b>Temporary password:</b></p><div class="notice"><code style="font-size:18px">'+esc(x.temporaryPassword||'')+'</code></div><p class="muted">Give these credentials to the user securely. Existing School sessions have been revoked.</p>')
+       }).catch(function(err){toast(err.message,true)})
      }
      uid=e.target.dataset.userStatus;if(uid){
        var su=users.find(function(x){return x.id===uid});if(!su||!su.membership_id)return;
