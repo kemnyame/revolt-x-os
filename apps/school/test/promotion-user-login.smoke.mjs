@@ -6,7 +6,7 @@ async function read(name){
   return readFile(new URL('../dist/'+name,import.meta.url),'utf8');
 }
 
-test('year promotion and canonical Staff ID login are wired',async()=>{
+test('year promotion and Staff ID plus password login are wired',async()=>{
   const server=await read('server.js');
   const login=await read('login-ui.js');
   const ui=await read('ui.js');
@@ -15,17 +15,18 @@ test('year promotion and canonical Staff ID login are wired',async()=>{
   assert.match(server,/academic_aggregate_score/);
   assert.match(server,/promotionScore:\s*annualAverage/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
+  assert.match(server,/authenticate-staff/);
   assert.match(server,/school\.staff_id_authenticated/);
-  assert.doesNotMatch(server,/\/api\/auth\/admin-reset\/request/);
-  assert.doesNotMatch(server,/\/api\/auth\/teacher-login/);
+  assert.match(server,/STAFF_GENERIC_PASSWORD/);
+  assert.match(server,/\/api\/staff\/users\/:membershipId\/password-reset/);
 
-  assert.match(login,/School ID/);
   assert.match(login,/Staff ID/);
-  assert.doesNotMatch(login,/temporary generic password/);
-  assert.doesNotMatch(login,/Email address.*Password/);
+  assert.match(login,/Password/);
+  assert.match(login,/type="password"/);
+  assert.doesNotMatch(login,/School ID/);
 
   assert.match(ui,/3-Term Aggregate/);
   assert.match(ui,/Aggregate ÷ 3/);
-  assert.match(ui,/School ID \+ Staff ID/);
-  assert.match(ui,/Staff ID/);
+  assert.match(ui,/Staff ID \+ Password/);
+  assert.match(ui,/Reset password/);
 });
