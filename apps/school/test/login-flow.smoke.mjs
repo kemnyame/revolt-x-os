@@ -29,6 +29,6 @@ test('School Administrator has a separate email and password login', () => {
   assert.match(adminLoginFrontend,/Administrator password/);
   assert.match(adminLoginFrontend,/\/api\/auth\/admin-login/);
   assert.match(adminLoginFrontend,/schoolId:schoolId,email:email,password:password/);
-  assert.doesNotMatch(adminLoginFrontend,/Staff ID/);
+  assert.doesNotMatch(adminLoginFrontend,/id="staffId"/);
   assert.match(adminLoginFrontend,/Use Staff Login/);
 });
