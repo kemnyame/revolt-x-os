@@ -19,6 +19,8 @@ export type CoreContext={
   permissions:string[];
   preview?:boolean;
   must_change_password?:boolean;
+  employee_number?:string|null;
+  login_staff_id?:string|null;
 };
 
 export type SchoolRole=string;
