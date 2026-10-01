@@ -149,12 +149,13 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
   app.post('/v1/internal/school/authenticate-staff',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const b=z.object({
+      schoolId:z.string().trim().min(1).max(120),
       staffId:z.string().trim().min(4).max(120),
       password:z.string().min(1).max(200)
     }).parse(request.body);
 
     const row=await maybeOne<any>(db,`SELECT
-        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,
+        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,u.must_change_password,
         m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
         o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
         COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
@@ -163,21 +164,22 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       JOIN organisations o ON o.id=m.organisation_id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
-      WHERE lower(m.login_staff_id)=lower($1)
+      WHERE lower(o.slug)=lower($1)
+        AND (lower(COALESCE(m.employee_number,''))=lower($2) OR lower(COALESCE(m.login_staff_id,''))=lower($2))
       GROUP BY u.id,m.id,o.id
-      LIMIT 1`,[b.staffId]);
+      LIMIT 1`,[b.schoolId,b.staffId]);
 
-    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid Staff ID or password');
+    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school, Staff ID or password');
     if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')
       throw new AppError(403,'ACCOUNT_INACTIVE','This staff account is not active');
 
     const valid=await bcrypt.compare(b.password,row.password_hash);
-    if(!valid)throw new AppError(401,'INVALID_CREDENTIALS','Invalid Staff ID or password');
+    if(!valid)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school, Staff ID or password');
 
     await audit(db,{
       organisationId:row.organisation_id,actorUserId:row.user_id,sessionId:null,
-      action:'school_service.staff_id_authenticated',resourceType:'membership',resourceId:row.membership_id,
-      afterState:{staffId:row.login_staff_id}
+      action:'school_service.staff_signed_in',resourceType:'membership',resourceId:row.membership_id,
+      afterState:{school:row.organisation_name,staffId:row.employee_number||row.login_staff_id}
     });
 
     return{
@@ -191,11 +193,46 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       last_name:row.last_name,
       job_title:row.job_title,
       employee_number:row.employee_number,
-      staff_id:row.login_staff_id,
+      staff_id:row.employee_number||row.login_staff_id,
+      must_change_password:Boolean(row.must_change_password),
       status:row.user_status,
       membership_status:row.membership_status,
       roles:row.roles
     };
+  });
+
+  app.post('/v1/internal/school/change-staff-password',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const b=z.object({
+      schoolId:z.string().trim().min(1).max(120),
+      userId:z.string().uuid(),
+      newPassword:z.string().min(12).max(200)
+        .regex(/[A-Z]/,'Password must contain an uppercase letter')
+        .regex(/[a-z]/,'Password must contain a lowercase letter')
+        .regex(/[0-9]/,'Password must contain a number')
+    }).parse(request.body);
+
+    return transaction(db,async q=>{
+      const account=await one<any>(q,`SELECT u.id,m.id membership_id,m.organisation_id,m.employee_number,o.name organisation_name
+        FROM users u
+        JOIN organisation_memberships m ON m.user_id=u.id
+        JOIN organisations o ON o.id=m.organisation_id
+        WHERE u.id=$1 AND lower(o.slug)=lower($2) AND m.status='active' AND o.status='active'
+        FOR UPDATE OF u,m`,[b.userId,b.schoolId]);
+      const passwordHash=await bcrypt.hash(b.newPassword,12);
+      await q.query(`UPDATE users
+        SET password_hash=$1,must_change_password=false,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now()
+        WHERE id=$2`,[passwordHash,b.userId]);
+      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
+        [b.userId,account.organisation_id]);
+      await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[b.userId]);
+      await audit(q,{
+        organisationId:account.organisation_id,actorUserId:b.userId,sessionId:null,
+        action:'school_service.staff_password_changed',resourceType:'user',resourceId:b.userId,
+        afterState:{staffId:account.employee_number,passwordChanged:true}
+      });
+      return{changed:true,staffId:account.employee_number,organisationId:account.organisation_id};
+    });
   });
 
   app.get('/v1/internal/school/users',{config:{rateLimit:{max:1200,timeWindow:'1 minute'}}},async request=>{
@@ -238,8 +275,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         const internalEmail=b.email||('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local');
         const user=await one<{id:string}>(
           c,
-          `INSERT INTO users(email,password_hash,first_name,last_name,status)
-           VALUES($1,$2,$3,$4,'invited')
+          `INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at)
+           VALUES($1,$2,$3,$4,'invited',true,now())
            ON CONFLICT(email) DO UPDATE SET first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,updated_at=now()
            RETURNING id`,
           [internalEmail,await bcrypt.hash(generated,12),b.firstName,b.lastName]
@@ -422,7 +459,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         FROM organisation_memberships m JOIN users u ON u.id=m.user_id
         WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
       const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
-      await c.query("UPDATE users SET password_hash=$1,status='active',updated_at=now() WHERE id=$2",[passwordHash,membership.user_id]);
+      await c.query("UPDATE users SET password_hash=$1,status='active',must_change_password=true,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now() WHERE id=$2",[passwordHash,membership.user_id]);
       await c.query("UPDATE organisation_memberships SET status='active' WHERE id=$1",[membership.id]);
       await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
         [membership.user_id,b.organisationId]);
@@ -430,9 +467,9 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
         action:'school_service.password_reset_to_temporary',resourceType:'user',resourceId:membership.user_id,
-        afterState:{email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,membershipId:membership.id,staffId:membership.login_staff_id,sessionsRevoked:true}
+        afterState:{email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,membershipId:membership.id,staffId:membership.employee_number||membership.login_staff_id,sessionsRevoked:true,mustChangePassword:true}
       });
-      return{reset:true,userId:membership.user_id,membershipId:membership.id,email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,staffId:membership.login_staff_id};
+      return{reset:true,userId:membership.user_id,membershipId:membership.id,email:String(membership.email||'').endsWith('@revolt-x.local')?null:membership.email,staffId:membership.employee_number||membership.login_staff_id,mustChangePassword:true};
     });
   });
 
