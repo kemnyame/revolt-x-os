@@ -426,7 +426,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(created.organisation.slug);
     const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(created.organisation.slug);
     const setupUrl = created.setupToken
-      ? adminLoginUrl + '&setup=' + encodeURIComponent(created.setupToken)
+      ? schoolApplicationBase(config) + '/admin-password-reset?school=' + encodeURIComponent(created.organisation.slug) + '&token=' + encodeURIComponent(created.setupToken) + '&mode=setup'
       : null;
 
     let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
@@ -786,7 +786,9 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       administrator:{id:user.id,email:user.email,firstName:user.first_name,lastName:user.last_name},
       adminLoginUrl,
       resetUrl,
-      expiresInMinutes:30
+      setupUrl:resetUrl,
+      expiresInMinutes:30,
+      expiresInHours:0.5
     };
   });
 
