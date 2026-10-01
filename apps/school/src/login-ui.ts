@@ -48,13 +48,13 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
   <section class="form-side">
     <div class="card">
       <div id="signinView">
-        <div class="eyebrow">Staff access</div>
-        <h2>Welcome back.</h2>
-        <p class="muted">Sign in with your school administrator or staff account.</p>
+        <div id="loginEyebrow" class="eyebrow">Staff access</div>
+        <h2 id="loginHeading">Welcome back.</h2>
+        <p id="loginIntro" class="muted">Sign in with your school administrator or staff account.</p>
         <div id="message"></div>
         <div class="demo-box" style="margin-top:14px">
           <div class="eyebrow">What do I use to sign in?</div>
-          <p class="muted" style="margin:6px 0 0"><b>School code:</b> comes from the school link and is normally filled automatically.<br><b>Email:</b> use the administrator email entered in Revolt-X OS when the school was created.<br><b>Password:</b> use the new password you created from the administrator setup link. There is no separate default School password.</p>
+          <p class="muted" style="margin:6px 0 0"><b>School code:</b> comes from the school link and is normally filled automatically.<br><b>Email:</b> use the email address provided when your School user account was created.<br><b>Password:</b> new staff use the temporary generic password issued by the school administrator. Administrators can reset a staff password from Access Management.</p>
         </div>
         <label>School code</label>
         <input id="schoolSlug" autocomplete="organization" placeholder="your-school-code">
@@ -63,6 +63,7 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <label>Password</label>
         <input id="password" type="password" autocomplete="current-password">
         <button id="signin">Sign in to Revolt-X School</button>
+        <button id="adminReset" class="secondary hide" type="button">Reset administrator password</button>
         <div id="status" class="status" style="display:none"></div>
         <div id="demoAccess" class="demo-box hide">
           <div class="eyebrow">Demo access</div>
@@ -115,6 +116,31 @@ async function existingSession(){
   }catch(e){}
   return false
 }
+function applyLoginMode(){
+  var path=location.pathname.toLowerCase(),mode='staff',title='School Staff Sign In',intro='Sign in with the email address and password issued for your School account.';
+  if(path.indexOf('teacher-login')>=0){mode='teacher';title='Teacher Sign In';intro='Teachers sign in with the email address provided by the school and the temporary generic password issued by the administrator.'}
+  else if(path.indexOf('headteacher-login')>=0){mode='headteacher';title='Headteacher Sign In';intro='Sign in with your Headteacher School account.'}
+  else if(path.indexOf('bursar-login')>=0){mode='bursar';title='Bursar Sign In';intro='Sign in with your Bursar School account.'}
+  else if(path.indexOf('registrar-login')>=0){mode='registrar';title='Registrar Sign In';intro='Sign in with your Registrar School account.'}
+  else if(path.indexOf('admin-login')>=0){mode='admin';title='Administrator Sign In';intro='Sign in with your School administrator account.'}
+  E('loginEyebrow').textContent=mode==='staff'?'Staff access':mode+' access';
+  E('loginHeading').textContent=title;
+  E('loginIntro').textContent=intro;
+  document.title='Revolt-X School • '+title;
+  if(mode==='admin'||mode==='staff')E('adminReset').classList.remove('hide');
+}
+async function requestAdminReset(){
+  var email=E('email').value.trim(),schoolSlug=E('schoolSlug').value.trim();
+  E('message').innerHTML='';
+  if(!email||!schoolSlug){E('message').innerHTML='<div class="error">Enter the school code and administrator email first.</div>';return}
+  var btn=E('adminReset');btn.disabled=true;btn.textContent='Creating reset...';
+  try{
+    await json('/api/auth/admin-reset/request',{method:'POST',body:JSON.stringify({email:email,schoolSlug:schoolSlug})});
+    E('message').innerHTML='<div class="success">If this is an active School administrator account, password-reset instructions have been sent.</div>'
+  }catch(err){E('message').innerHTML='<div class="error">'+esc(err.message)+'</div>'}
+  finally{btn.disabled=false;btn.textContent='Reset administrator password'}
+}
+
 async function signIn(){
   var email=E('email').value.trim(),password=E('password').value,btn=E('signin'),status=E('status');
   E('message').innerHTML='';
@@ -191,6 +217,8 @@ async function setup(){
   }catch(err){E('setupMessage').innerHTML='<div class="error">'+esc(err.message)+'</div>';btn.disabled=false;btn.textContent='Create password'}
 }
 async function boot(){
+  applyLoginMode();
+  E('adminReset').onclick=requestAdminReset;
   var params=new URLSearchParams(location.search),schoolCode=params.get('school')||'';
   if(E('schoolSlug'))E('schoolSlug').value=schoolCode;
   var setupToken=params.get('setup');
