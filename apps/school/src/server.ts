@@ -5967,7 +5967,23 @@ async function resolveQuickLoginSchool(value?:string|null){
     WHERE school_name ILIKE $1 OR tenant_slug ILIKE $1
     ORDER BY school_name LIMIT 3`,['%'+q+'%'])).rows;
   if(partial.length===1)return partial[0];
-  if(!partial.length)throw fail(404,'School name was not found');
+  if(!partial.length){
+    if(config.CORE_SERVICE_KEY){
+      const base=config.CORE_OS_URL.replace(/\/$/,'');
+      const repairedRes=await fetch(base+'/v1/internal/school/ensure-tenant',{
+        method:'POST',
+        headers:{...coreServiceHeaders(),'content-type':'application/json'},
+        body:JSON.stringify({schoolName:q}),
+        signal:AbortSignal.timeout(35000)
+      }).catch(()=>null);
+      if(repairedRes?.ok){
+        const repairedPayload=await repairedRes.json().catch(()=>null) as any;
+        const repaired=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE organisation_id=$1',[repairedPayload?.organisation?.id]);
+        if(repaired)return repaired;
+      }
+    }
+    throw fail(404,'School name was not found');
+  }
   throw fail(409,'More than one school matches that name. Enter the full school name.');
 }
 async function quickStaffDirectory(schoolName:string){
