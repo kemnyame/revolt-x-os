@@ -5896,12 +5896,31 @@ function verifyQuickLoginCookie(request:any){
   const a=Buffer.from(expected),b=Buffer.from(sig);
   return a.length===b.length&&timingSafeEqual(a,b);
 }
-function requireQuickLogin(request:any){
-  if(!config.ENABLE_QUICK_STAFF_LOGIN)throw fail(404,'Quick Login is disabled');
-  if(!verifyQuickLoginCookie(request))throw fail(401,'Quick Login password required');
+function validateQuickLoginPassword(password:string){
+  const expected=Buffer.from(config.STAFF_GENERIC_PASSWORD),provided=Buffer.from(password);
+  return expected.length===provided.length&&timingSafeEqual(expected,provided);
 }
-async function quickStaffDirectory(schoolSlug?:string){
-  const school=await resolveTenantSchool(schoolSlug);
+async function resolveQuickLoginSchool(value?:string|null){
+  if(!config.ENABLE_QUICK_STAFF_LOGIN)throw fail(404,'Quick Login is disabled');
+  const q=String(value||'').trim();
+  if(!q)throw fail(400,'Enter the school name');
+  const slug=q.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+  const exact=(await db.query(`SELECT * FROM school_profiles
+    WHERE lower(school_name)=lower($1) OR lower(tenant_slug)=lower($2)
+    ORDER BY CASE WHEN lower(school_name)=lower($1) THEN 0 ELSE 1 END,created_at
+    LIMIT 2`,[q,slug])).rows;
+  if(exact.length===1)return exact[0];
+  if(exact.length>1)throw fail(409,'More than one school matches that name. Enter the full school name.');
+
+  const partial=(await db.query(`SELECT * FROM school_profiles
+    WHERE school_name ILIKE $1 OR tenant_slug ILIKE $1
+    ORDER BY school_name LIMIT 3`,['%'+q+'%'])).rows;
+  if(partial.length===1)return partial[0];
+  if(!partial.length)throw fail(404,'School name was not found');
+  throw fail(409,'More than one school matches that name. Enter the full school name.');
+}
+async function quickStaffDirectory(schoolName:string){
+  const school=await resolveQuickLoginSchool(schoolName);
   const memberships=(await db.query(`SELECT sm.os_user_id,sm.role,sr.name role_name,sr.portal_mode,sr.can_teach
     FROM school_memberships sm
     JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
@@ -5926,10 +5945,9 @@ app.get('/api/quick-login/status',async request=>{
 });
 app.post('/api/quick-login/unlock',async(request,reply)=>{
   if(!config.ENABLE_QUICK_STAFF_LOGIN)throw fail(404,'Quick Login is disabled');
-  const b=z.object({password:z.string().min(1).max(200),schoolSlug:z.string().trim().min(2).max(100).optional()}).parse(request.body);
-  await resolveTenantSchool(b.schoolSlug);
-  const expected=Buffer.from(config.STAFF_GENERIC_PASSWORD),provided=Buffer.from(b.password);
-  if(expected.length!==provided.length||!timingSafeEqual(expected,provided))throw fail(401,'Invalid Quick Login password');
+  const b=z.object({password:z.string().min(1).max(200),schoolName:z.string().trim().min(2).max(160)}).parse(request.body);
+  await resolveQuickLoginSchool(b.schoolName);
+  if(!validateQuickLoginPassword(b.password))throw fail(401,'Invalid Quick Login password');
   const exp=Date.now()+8*60*60*1000;
   const sig=createHmac('sha256',config.STAFF_GENERIC_PASSWORD).update('revolt-x-school-quick|'+String(exp)).digest('base64url');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
@@ -5942,15 +5960,24 @@ app.post('/api/quick-login/lock',async(_request,reply)=>{
   return{unlocked:false};
 });
 app.get('/api/quick-login/staff',async request=>{
-  requireQuickLogin(request);
-  const q=z.object({schoolSlug:z.string().trim().min(2).max(100).optional()}).parse(request.query);
-  const result=await quickStaffDirectory(q.schoolSlug);
-  return{school:{name:result.school.school_name,slug:result.school.tenant_slug},staff:result.staff};
+  if(!config.ENABLE_QUICK_STAFF_LOGIN)throw fail(404,'Quick Login is disabled');
+  const q=z.object({schoolName:z.string().trim().min(2).max(160)}).parse(request.query);
+  const result=await quickStaffDirectory(q.schoolName);
+  return{
+    school:{name:result.school.school_name,slug:result.school.tenant_slug},
+    staff:result.staff.map((u:any)=>({id:u.id,first_name:u.first_name,last_name:u.last_name}))
+  };
 });
 app.post('/api/quick-login/staff-login',async(request,reply)=>{
-  requireQuickLogin(request);
-  const b=z.object({osUserId:z.string().uuid(),schoolSlug:z.string().trim().min(2).max(100).optional()}).parse(request.body);
-  const result=await quickStaffDirectory(b.schoolSlug);
+  if(!config.ENABLE_QUICK_STAFF_LOGIN)throw fail(404,'Quick Login is disabled');
+  const b=z.object({
+    osUserId:z.string().uuid(),
+    schoolName:z.string().trim().min(2).max(160),
+    password:z.string().min(1).max(200)
+  }).parse(request.body);
+  if(!validateQuickLoginPassword(b.password))throw fail(401,'Invalid Quick Login password');
+
+  const result=await quickStaffDirectory(b.schoolName);
   const membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
     FROM school_memberships sm
     JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
@@ -5958,6 +5985,7 @@ app.post('/api/quick-login/staff-login',async(request,reply)=>{
     [result.school.organisation_id,b.osUserId]);
   const selected=result.staff.find((x:any)=>x.id===b.osUserId);
   if(!selected)throw fail(404,'Staff profile is not available for Quick Login');
+
   const coreContext={
     id:b.osUserId,
     email:selected.email||('quick-'+b.osUserId+'@revolt-x.local'),
@@ -5976,12 +6004,14 @@ app.post('/api/quick-login/staff-login',async(request,reply)=>{
   const session=await createSchoolStaffSession(coreContext,'quick_login');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  await audit(result.school.organisation_id,b.osUserId,'staff.quick_authenticated','school_session',null,{role:membership.role,portalMode:membership.portal_mode});
+  await audit(result.school.organisation_id,b.osUserId,'staff.quick_authenticated','school_session',null,{
+    role:membership.role,portalMode:membership.portal_mode,schoolName:result.school.school_name
+  });
   return reply.send({
     accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,
     roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
     redirectTo:roleWorkspace(membership),quickLogin:true,
-    user:{id:b.osUserId,firstName:coreContext.first_name,lastName:coreContext.last_name,email:coreContext.email}
+    user:{id:b.osUserId,firstName:coreContext.first_name,lastName:coreContext.last_name}
   });
 });
 
