@@ -279,3 +279,72 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
 </script>
 </body>
 </html>`,'login');
+
+
+export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Revolt-X School • Reset Administrator Password</title>
+<style>${sharedStyles}</style>
+</head>
+<body>
+<main class="shell">
+  <section class="brand">
+    <div>
+      <div class="mark">REVOLT-X SCHOOL</div>
+      <h1>Reset your administrator password.</h1>
+      <p>This secure link was generated from Revolt-X OS for the organisation administrator recorded against your school licence.</p>
+    </div>
+    <div class="brand-card">
+      <b>Create a new password</b>
+      <p style="margin:8px 0 0">Use at least 12 characters with an uppercase letter, lowercase letter and number.</p>
+    </div>
+  </section>
+  <section class="form-side">
+    <div class="form-wrap">
+      <div class="eyebrow">Administrator password reset</div>
+      <h2>Enter a new password</h2>
+      <p class="muted">The reset link is single-use and expires after 30 minutes.</p>
+
+      <label for="newPassword">New password</label>
+      <input id="newPassword" type="password" autocomplete="new-password">
+
+      <label for="confirmPassword">Confirm new password</label>
+      <input id="confirmPassword" type="password" autocomplete="new-password">
+
+      <button id="save" type="button">Save new password</button>
+      <div id="status"></div>
+      <div class="switch"><a id="backLogin" href="/admin-login">Back to Admin Login</a></div>
+    </div>
+  </section>
+</main>
+<script>
+(function(){
+  function E(id){return document.getElementById(id)}
+  function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
+  var q=new URLSearchParams(location.search),token=q.get('token')||'',school=q.get('school')||'';
+  E('backLogin').href='/admin-login'+(school?'?school='+encodeURIComponent(school):'');
+  if(!token)show('This password reset link is incomplete. Generate a new reset link from Revolt-X OS Commercial Control.');
+
+  async function save(){
+    var p1=E('newPassword').value,p2=E('confirmPassword').value;
+    if(!token){show('This password reset link is incomplete. Generate a new reset link.');return}
+    if(p1.length<12||!/[A-Z]/.test(p1)||!/[a-z]/.test(p1)||!/[0-9]/.test(p1)){show('Use at least 12 characters with uppercase, lowercase and a number.');return}
+    if(p1!==p2){show('The passwords do not match.');return}
+    var b=E('save'),old=b.textContent;b.disabled=true;b.textContent='Saving new password...';
+    try{
+      var r=await fetch('/api/auth/admin-password-reset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,newPassword:p1,schoolId:school})});
+      var j=await r.json().catch(function(){return null});
+      if(!r.ok)throw new Error(j&&j.error&&j.error.message?j.error.message:'Could not reset password');
+      show('Password changed successfully. Opening School Admin Login...','success');
+      setTimeout(function(){location.replace(j.adminLoginUrl||('/admin-login'+(school?'?school='+encodeURIComponent(school):'')))},700)
+    }catch(err){show(err.message||'Could not reset password');b.disabled=false;b.textContent=old}
+  }
+  E('save').onclick=save;
+  E('confirmPassword').onkeydown=function(e){if(e.key==='Enter')save()}
+})();
+</script>
+</body>
+</html>`,'login');
