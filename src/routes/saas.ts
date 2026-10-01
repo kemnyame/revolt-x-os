@@ -63,16 +63,31 @@ function schoolServiceHeaders(config: Config) {
 
 async function pushLicenseSnapshot(db: Db, config: Config, providerId: string, customerId: string) {
   const entitlement = await getEntitlements(db, providerId, customerId);
-  const response = await fetch(schoolApplicationBase(config) + '/api/internal/license-sync', {
+  let base = '';
+  let headers: Record<string,string>;
+  try {
+    base = schoolApplicationBase(config);
+    headers = schoolServiceHeaders(config);
+  } catch (error: any) {
+    return {
+      ok: false,
+      pending: true,
+      entitlement,
+      message: error?.message || 'School sync is not configured yet. The licence action was saved in Core OS.'
+    };
+  }
+  const response = await fetch(base + '/api/internal/license-sync', {
     method: 'POST',
-    headers: schoolServiceHeaders(config),
+    headers,
     body: JSON.stringify({ organisationId: customerId, entitlement }),
     signal: AbortSignal.timeout(20000)
   }).catch(() => null);
-  if (!response) return { ok: false, message: 'Revolt-X School could not be reached' };
+  if (!response) return { ok: false, pending: true, entitlement, message: 'Licence action saved in Core OS. Revolt-X School could not be reached, so sync remains pending.' };
   const payload = await response.json().catch(() => null) as any;
-  if (!response.ok) return { ok: false, status: response.status, message: payload?.error?.message || 'School licence sync failed' };
-  await db.query('UPDATE saas_subscriptions SET last_synced_at=now(),updated_at=now() WHERE id=$1', [entitlement.subscriptionId]).catch(() => null);
+  if (!response.ok) return { ok: false, pending: true, entitlement, status: response.status, message: payload?.error?.message || 'Licence action saved in Core OS. School sync remains pending.' };
+  if (entitlement.subscriptionId) {
+    await db.query('UPDATE saas_subscriptions SET last_synced_at=now(),updated_at=now() WHERE id=$1', [entitlement.subscriptionId]).catch(() => null);
+  }
   return { ok: true, entitlement, school: payload };
 }
 
