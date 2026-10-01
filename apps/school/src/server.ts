@@ -3239,6 +3239,15 @@ app.get('/api/report-cards/:studentId',async request=>{
     return u?(u.first_name+' '+u.last_name).trim():'Not assigned';
   };
   const classTeacherName=userLabel(current?.class_teacher_os_user_id);
+  const defaultHead=await maybeOne<any>(db,`SELECT os_user_id FROM school_memberships
+    WHERE organisation_id=$1 AND status='active' AND role='headteacher' ORDER BY created_at LIMIT 1`,[a.core.organisation_id]);
+  const headReviewerId=comments?.reviewed_by_os_user_id??defaultHead?.os_user_id??null;
+  const headteacherName=userLabel(headReviewerId);
+  const signatureRows=(await db.query(`SELECT * FROM report_signatures
+    WHERE organisation_id=$1 AND is_active=true AND os_user_id=ANY($2::uuid[])`,
+    [a.core.organisation_id,[current?.class_teacher_os_user_id,headReviewerId].filter(Boolean)])).rows;
+  const teacherSignature=signatureRows.find((x:any)=>x.os_user_id===current?.class_teacher_os_user_id&&x.signer_role==='teacher');
+  const headteacherSignature=signatureRows.find((x:any)=>x.os_user_id===headReviewerId&&x.signer_role==='headteacher');
 
   let overallAverage=promotion.overallAverage;
   let classPosition:number|null=null,classSize:number|null=null;
@@ -3273,6 +3282,10 @@ app.get('/api/report-cards/:studentId',async request=>{
     },
     attendance,
     comments,
+    signatures:{
+      teacher:{osUserId:current?.class_teacher_os_user_id??null,name:teacherSignature?.display_name||classTeacherName,imageData:teacherSignature?.signature_image_data||null},
+      headteacher:{osUserId:headReviewerId,name:headteacherSignature?.display_name||headteacherName,imageData:headteacherSignature?.signature_image_data||null}
+    },
     reportResponsibility:{
       classTeacherOsUserId:current?.class_teacher_os_user_id??null,
       classTeacherName,
@@ -3305,6 +3318,39 @@ app.post('/api/fee-items',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'fee_item.created','fee_item',row.id,{incomeAccountId});
   return reply.code(201).send(row);
 });
+app.post('/api/fees/create',async(request,reply)=>{
+  const a=await authorize(request,db,config,'fees.create');
+  const b=z.object({
+    academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),
+    classroomId:z.string().uuid().optional(),name:z.string().trim().min(2).max(160),amount:z.number().positive(),
+    mandatory:z.boolean().default(true)
+  }).parse(request.body);
+  await one<any>(db,'SELECT id FROM academic_years WHERE id=$1 AND organisation_id=$2',[b.academicYearId,a.core.organisation_id]);
+  if(b.termId)await one<any>(db,'SELECT id FROM terms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',[b.termId,a.core.organisation_id,b.academicYearId]);
+  if(b.gradeLevelId)await one<any>(db,'SELECT id FROM grade_levels WHERE id=$1 AND organisation_id=$2',[b.gradeLevelId,a.core.organisation_id]);
+  if(b.classroomId)await one<any>(db,'SELECT id FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',[b.classroomId,a.core.organisation_id,b.academicYearId]);
+  const result=await tx(db,async client=>{
+    const income=await maybeOne<any>(client,"SELECT id FROM finance_accounts WHERE organisation_id=$1 AND code='4000' AND account_type='income' AND is_active=true",[a.core.organisation_id]);
+    const fee=await one<any>(client,`INSERT INTO fee_items(organisation_id,academic_year_id,term_id,grade_level_id,name,amount,mandatory,income_account_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [a.core.organisation_id,b.academicYearId,b.termId??null,b.gradeLevelId??null,b.name,b.amount,b.mandatory,income?.id??null]);
+    let assigned=0;
+    if(b.classroomId){
+      const students=(await client.query("SELECT student_id FROM enrolments WHERE organisation_id=$1 AND classroom_id=$2 AND academic_year_id=$3 AND status='active'",
+        [a.core.organisation_id,b.classroomId,b.academicYearId])).rows;
+      for(const st of students){
+        const sf=(await client.query(`INSERT INTO student_fees(organisation_id,student_id,fee_item_id,amount_due)
+          VALUES($1,$2,$3,$4) ON CONFLICT(student_id,fee_item_id) DO NOTHING RETURNING id`,
+          [a.core.organisation_id,st.student_id,fee.id,fee.amount])).rows[0];
+        if(sf){await postStudentFeeReceivable(client,sf.id,a.core.id);assigned++}
+      }
+    }
+    return{fee,assigned};
+  });
+  await audit(a.core.organisation_id,a.core.id,'fee_item.created_and_assigned','fee_item',result.fee.id,{assigned:result.assigned,classroomId:b.classroomId??null});
+  return reply.code(201).send({...result.fee,assigned:result.assigned});
+});
+
 app.post('/api/fees/assign',async request=>{
   const a=await authorize(request,db,config,'fees.create');
   const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()})
@@ -4770,12 +4816,8 @@ app.put('/api/report-comments/:studentId',async request=>{
 
   const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
   const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
-  const chosen=Object.hasOwn(b,'promotionDecision')
-    ?(b.promotionDecision??promotion.suggestedDecision)
-    :(existing?.promotion_decision??promotion.suggestedDecision);
-  const basis=chosen
-    ?(Object.hasOwn(b,'promotionDecision')&&b.promotionDecision&&b.promotionDecision!==promotion.suggestedDecision?'teacher_override':existing?.promotion_basis??'threshold')
-    :null;
+  const chosen=promotion.suggestedDecision;
+  const basis=chosen?'threshold':null;
 
   const row=await one<any>(db,`INSERT INTO report_comments(
       organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,
@@ -4882,8 +4924,9 @@ app.get('/api/teacher/report-worklist',async request=>{
         )=$2
         OR (rc.workflow_status='returned' AND rc.submitted_by_os_user_id=$2)
       )
+      AND rc.workflow_status IN ('draft','returned')
       AND ($3::uuid IS NULL OR rc.term_id=$3)
-    ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 WHEN 'submitted' THEN 2 ELSE 3 END,rc.updated_at DESC`,
+    ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 ELSE 1 END,rc.updated_at DESC`,
     [a.core.organisation_id,a.core.id,q.termId??null])).rows;
 });
 
@@ -5180,7 +5223,9 @@ app.post('/api/report-comments/:studentId/review',async request=>{
     termId:z.string().uuid(),
     action:z.enum(['approve','return']),
     headteacherComment:z.string().max(4000).nullable().optional(),
-    returnNote:z.string().max(2000).nullable().optional()
+    returnNote:z.string().max(2000).nullable().optional(),
+    promotionDecision:z.enum(['promoted','repeated','completed']).optional(),
+    promotionOverrideReason:z.string().max(2000).nullable().optional()
   }).parse(request.body);
   const report=await one<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,b.termId]);
   if(report.workflow_status!=='submitted')throw fail(409,'Only submitted reports can be reviewed');
@@ -5201,15 +5246,25 @@ app.post('/api/report-comments/:studentId/review',async request=>{
       const detail=readiness.missing.slice(0,8).map((x:any)=>x.subjectName+' – '+x.missing.join('; ')).join(' | ');
       throw fail(409,'This report cannot be approved because grades are incomplete. '+detail);
     }
-    if(!report.promotion_decision)throw fail(409,'The Class Teacher must set a promotion decision before approval');
+    const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
+    const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
+    const systemDecision=promotion.suggestedDecision;
+    const finalDecision=b.promotionDecision??systemDecision;
+    if(!finalDecision)throw fail(409,'The system cannot determine a promotion outcome until the report results are complete');
+    if(finalDecision!==systemDecision&&!String(b.promotionOverrideReason||'').trim())throw fail(400,'Give a reason when overriding the system promotion decision');
+    report.promotion_decision=finalDecision;
+    report.promotion_basis=finalDecision===systemDecision?'threshold':'reviewer_override';
   }
 
   const status=b.action==='approve'?'approved':'returned';
   const updated=status==='approved'
     ?await one<any>(db,`UPDATE report_comments SET workflow_status='approved',headteacher_comment=$1::text,
         next_term_begins=$2::date,return_note=NULL,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),
+        promotion_decision=$4,promotion_basis=$5,promotion_override_reason=$6,
+        promotion_overridden_by_os_user_id=CASE WHEN $5='reviewer_override' THEN $3::uuid ELSE NULL END,
         released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
-      WHERE id=$4::uuid RETURNING *`,[b.headteacherComment??null,term.next_term_begins??null,a.core.id,report.id])
+      WHERE id=$7::uuid RETURNING *`,[b.headteacherComment??null,term.next_term_begins??null,a.core.id,
+        report.promotion_decision,report.promotion_basis,b.promotionOverrideReason??null,report.id])
     :await one<any>(db,`UPDATE report_comments SET workflow_status='returned',next_term_begins=$1::date,
         return_note=$2::text,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),
         released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
@@ -5234,6 +5289,43 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   });
   return updated;
 });
+
+app.get('/api/report-signatures',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  return (await db.query(`SELECT * FROM report_signatures WHERE organisation_id=$1 ORDER BY signer_role,display_name`,[a.core.organisation_id])).rows;
+});
+app.get('/api/report-signatures/me',async request=>{
+  const a=await authorize(request,db,config,'reports.view');
+  const role=a.role==='headteacher'?'headteacher':'teacher';
+  return (await maybeOne<any>(db,`SELECT * FROM report_signatures WHERE organisation_id=$1 AND os_user_id=$2 AND signer_role=$3`,
+    [a.core.organisation_id,a.core.id,role]))??{os_user_id:a.core.id,signer_role:role,display_name:(a.core.first_name+' '+a.core.last_name).trim(),signature_image_data:null,is_active:true};
+});
+app.put('/api/report-signatures/me',async request=>{
+  const a=await authorize(request,db,config,'reports.edit');
+  const b=z.object({displayName:z.string().trim().min(2).max(200),signatureImageData:z.string().max(1500000).nullable().optional()}).parse(request.body);
+  if(b.signatureImageData&&!/^data:image\/(png|jpe?g|webp);base64,/i.test(b.signatureImageData))throw fail(400,'Signature must be a PNG, JPG or WebP image');
+  const role=a.role==='headteacher'?'headteacher':'teacher';
+  return one<any>(db,`INSERT INTO report_signatures(organisation_id,os_user_id,signer_role,display_name,signature_image_data,is_active,updated_at)
+    VALUES($1,$2,$3,$4,$5,true,now())
+    ON CONFLICT(organisation_id,os_user_id,signer_role) DO UPDATE SET display_name=EXCLUDED.display_name,
+      signature_image_data=EXCLUDED.signature_image_data,is_active=true,updated_at=now()
+    RETURNING *`,[a.core.organisation_id,a.core.id,role,b.displayName,b.signatureImageData??null]);
+});
+app.put('/api/report-signatures/:osUserId',async request=>{
+  const a=await authorize(request,db,config,'staff.edit');
+  const {osUserId}=z.object({osUserId:z.string().uuid()}).parse(request.params);
+  const b=z.object({signerRole:z.enum(['teacher','headteacher']),displayName:z.string().trim().min(2).max(200),signatureImageData:z.string().max(1500000).nullable().optional(),isActive:z.boolean().default(true)}).parse(request.body);
+  if(b.signatureImageData&&!/^data:image\/(png|jpe?g|webp);base64,/i.test(b.signatureImageData))throw fail(400,'Signature must be a PNG, JPG or WebP image');
+  await one<any>(db,"SELECT os_user_id FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2 AND status='active'",[a.core.organisation_id,osUserId]);
+  const row=await one<any>(db,`INSERT INTO report_signatures(organisation_id,os_user_id,signer_role,display_name,signature_image_data,is_active,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,now())
+    ON CONFLICT(organisation_id,os_user_id,signer_role) DO UPDATE SET display_name=EXCLUDED.display_name,
+      signature_image_data=EXCLUDED.signature_image_data,is_active=EXCLUDED.is_active,updated_at=now()
+    RETURNING *`,[a.core.organisation_id,osUserId,b.signerRole,b.displayName,b.signatureImageData??null,b.isActive]);
+  await audit(a.core.organisation_id,a.core.id,'report_signature.updated','report_signature',row.id,{osUserId,signerRole:b.signerRole});
+  return row;
+});
+
 app.get('/api/report-reviewers',async request=>{
   const a=await authorize(request,db,config,'staff.view');
   return (await db.query(`SELECT rra.*,c.name classroom_name FROM report_reviewer_assignments rra
@@ -5368,16 +5460,18 @@ app.get('/api/promotions',async request=>{const a=await authorize(request,db,con
 app.post('/api/parent/login',async request=>{
   const b=z.object({
     phone:z.string().trim().min(5).max(60),
-    admissionNo:z.string().trim().min(1).max(60),
+    studentId:z.string().trim().min(1).max(60).optional(),
+    admissionNo:z.string().trim().min(1).max(60).optional(),
     schoolSlug:z.string().trim().min(2).max(100).optional()
-  }).parse(request.body);
+  }).refine(v=>Boolean(v.studentId||v.admissionNo),{message:'Student ID is required'}).parse(request.body);
+  const studentKey=(b.studentId||b.admissionNo||'').trim();
   const tenant=await resolveTenantSchool(b.schoolSlug);
   const licence=await schoolLicence(tenant.organisation_id);
   if(licence.status!=='legacy'&&!licence.modules.includes('school.parent_portal'))throw fail(403,'Parent Portal is not included in this school plan');
   if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
 
   const normalizedPhone=b.phone.replace(/\D/g,'');
-  const identityKey=throttleFingerprint(tenant.organisation_id+'|'+normalizedPhone+'|'+b.admissionNo.toLowerCase());
+  const identityKey=throttleFingerprint(tenant.organisation_id+'|'+normalizedPhone+'|'+studentKey.toLowerCase());
   const ipKey=throttleFingerprint(String(request.ip||request.headers['x-forwarded-for']||'unknown'));
   await assertPortalLoginAllowed(db,'parent_identity',identityKey);
   await assertPortalLoginAllowed(db,'parent_ip',ipKey);
@@ -5391,7 +5485,7 @@ app.post('/api/parent/login',async request=>{
       AND g.organisation_id=$3
       AND regexp_replace(g.phone,'\\D','','g')=regexp_replace($1,'\\D','','g')
       AND lower(s.admission_no)=lower($2)
-    LIMIT 1`,[b.phone,b.admissionNo,tenant.organisation_id]);
+    LIMIT 1`,[b.phone,studentKey,tenant.organisation_id]);
 
   if(!row){
     await Promise.all([
@@ -5488,11 +5582,23 @@ async function buildGuardianReleasedReport(g:any,id:string){
   for(const r of attRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
   if(attendance.total)attendance.rate=Math.round(((attendance.present+attendance.late+attendance.excused)/attendance.total)*10000)/100;
   const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
+  const coreUsers=await fetchCoreUsers(g.organisation_id);
+  const defaultHead=await maybeOne<any>(db,`SELECT os_user_id FROM school_memberships WHERE organisation_id=$1 AND status='active' AND role='headteacher' ORDER BY created_at LIMIT 1`,[g.organisation_id]);
+  const headId=approved.reviewed_by_os_user_id??defaultHead?.os_user_id??null;
+  const signatureRows=(await db.query(`SELECT * FROM report_signatures WHERE organisation_id=$1 AND is_active=true AND os_user_id=ANY($2::uuid[])`,
+    [g.organisation_id,[current?.class_teacher_os_user_id,headId].filter(Boolean)])).rows;
+  const teacherSig=signatureRows.find((x:any)=>x.os_user_id===current?.class_teacher_os_user_id&&x.signer_role==='teacher');
+  const headSig=signatureRows.find((x:any)=>x.os_user_id===headId&&x.signer_role==='headteacher');
+  const label=(uid:any)=>{const u=uid?coreUsers.find((x:any)=>x.id===uid):null;return u?(u.first_name+' '+u.last_name).trim():'Not assigned'};
 
   return{
     available:true,school,term,student,subjects,comments:approved,
     performance:{overallAverage,classPosition,classSize},
-    attendance
+    attendance,
+    signatures:{
+      teacher:{name:teacherSig?.display_name||label(current?.class_teacher_os_user_id),imageData:teacherSig?.signature_image_data||null},
+      headteacher:{name:headSig?.display_name||label(headId),imageData:headSig?.signature_image_data||null}
+    }
   };
 }
 
@@ -5559,7 +5665,17 @@ app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
     doc.font('Helvetica').text(comments.class_teacher_comment||'—');
     doc.moveDown(.5).font('Helvetica-Bold').text('Headteacher Remark');
     doc.font('Helvetica').text(comments.headteacher_comment||'—');
-    doc.moveDown(.7).fontSize(8).fillColor('#667780').text('Official report released by the school through Revolt-X School. Generated '+new Date().toLocaleString()+'.',{align:'center'});
+    const signatures=report.signatures||{};
+    const drawSignature=(label:string,sig:any)=>{
+      doc.moveDown(.7).font('Helvetica-Bold').fontSize(9).fillColor('#172027').text(label);
+      if(sig?.imageData&&/^data:image\/(png|jpe?g);base64,/i.test(sig.imageData)){
+        try{const raw=String(sig.imageData).split(',')[1]||'';doc.image(Buffer.from(raw,'base64'),{fit:[130,42],align:'left'})}catch{}
+      }
+      doc.font('Helvetica').fontSize(8).text(sig?.name||'________________________');
+    };
+    drawSignature('Class Teacher Signature',signatures.teacher);
+    drawSignature('Headteacher Signature',signatures.headteacher);
+    doc.moveDown(.7).fontSize(8).fillColor('#667780').text('Official report released by the school through Revolt-X School and available in the Parent Portal. Generated '+new Date().toLocaleString()+'.',{align:'center'});
     doc.end();
   });
   const safeName=String(report.student.admission_no||'student').replace(/[^A-Za-z0-9_-]/g,'_');
