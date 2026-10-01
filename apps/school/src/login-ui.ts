@@ -159,8 +159,8 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <button id="signin" type="button">Sign in as Administrator</button>
       <div id="status"></div>
 
-      <div class="help"><b>New school:</b> use the temporary Admin Password shown when the school is created. You will be required to change it before entering the Admin workspace.</div>
-      <div class="switch"><a href="/admin-password-help">Forgot password?</a> &nbsp;•&nbsp; Staff member? <a href="/login">Use Staff Login</a></div>
+      <div class="help"><b>Administrator access:</b> use the Admin Email and password configured for this school in Revolt-X OS Commercial Control.</div>
+      <div class="switch">Staff member? <a href="/login">Use Staff Login</a></div>
     </div>
   </section>
 </main>
