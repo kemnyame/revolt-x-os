@@ -514,7 +514,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       db.query('SELECT * FROM saas_provisioning_jobs WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id])
     ]);
     const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug);
-    return { customer, license, domains: domains.rows, invoices: invoices.rows, usage: usage.rows, provisioning: provisioning.rows[0] ?? null, accessUrl };
+    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(customer.slug);
+    return { customer, license, domains: domains.rows, invoices: invoices.rows, usage: usage.rows, provisioning: provisioning.rows[0] ?? null, accessUrl, adminLoginUrl };
   });
 
   app.post('/v1/commercial-control/schools/:id/sync-license', async request => {
