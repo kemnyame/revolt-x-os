@@ -1725,159 +1725,131 @@ app.post('/api/system/recover-services',async request=>{
   };
 });
 
-async function handleSchoolStaffLogin(request:any,reply:any){
+function inferSchoolRoleFromStaff(user:any){
+  const job=String(user?.job_title||'').trim().toLowerCase();
+  const roles=Array.isArray(user?.roles)?user.roles.map((x:any)=>String(x).toLowerCase()):[];
+  if(roles.includes('owner'))return 'school_admin';
+  if(/head\s*master|headteacher|head\s*teacher|principal/.test(job))return 'headteacher';
+  if(/bursar/.test(job))return 'bursar';
+  if(/registrar|admission/.test(job))return 'registrar';
+  if(/accountant|finance officer/.test(job))return 'accountant';
+  return 'teacher';
+}
+
+async function resolveSchoolForStaffIdLogin(schoolId:string){
+  const value=schoolId.trim();
+  let school=await maybeOne<any>(db,`SELECT organisation_id,tenant_slug,school_name
+    FROM school_profiles
+    WHERE lower(tenant_slug)=lower($1) OR lower(school_name)=lower($1)
+    ORDER BY CASE WHEN lower(tenant_slug)=lower($1) THEN 0 ELSE 1 END
+    LIMIT 1`,[value]);
+  if(school)return school;
+
+  if(config.CORE_SERVICE_KEY){
+    const base=config.CORE_OS_URL.replace(/\/$/,'');
+    const repaired=await fetch(base+'/v1/internal/school/ensure-tenant',{
+      method:'POST',
+      headers:{...coreServiceHeaders(),'content-type':'application/json'},
+      body:JSON.stringify({schoolName:value}),
+      signal:AbortSignal.timeout(35000)
+    }).catch(()=>null);
+    if(repaired?.ok){
+      const payload=await repaired.json().catch(()=>null) as any;
+      if(payload?.organisation?.id){
+        school=await maybeOne<any>(db,`SELECT organisation_id,tenant_slug,school_name
+          FROM school_profiles WHERE organisation_id=$1`,[payload.organisation.id]);
+        if(school)return school;
+      }
+    }
+  }
+  throw fail(404,'School ID was not found');
+}
+
+async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
-    email:z.string().trim().toLowerCase().email(),
-    password:z.string().min(1).max(200),
-    schoolSlug:z.string().trim().min(2).max(100).optional()
+    schoolId:z.string().trim().min(2).max(160),
+    staffId:z.string().trim().min(2).max(80)
   }).parse(request.body);
 
-  let school:any;
-  if(b.schoolSlug){
-    school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE tenant_slug=$1',[b.schoolSlug]);
-    if(!school)throw fail(404,'School code was not found');
-  }else{
-    const profiles=(await db.query('SELECT organisation_id,tenant_slug,school_name FROM school_profiles ORDER BY created_at LIMIT 2')).rows;
-    if(profiles.length!==1)throw fail(400,'Enter your school code to sign in');
-    school=profiles[0];
+  const school=await resolveSchoolForStaffIdLogin(b.schoolId);
+  const users=await fetchCoreUsers(school.organisation_id).catch(()=>[] as any[]);
+  const normalized=b.staffId.toLowerCase();
+
+  let user=users.find((u:any)=>String(u.employee_number||'').trim().toLowerCase()===normalized);
+  if(!user){
+    user=await maybeOne<any>(db,`SELECT os_user_id id,core_membership_id membership_id,first_name,last_name,email,
+        job_title,employee_number,user_status status,membership_status,roles
+      FROM school_user_directory
+      WHERE organisation_id=$1 AND lower(employee_number)=lower($2)
+      LIMIT 1`,[school.organisation_id,b.staffId]);
   }
-  const wake=await wakeCoreOS();
-  if(!wake.reachable)throw fail(503,'Core Revolt-X OS is still starting. Please retry in a moment.');
+  if(!user||String(user.email||'').toLowerCase()==='preview@revolt-x.local')throw fail(401,'Invalid School ID or Staff ID');
+  if(String(user.membership_status||'active')!=='active')throw fail(403,'This staff profile is not active');
 
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const loginRes=await fetch(base+'/v1/auth/login',{
-    method:'POST',
-    headers:{'content-type':'application/json'},
-    body:JSON.stringify({email:b.email,password:b.password,organisationId:school.organisation_id}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
+  let membership=await maybeOne<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
+    FROM school_memberships sm
+    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
+    [school.organisation_id,user.id]);
 
-  if(!loginRes)throw fail(503,'Core Revolt-X OS could not be reached');
-  const loginPayload=await loginRes.json().catch(()=>null) as any;
-  if(!loginRes.ok)throw fail(loginRes.status,loginPayload?.error?.message||'Invalid email or password');
-
-  const ctxRes=await fetch(base+'/v1/auth/context',{
-    headers:{authorization:'Bearer '+loginPayload.accessToken},
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-
-  if(!ctxRes)throw fail(503,'Core OS user context could not be reached');
-  const coreContext=await ctxRes.json().catch(()=>null) as any;
-  if(!ctxRes.ok||!coreContext)throw fail(ctxRes.status||503,coreContext?.error?.message||'Core OS authentication failed');
-
-  let membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND status='active'`,
-    [coreContext.organisation_id,coreContext.id]);
-
-  if(!membership&&Array.isArray(coreContext.permissions)&&coreContext.permissions.includes('organisation.manage')){
-    membership=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
-      VALUES($1,$2,'school_admin','active')
-      ON CONFLICT(organisation_id,os_user_id)
-      DO UPDATE SET role='school_admin',status='active',updated_at=now()
-      RETURNING *`,[coreContext.organisation_id,coreContext.id]);
+  if(!membership){
+    const role=inferSchoolRoleFromStaff(user);
+    await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+      VALUES($1,$2,$3,'active')
+      ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
+      [school.organisation_id,user.id,role]);
+    membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
+      FROM school_memberships sm
+      JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
+      WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
+      [school.organisation_id,user.id]);
   }
 
-  if(!membership)throw fail(403,'This account does not have active Revolt-X School access');
+  await persistCoreUsers(school.organisation_id,[{
+    ...user,
+    id:user.id,
+    employee_number:user.employee_number||b.staffId,
+    membership_status:'active'
+  }]).catch(()=>null);
 
-  const session=await createSchoolStaffSession(coreContext,'core_exchange');
+  const coreContext={
+    id:user.id,
+    email:user.email||('staff-'+user.id+'@revolt-x.local'),
+    first_name:user.first_name||'School',
+    last_name:user.last_name||'User',
+    status:user.status||'active',
+    membership_id:user.membership_id||('staff-id-'+user.id),
+    membership_status:'active',
+    employee_number:user.employee_number||b.staffId,
+    organisation_id:school.organisation_id,
+    organisation_name:school.school_name,
+    organisation_slug:school.tenant_slug,
+    sessionId:'staff-id-'+randomBytes(12).toString('hex'),
+    permissions:[],
+    preview:false
+  };
+
+  const session=await createSchoolStaffSession(coreContext,'staff_id');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
 
-  const roleProfile=await schoolRoleProfile(db,coreContext.organisation_id,membership.role);
-  if(!roleProfile||roleProfile.is_active===false)throw fail(403,'This School role is inactive');
-  const redirectTo=roleProfile.portal_mode==='teacher'?'/teacher':'/';
-  await audit(coreContext.organisation_id,coreContext.id,'school.authenticated','school_session',null,{role:membership.role,portalMode:roleProfile.portal_mode});
+  const redirectTo=roleWorkspace(membership);
+  await audit(school.organisation_id,user.id,'school.staff_id_authenticated','school_session',null,{
+    role:membership.role,portalMode:membership.portal_mode,staffId:user.employee_number||b.staffId,schoolId:school.tenant_slug
+  });
 
   return reply.send({
     accessToken:session.localToken,
     expiresIn:8*60*60,
     schoolRole:membership.role,
-    roleProfile,
-    user:{
-      id:coreContext.id,
-      email:coreContext.email,
-      firstName:coreContext.first_name,
-      lastName:coreContext.last_name
-    },
+    roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
+    user:{id:user.id,staffId:user.employee_number||b.staffId,firstName:coreContext.first_name,lastName:coreContext.last_name},
+    school:{id:school.tenant_slug,name:school.school_name},
     redirectTo
   });
 }
 
-app.post('/api/auth/login',handleSchoolStaffLogin);
-app.post('/api/auth/teacher-login',handleSchoolStaffLogin);
-
-app.post('/api/auth/admin-reset/request',async(request,reply)=>{
-  const b=z.object({
-    email:z.string().trim().toLowerCase().email(),
-    schoolSlug:z.string().trim().min(2).max(100)
-  }).parse(request.body);
-  const school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE tenant_slug=$1',[b.schoolSlug]);
-  if(!school)return reply.send({accepted:true});
-
-  const users=await fetchCoreUsers(school.organisation_id).catch(()=>[]);
-  const target=users.find((u:any)=>String(u.email||'').toLowerCase()===b.email);
-  if(!target)return reply.send({accepted:true});
-  const membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
-    WHERE organisation_id=$1 AND os_user_id=$2 AND role='school_admin' AND status='active'`,
-    [school.organisation_id,target.id]);
-  if(!membership)return reply.send({accepted:true});
-
-  const wake=await wakeCoreOS();
-  if(!wake.reachable)throw fail(503,'Core Revolt-X OS is still starting. Please retry in a moment.');
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const resetRes=await fetch(base+'/v1/auth/password-reset/request',{
-    method:'POST',
-    headers:{'content-type':'application/json'},
-    body:JSON.stringify({email:b.email}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-  if(!resetRes)throw fail(503,'Core OS could not be reached');
-  const payload=await resetRes.json().catch(()=>null) as any;
-  if(!resetRes.ok)throw fail(resetRes.status,payload?.error?.message||'Could not start password reset');
-
-  if(payload?.resetToken){
-    const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-    const resetUrl=publicBase+'/admin-login?school='+encodeURIComponent(b.schoolSlug)+'&setup='+encodeURIComponent(payload.resetToken)+'&next=%2F';
-    await deliverCommunication({
-      organisationId:school.organisation_id,actorOsUserId:null,channel:'email',
-      recipientName:(target.first_name+' '+target.last_name).trim(),recipientAddress:b.email,
-      subject:'Reset your Revolt-X School administrator password',
-      body:`Hello ${target.first_name},
-
-A password reset was requested for your Revolt-X School administrator account.
-
-Reset your password here:
-${resetUrl}
-
-This link expires in 30 minutes. If you did not request this reset, ignore this message.`,
-      templateKey:'admin.password_reset',relatedType:'school_membership',relatedId:membership.id
-    });
-  }
-  return reply.send({accepted:true});
-});
-
-async function handleSchoolPasswordSetup(request:any,reply:any){
-  const b=z.object({
-    token:z.string().min(32).max(300),
-    password:z.string().min(12).max(200)
-      .regex(/[A-Z]/,'Password must contain an uppercase letter')
-      .regex(/[a-z]/,'Password must contain a lowercase letter')
-      .regex(/[0-9]/,'Password must contain a number')
-  }).parse(request.body);
-  await wakeCoreOS();
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const res=await fetch(base+'/v1/auth/password-reset/confirm',{
-    method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({token:b.token,password:b.password}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-  if(!res)throw fail(503,'Core OS could not be reached');
-  const payload=await res.json().catch(()=>null) as any;
-  if(!res.ok)throw fail(res.status,payload?.error?.message||'Password setup failed');
-  return reply.send({reset:true,email:payload?.email??null,organisationId:payload?.organisationId??null});
-}
-app.post('/api/auth/set-password',handleSchoolPasswordSetup);
-app.post('/api/auth/teacher-set-password',handleSchoolPasswordSetup);
+app.post('/api/auth/staff-id-login',handleSchoolStaffIdLogin);
 
 app.post('/api/auth/logout',async(request,reply)=>{
   const token=requestSessionToken(request);
