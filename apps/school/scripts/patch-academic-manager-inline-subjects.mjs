@@ -16,8 +16,6 @@ const endIndex = source.indexOf(end, startIndex + start.length);
 
 if (startIndex < 0 || endIndex < 0) {
   console.warn('Academic Manager Add subjects handler anchor was not found. No inline subject picker patch applied.');
-} else if (source.includes('managerInlineSubjectPicker')) {
-  console.log('Academic Manager inline subject picker already present.');
 } else {
   const replacement = `     E('managerAddSubjects').onclick=function(){
        syncDraft();
@@ -37,6 +35,11 @@ if (startIndex < 0 || endIndex < 0) {
          var rows=q?available.filter(function(s){return ((s.code||'')+' '+(s.name||'')).toLowerCase().includes(q)}):available;
          E('managerSubjectPicker').innerHTML=rows.length?rows.map(function(s){return '<label class="simple-subject-choice" style="display:flex;gap:10px;align-items:flex-start;padding:9px;border:1px solid var(--line);border-radius:9px;margin:7px 0"><input type="checkbox" data-pick-manager-subject="'+s.id+'" style="width:auto;margin-top:3px"><span><b>'+esc(s.name)+'</b><small style="display:block;color:var(--muted)">'+esc(s.code)+' • '+esc(s.stage)+'</small></span></label>'}).join(''):'<div class="empty">No more subjects are available for this class. Create more subjects under School Setup → Subjects if needed.</div>';
        }
+       function redrawSubjectRows(){
+         var rowsBox=E('managerSubjectRows');
+         rowsBox.innerHTML=draft.subjects.length?draft.subjects.map(subjectRow).join(''):'<div class="empty">No subjects added to this class yet.</div>';
+         rowsBox.querySelectorAll('select,input').forEach(function(el){el.onchange=syncDraft});
+       }
        draw();
        E('managerSubjectSearch').oninput=draw;
        E('managerCloseSubjectPicker').onclick=function(){picker.remove()};
@@ -45,11 +48,13 @@ if (startIndex < 0 || endIndex < 0) {
          E('managerSubjectPicker').querySelectorAll('[data-pick-manager-subject]:checked').forEach(function(i){ids.push(i.dataset.pickManagerSubject)});
          if(!ids.length)return toast('Select at least one subject',true);
          ids.forEach(function(id){if(!draftSubject(id))draft.subjects.push({subjectId:id,weeklyPeriods:3,creditHours:2,teacherOsUserId:''})});
-         renderClassSetup();
+         picker.remove();
+         redrawSubjectRows();
+         toast(ids.length+' subject(s) added. Select teacher, periods and hours, then click Save Class Setup.');
        };
      };
 `;
   source = source.slice(0, startIndex) + replacement + source.slice(endIndex);
   fs.writeFileSync(uiPath, source);
-  console.log('Academic Manager Add subjects now uses inline subject picker.');
+  console.log('Academic Manager Add subjects updates the current class setup table before saving.');
 }
