@@ -16,7 +16,7 @@ test('legacy Quick Login is removed and Staff ID login is canonical',async()=>{
   assert.match(server,/resolveSchoolForStaffIdLogin/);
   assert.match(server,/handleSchoolStaffIdLogin/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
-  assert.match(server,/createSchoolStaffSession\(coreContext,'staff_id'\)/);
+  assert.match(server,/createSchoolStaffSession\(coreContext,\s*['"]staff_id['"]\)/);
 
   assert.match(login,/School ID/);
   assert.match(login,/Staff ID/);
