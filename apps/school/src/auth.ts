@@ -18,6 +18,7 @@ export type CoreContext={
   sessionId:string;
   permissions:string[];
   preview?:boolean;
+  must_change_password?:boolean;
 };
 
 export type SchoolRole=string;
@@ -139,10 +140,13 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
   throw Object.assign(new Error(lastMessage),{statusCode:lastStatus});
 }
 
-export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string){
+export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string,options?:{allowPasswordChange?:boolean}){
   // Established School sessions are fully local and must not require Core availability.
   const schoolContext=await fetchSchoolSessionContext(request,db);
   const core=schoolContext??await fetchCoreContext(request,config);
+  if(core.must_change_password&&!options?.allowPasswordChange){
+    throw Object.assign(new Error('Password change required before opening the School workspace'),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
+  }
   let membership=await maybeOne<{role:SchoolRole;status:string}>(
     db,
     'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
