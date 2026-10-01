@@ -131,7 +131,7 @@ async function changeLog(input:{
     JSON.stringify(input.metadata??{})
   ]);
 }
-async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'|'quick_login'='core_exchange'){
+async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'|'quick_login'|'staff_id'='core_exchange'){
   const localToken='rxs_'+randomBytes(48).toString('base64url');
   const tokenHash=createHash('sha256').update(localToken).digest('hex');
   const expiresAt=new Date(Date.now()+8*60*60*1000);
