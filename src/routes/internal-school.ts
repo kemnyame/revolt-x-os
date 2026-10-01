@@ -116,11 +116,28 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const payload=await response.json().catch(()=>null) as any;
     if(!response.ok)throw new AppError(response.status,'SCHOOL_PROVISION_FAILED',payload?.error?.message||'School provisioning failed');
 
+    const staffPayload=usableMembers.map((u:any)=>({
+      osUserId:u.id,
+      email:String(u.email||'').endsWith('@revolt-x.local')?null:u.email,
+      firstName:u.first_name,lastName:u.last_name,userStatus:u.user_status,
+      jobTitle:u.job_title??null,coreRoles:u.roles||[]
+    }));
+    const staffSyncResponse=await fetch(base+'/api/internal/sync-staff',{
+      method:'POST',
+      headers:{'x-revolt-service-key':config.SCHOOL_SERVICE_KEY!,'content-type':'application/json'},
+      body:JSON.stringify({organisationId:customer.id,members:staffPayload}),
+      signal:AbortSignal.timeout(30000)
+    }).catch(()=>null);
+    if(!staffSyncResponse)throw new AppError(503,'SCHOOL_UNAVAILABLE','School staff sync service could not be reached');
+    const staffSync=await staffSyncResponse.json().catch(()=>null) as any;
+    if(!staffSyncResponse.ok)throw new AppError(staffSyncResponse.status,'SCHOOL_STAFF_SYNC_FAILED',staffSync?.error?.message||'School staff sync failed');
+
     await db.query('UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),last_synced_at=now(),updated_at=now() WHERE id=$1',[customer.subscription_id]);
     return{
       organisation:{id:customer.id,name:customer.name,slug:customer.slug},
       entitlement,
       provisioning:payload,
+      staffSync,
       members:usableMembers.map((u:any)=>({
         id:u.id,email:String(u.email||'').endsWith('@revolt-x.local')?null:u.email,
         first_name:u.first_name,last_name:u.last_name,user_status:u.user_status,
