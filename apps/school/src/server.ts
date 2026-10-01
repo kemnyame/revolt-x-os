@@ -1828,7 +1828,7 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
 
   const redirectTo=roleWorkspace(membership);
   await audit(user.organisation_id,user.id,'staff.signed_in','school_session',null,{
-    role:membership.role,portalMode:membership.portal_mode,staffId:user.staff_id,school:school.school_name
+    role:membership.role,portalMode:membership.portal_mode,staffId:user.employee_number??user.staff_id,school:school.school_name
   });
 
   return reply.send({
@@ -1836,7 +1836,7 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     expiresIn:8*60*60,
     schoolRole:membership.role,
     roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
-    user:{id:user.id,staffId:user.staff_id,firstName:coreContext.first_name,lastName:coreContext.last_name},
+    user:{id:user.id,staffId:user.employee_number??user.staff_id,firstName:coreContext.first_name,lastName:coreContext.last_name},
     school:{id:school.tenant_slug,name:school.school_name},
     requiresPasswordChange:Boolean(user.must_change_password),
     passwordChangeUrl:'/change-password',
@@ -3997,11 +3997,11 @@ app.post('/api/staff/users',async(request,reply)=>{
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'school_user.created',
     resourceType:'school_user',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:payload.employee_number??null,staffId:payload.login_staff_id,emailConfigured:Boolean(b.email),status:'active'}
+    oldValue:null,newValue:{schoolRole:b.schoolRole,roleName:role.name,jobTitle:b.jobTitle||role.name,employeeNumber:payload.employee_number??null,staffId:payload.employee_number??payload.login_staff_id,emailConfigured:Boolean(b.email),status:'active'}
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
-    email:b.email??null,staffId:payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:config.STAFF_GENERIC_PASSWORD
+    email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:config.STAFF_GENERIC_PASSWORD
   });
 });
 
@@ -4052,15 +4052,15 @@ app.post('/api/staff/teachers',async(request,reply)=>{
 
 
   coreUsersCache.delete(a.core.organisation_id);
-  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',schoolMembership.id,{email:b.email??null,osUserId:payload.user_id,staffId:payload.login_staff_id});
+  await audit(a.core.organisation_id,a.core.id,'teacher.created','school_membership',schoolMembership.id,{email:b.email??null,osUserId:payload.user_id,staffId:payload.employee_number??payload.login_staff_id});
   await changeLog({
     organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'teacher.created',
     resourceType:'teacher',resourceId:payload.user_id,performedOn:b.firstName+' '+b.lastName,
-    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:payload.employee_number??null,staffId:payload.login_staff_id,schoolRole:'teacher',status:'active'},
+    oldValue:null,newValue:{email:b.email,jobTitle:b.jobTitle,employeeNumber:payload.employee_number??null,staffId:payload.employee_number??payload.login_staff_id,schoolRole:'teacher',status:'active'},
     metadata:{loginMethod:'school_id_staff_id'}
   });
   return reply.code(201).send({
-    osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email??null,staffId:payload.login_staff_id,firstName:b.firstName,lastName:b.lastName,
+    osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,firstName:b.firstName,lastName:b.lastName,
     jobTitle:b.jobTitle,temporaryPassword:config.STAFF_GENERIC_PASSWORD
   });
 });
@@ -4090,9 +4090,9 @@ app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   await db.query('UPDATE school_sessions SET revoked_at=now() WHERE organisation_id=$1 AND os_user_id=$2 AND revoked_at IS NULL',
     [a.core.organisation_id,coreUser.id]);
   await audit(a.core.organisation_id,a.core.id,'school_user.password_reset','school_membership',membershipId,{
-    osUserId:coreUser.id,staffId:coreUser.login_staff_id??payload.staffId??null
+    osUserId:coreUser.id,staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null
   });
-  return{status:'reset',staffId:coreUser.login_staff_id??payload.staffId??null,temporaryPassword:config.STAFF_GENERIC_PASSWORD};
+  return{status:'reset',staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,temporaryPassword:config.STAFF_GENERIC_PASSWORD};
 });
 
 app.get('/api/staff/module-memberships',async request=>{
