@@ -83,33 +83,35 @@ const uiHelper = String.raw`
 function rxSetupOption(v,t){return '<option value="'+esc(v)+'">'+esc(t)+'</option>'}
 function rxSetupRows(items,empty,cols){if(!items||!items.length)return '<div class="empty">'+esc(empty)+'</div>';return '<div class="table"><table><thead><tr>'+cols.map(function(c){return '<th>'+esc(c.label)+'</th>'}).join('')+'</tr></thead><tbody>'+items.map(function(item){return '<tr>'+cols.map(function(c){return '<td>'+esc(typeof c.value==='function'?c.value(item):item[c.value])+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div>'}
 async function ensureSchoolSetupCatalogSections(){
-  var content=E('content');if(!content||E('addSubject')||!Array.from(content.querySelectorAll('h2')).some(function(h){return h.textContent.trim()==='Grade Levels'}))return;
+  var content=E('content');
+  if(!content||E('addSubject')||E('rxSetupCatalogue'))return;
+  var heading=(content.querySelector('h1')||{}).textContent||'';
+  var hasGrade=Array.from(content.querySelectorAll('h2')).some(function(h){return /grade/i.test(h.textContent||'')});
+  if(!/setup/i.test(heading)&&!hasGrade)return;
   var data=await Promise.all([raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/subjects')]).catch(function(){return null});
   if(!data)return;
   var years=data[0]||[],grades=data[1]||[],classes=data[2]||[],subjects=data[3]||[];
-  var gradeSection=Array.from(content.querySelectorAll('.section h2')).find(function(h){return h.textContent.trim()==='Grade Levels'});
-  if(!gradeSection)return;
-  var insertAfter=gradeSection.parentElement&&gradeSection.parentElement.nextElementSibling?gradeSection.parentElement.nextElementSibling:gradeSection.parentElement;
-  var html='<div class="section"><h2>Classes</h2><button id="addClass" class="ghost">Add class</button></div><div class="panel">'+
+  var html='<div id="rxSetupCatalogue"><div class="section"><h2>Classes</h2><button id="addClass" class="ghost">Add class</button></div><div class="panel">'+
     rxSetupRows(classes,'No classes created yet',[
       {label:'Class',value:'name'},{label:'Grade',value:function(r){return r.grade_name||r.grade_code||''}},
-      {label:'Academic year',value:function(r){return r.academic_year||r.academic_year_id||''}},
       {label:'Students',value:function(r){return r.student_count==null?'0':r.student_count}},
       {label:'Subjects',value:function(r){return r.subject_count==null?'0':r.subject_count}}
-    ])+'</div>'+ 
-    '<div class="section"><h2>Subjects</h2><button id="addSubject" class="ghost">Add subject</button></div><div class="panel">'+
+    ])+'</div><div class="section"><h2>Subjects</h2><button id="addSubject" class="ghost">Add subject</button></div><div class="panel">'+
     rxSetupRows(subjects,'No subjects created yet',[
       {label:'Code',value:'code'},{label:'Subject',value:'name'},{label:'Stage',value:'stage'},
       {label:'Status',value:function(r){return r.is_active?'active':'inactive'}}
-    ])+'</div>';
-  insertAfter.insertAdjacentHTML('afterend',html);
-  E('addSubject').onclick=function(){form('New subject',[{key:'code',label:'Code e.g. ENG, MATH, SCI'},{key:'name',label:'Subject name e.g. English Language'},{key:'stage',label:'Stage',type:'select',options:[{value:'both',label:'Both Primary and JHS'},{value:'primary',label:'Primary only'},{value:'jhs',label:'JHS only'}]}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage})})})};
-  E('addClass').onclick=function(){form('New class',[{key:'academicYearId',label:'Academic year',type:'select',options:years.map(function(y){return{value:y.id,label:y.name+(y.status==='active'?' - active':'')}})},{key:'gradeLevelId',label:'Grade level',type:'select',options:grades.map(function(g){return{value:g.id,label:g.name+' ('+g.code+')'}})},{key:'name',label:'Class name e.g. Primary 1 A'},{key:'stream',label:'Stream / Arm e.g. A, B',required:false},{key:'capacity',label:'Capacity',type:'number',required:false}],{academicYearId:(years.find(function(y){return y.status==='active'})||years[0]||{}).id||''},function(v){return raw('/api/classes',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,gradeLevelId:v.gradeLevelId,name:v.name,stream:v.stream||undefined,capacity:v.capacity?Number(v.capacity):undefined})})})};
+    ])+'</div></div>';
+  var gradeSection=Array.from(content.querySelectorAll('.section h2')).find(function(h){return /grade/i.test(h.textContent||'')});
+  var insertAfter=gradeSection&&gradeSection.parentElement&&gradeSection.parentElement.nextElementSibling?gradeSection.parentElement.nextElementSibling:(content.querySelector('.panel')||content.firstChild);
+  if(insertAfter&&insertAfter.insertAdjacentHTML)insertAfter.insertAdjacentHTML('afterend',html);else content.insertAdjacentHTML('beforeend',html);
+  var subjectBtn=E('addSubject'),classBtn=E('addClass');
+  if(subjectBtn)subjectBtn.onclick=function(){form('New subject',[{key:'code',label:'Code e.g. ENG, MATH, SCI'},{key:'name',label:'Subject name e.g. English Language'},{key:'stage',label:'Stage',type:'select',options:[{value:'both',label:'Both Primary and JHS'},{value:'primary',label:'Primary only'},{value:'jhs',label:'JHS only'}]}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage})})})};
+  if(classBtn)classBtn.onclick=function(){form('New class',[{key:'academicYearId',label:'Academic year',type:'select',options:years.map(function(y){return{value:y.id,label:y.name+(y.status==='active'?' - active':'')}})},{key:'gradeLevelId',label:'Grade level',type:'select',options:grades.map(function(g){return{value:g.id,label:g.name+' ('+g.code+')'}})},{key:'name',label:'Class name e.g. Primary 1 A'},{key:'stream',label:'Stream / Arm e.g. A, B',required:false},{key:'capacity',label:'Capacity',type:'number',required:false}],{academicYearId:(years.find(function(y){return y.status==='active'})||years[0]||{}).id||''},function(v){return raw('/api/classes',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,gradeLevelId:v.gradeLevelId,name:v.name,stream:v.stream||undefined,capacity:v.capacity?Number(v.capacity):undefined})})})};
 }
 var rxAdmissionPanelBusy=false;
 async function ensureApprovedAdmissionEnrolmentPanel(){
   var content=E('content');if(!content||E('approvedAdmissionPanel')||rxAdmissionPanelBusy)return;
-  var h=content.querySelector('h1');if(!h||!/student/i.test(h.textContent)||/statement/i.test(h.textContent))return;
+  var h=(content.querySelector('h1')||{}).textContent||'';if(!/student/i.test(h)||/statement/i.test(h))return;
   rxAdmissionPanelBusy=true;
   try{
     var data=await Promise.all([raw('/api/student-onboarding/admission-candidates'),raw('/api/classes')]);
@@ -118,7 +120,7 @@ async function ensureApprovedAdmissionEnrolmentPanel(){
     var rows=applications.length?applications.map(function(a){
       var defaultAdmission=String(a.application_no||'').replace(/^ADM/i,'STU');
       var classOptions=classes.map(function(c){var label=(c.name||'Class')+' - '+(c.grade_name||c.grade_code||'');return rxSetupOption(c.id,label)}).join('');
-      return '<div class="admission-enrol-row" data-application-id="'+esc(a.id)+'" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:9px"><b>'+esc([a.first_name,a.middle_name,a.last_name].filter(Boolean).join(' '))+'</b> <span class="badge">approved</span><div class="muted">Application: '+esc(a.application_no)+' • Requested grade: '+esc(a.requested_grade_name||a.requested_grade_code||'')+' • Guardian: '+esc(a.guardian_first_name+' '+a.guardian_last_name)+' / '+esc(a.guardian_phone)+'</div><div class="row" style="margin-top:8px"><label>Student ID / Admission No.<input class="rx-enrol-admission-no" value="'+esc(defaultAdmission)+'"></label><label>Class for enrolment<select class="rx-enrol-class">'+classOptions+'</select></label><button class="primary rx-enrol-admission" type="button">Enrol student</button></div></div>';
+      return '<div class="admission-enrol-row" data-application-id="'+esc(a.id)+'" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:9px"><b>'+esc([a.first_name,a.middle_name,a.last_name].filter(Boolean).join(' '))+'</b> <span class="badge">approved</span><div class="muted">Application: '+esc(a.application_no)+' | Requested grade: '+esc(a.requested_grade_name||a.requested_grade_code||'')+' | Guardian: '+esc(a.guardian_first_name+' '+a.guardian_last_name)+' / '+esc(a.guardian_phone)+'</div><div class="row" style="margin-top:8px"><label>Student ID / Admission No.<input class="rx-enrol-admission-no" value="'+esc(defaultAdmission)+'"></label><label>Class for enrolment<select class="rx-enrol-class">'+classOptions+'</select></label><button class="primary rx-enrol-admission" type="button">Enrol student</button></div></div>';
     }).join(''):'<div class="empty">No approved admission application is waiting for enrolment.</div>';
     panel.innerHTML='<div class="section compact"><div><h2>Approved Admissions Ready for Enrolment</h2><p class="muted">Approved admission records appear here. Click Enrol student to reuse the captured details and avoid duplicate student entry.</p></div></div>'+rows;
     var anchor=content.querySelector('.panel');content.insertBefore(panel,anchor||content.firstChild);
@@ -136,16 +138,19 @@ setInterval(function(){ensureSchoolSetupCatalogSections().catch(function(){});en
 patchFile(uiPath, source => {
   let next = source;
   if (!next.includes('function rxSetupOption(')) {
-    const helperAnchor = "function E(i){return document.getElementById(i)}";
-    if (next.includes(helperAnchor)) next = next.replace(helperAnchor, helperAnchor + uiHelper);
+    const anchors = [
+      'function E(id){return document.getElementById(id)}',
+      'function E(i){return document.getElementById(i)}'
+    ];
+    const anchor = anchors.find(a => next.includes(a));
+    if (anchor) next = next.replace(anchor, anchor + '\n' + uiHelper);
     else console.warn('Could not find UI helper anchor; skipped School Setup/Admission panel helpers.');
   }
   if (!next.includes('id=\\\"addGrade\\\"') && !next.includes('id="addGrade"')) {
     next = next.replace(/<h2>Grade Levels<\/h2><\/div><div class=\\?"panel\\?">/,'<h2>Grade Levels</h2><button id=\\\"addGrade\\\" class=\\\"ghost\\\">Add grade level</button></div><div class=\\\"panel\\\">');
   }
-  next = next.replace(/\{key:'stage',render:function\(r\)\{return badge\(r\.stage\)\}\},\{key:'is_active',label:'Status',render:function\(r\)\{return badge\(r\.is_active\?'active':'inactive'\)\}\}\],function\(r\)\{return '<button class=\\?"mini\\?" data-edit-grade=\\?"'\+r\.id\+'\\?">Edit<\/button>'\}\)\+'<\/div>';/,"{key:'stage',render:function(r){return badge(r.stage)}},{key:'level_order',label:'Order'},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class=\\\"mini\\\" data-edit-grade=\\\"'+r.id+'\\\">Edit</button>'})+'</div>';");
-  const addGradeHandler = "   E('addGrade').onclick=function(){form('New grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Grade name e.g. Primary 1'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{stage:'primary',isActive:'true'},function(v){return raw('/api/grade-levels',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})};\n";
-  if (!next.includes("E('addGrade').onclick=function()")) {
+  const addGradeHandler = "   if(E('addGrade'))E('addGrade').onclick=function(){form('New grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Grade name e.g. Primary 1'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{stage:'primary',isActive:'true'},function(v){return raw('/api/grade-levels',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})};\n";
+  if (!next.includes("E('addGrade').onclick=function()") && !next.includes("if(E('addGrade'))E('addGrade').onclick=function()")) {
     const marker = /\n\s*E\('content'\)\.onclick=async function\(e\)\{/;
     if (marker.test(next)) next = next.replace(marker, '\n' + addGradeHandler + "   E('content').onclick=async function(e){");
     else console.warn('Could not find setup click handler anchor in src/ui.ts; skipped Add Grade handler.');
