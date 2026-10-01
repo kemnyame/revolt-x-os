@@ -9,13 +9,11 @@ function patchFile(filePath, patcher) {
   if (!fs.existsSync(filePath)) throw new Error(`Missing compiled file: ${filePath}`);
   const before = fs.readFileSync(filePath, 'utf8');
   const after = patcher(before);
-  if (after === before) throw new Error(`Grade-level patch did not change ${filePath}`);
-  fs.writeFileSync(filePath, after);
+  if (after !== before) fs.writeFileSync(filePath, after);
+  else console.log(`No grade-level patch changes needed for ${path.basename(filePath)}`);
 }
 
-patchFile(serverPath, source => {
-  const target = "app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});";
-  const replacement = `app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
+const gradeLevelApi = `app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
 app.post('/api/grade-levels',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
   const b=z.object({
@@ -62,26 +60,41 @@ app.patch('/api/grade-levels/:id',async request=>{
     throw error;
   }
 });`;
-  if (!source.includes(target)) throw new Error('Could not find grade-level API anchor in dist/server.js');
-  return source.replace(target, replacement);
+
+patchFile(serverPath, source => {
+  if (source.includes("app.post('/api/grade-levels'")) return source;
+  const getGradeLevels = /app\.get\('\/api\/grade-levels',[\s\S]*?\}\);(?=\s*app\.get\('\/api\/classes')/;
+  if (!getGradeLevels.test(source)) throw new Error('Could not find grade-level API anchor in dist/server.js');
+  return source.replace(getGradeLevels, gradeLevelApi);
 });
 
 patchFile(uiPath, source => {
   let next = source;
-  const sectionTarget = "'<div class=\"section\"><h2>Grade Levels</h2></div><div class=\"panel\">'+table(grades,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class=\"mini\" data-edit-grade=\"'+r.id+'\">Edit</button>'})+'</div>';";
-  const sectionReplacement = "'<div class=\"section\"><h2>Grade Levels</h2><button id=\"addGrade\" class=\"ghost\">Add grade level</button></div><div class=\"panel\">'+table(grades,[{key:'code'},{key:'name'},{key:'stage',render:function(r){return badge(r.stage)}},{key:'level_order',label:'Order'},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class=\"mini\" data-edit-grade=\"'+r.id+'\">Edit</button>'})+'</div>';";
-  if (!next.includes(sectionTarget)) throw new Error('Could not find Grade Levels section anchor in dist/ui.js');
-  next = next.replace(sectionTarget, sectionReplacement);
 
-  const addTermTarget = "E('addTerm').onclick=function(){form('New term',[{key:'academicYearId',label:'Academic year',type:'select',options:years.map(function(y){return{value:y.id,label:y.name}})},{key:'termNo',label:'Term number',type:'select',options:['1','2','3']},{key:'name',label:'Term name'},{key:'startDate',label:'Start date',type:'date'},{key:'endDate',label:'End date',type:'date'},{key:'nextTermBegins',label:'Next term begins (used on report cards)',type:'date'}],{},function(v){return raw('/api/terms',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,termNo:Number(v.termNo),name:v.name,startDate:v.startDate,endDate:v.endDate,nextTermBegins:v.nextTermBegins||null})})})};";
-  const addGradeHandler = addTermTarget + "\n   E('addGrade').onclick=function(){form('New grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Grade name e.g. Primary 1'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{isActive:'true'},function(v){return raw('/api/grade-levels',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})};";
-  if (!next.includes(addTermTarget)) throw new Error('Could not find Add Term handler anchor in dist/ui.js');
-  next = next.replace(addTermTarget, addGradeHandler);
+  if (!next.includes('id=\\"addGrade\\"') && !next.includes('id="addGrade"')) {
+    next = next.replace(
+      /<h2>Grade Levels<\/h2><\/div><div class=\\?"panel\\?">/,
+      '<h2>Grade Levels</h2><button id=\\"addGrade\\" class=\\"ghost\\">Add grade level</button></div><div class=\\"panel\\">'
+    );
+  }
 
-  const editTarget = "id=e.target.dataset.editGrade;if(id){var g=grades.find(function(x){return x.id===id});return form('Edit grade level',[{key:'name',label:'Name'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{name:g.name,isActive:String(g.is_active)},function(v){return raw('/api/grade-levels/'+id,{method:'PATCH',body:JSON.stringify({name:v.name,isActive:v.isActive==='true'})})})}";
+  next = next.replace(
+    /\{key:'stage',render:function\(r\)\{return badge\(r\.stage\)\}\},\{key:'is_active',label:'Status',render:function\(r\)\{return badge\(r\.is_active\?'active':'inactive'\)\}\}\],function\(r\)\{return '<button class=\\?"mini\\?" data-edit-grade=\\?"'\+r\.id\+'\\?">Edit<\/button>'\}\)\+'<\/div>';/,
+    "{key:'stage',render:function(r){return badge(r.stage)}},{key:'level_order',label:'Order'},{key:'is_active',label:'Status',render:function(r){return badge(r.is_active?'active':'inactive')}}],function(r){return '<button class=\\\"mini\\\" data-edit-grade=\\\"'+r.id+'\\\">Edit</button>'})+'</div>';"
+  );
+
+  const addGradeHandler = "   E('addGrade').onclick=function(){form('New grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Grade name e.g. Primary 1'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{stage:'primary',isActive:'true'},function(v){return raw('/api/grade-levels',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})};\n";
+  if (!next.includes("E('addGrade').onclick=function()")) {
+    const marker = /\n\s*E\('content'\)\.onclick=async function\(e\)\{/;
+    if (!marker.test(next)) throw new Error('Could not find setup click handler anchor in dist/ui.js');
+    next = next.replace(marker, '\n' + addGradeHandler + "   E('content').onclick=async function(e){");
+  }
+
+  const editRegex = /id=e\.target\.dataset\.editGrade;if\(id\)\{var g=grades\.find\(function\(x\)\{return x\.id===id\}\);return form\('Edit grade level',[\s\S]*?raw\('\/api\/grade-levels\/'\+id,\{method:'PATCH',body:JSON\.stringify\(\{name:v\.name,isActive:v\.isActive==='true'\}\)\}\)\}\)\}/;
   const editReplacement = "id=e.target.dataset.editGrade;if(id){var g=grades.find(function(x){return x.id===id});return form('Edit grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Name'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{code:g.code,name:g.name,stage:g.stage,levelOrder:g.level_order,isActive:String(g.is_active)},function(v){return raw('/api/grade-levels/'+id,{method:'PATCH',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})}";
-  if (!next.includes(editTarget)) throw new Error('Could not find Edit Grade handler anchor in dist/ui.js');
-  next = next.replace(editTarget, editReplacement);
+  if (editRegex.test(next)) next = next.replace(editRegex, editReplacement);
+  else console.log('Grade level edit handler already patched or old handler not found.');
+
   return next;
 });
 
