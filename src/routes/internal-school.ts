@@ -28,6 +28,19 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     if(!config.ENABLE_PREVIEW_ACCESS)throw new AppError(403,'PREVIEW_DISABLED','Development preview access is disabled');
     return buildPreviewContext(db);
   });
+  app.get('/v1/internal/school/directory',{config:{rateLimit:{max:600,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    return (await db.query(`SELECT DISTINCT ON (o.id)
+        o.slug id,o.name,
+        COALESCE(s.status,'unlicensed') licence_status
+      FROM organisations o
+      JOIN saas_customers c ON c.customer_organisation_id=o.id AND c.customer_type='school'
+      LEFT JOIN saas_subscriptions s ON s.customer_organisation_id=o.id
+      WHERE o.status='active' AND c.status<>'archived'
+      ORDER BY o.id,s.created_at DESC NULLS LAST`)).rows
+      .sort((a:any,b:any)=>String(a.name).localeCompare(String(b.name)));
+  });
+
   app.post('/v1/internal/school/ensure-tenant',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     if(!config.SCHOOL_APP_URL)throw new AppError(503,'SERVICE_UNAVAILABLE','School application URL is not configured');
