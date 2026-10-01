@@ -47,7 +47,12 @@ var esc=function(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){r
 var money=function(v,c){return (c||"GHS")+" "+Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})};
 var badge=function(v){var x=String(v||"unlicensed");return '<span class="badge '+esc(x)+'">'+esc(x.replaceAll("_"," "))+'</span>'};
 var fmt=function(v){if(!v)return"—";try{return new Date(v).toLocaleDateString()}catch(e){return v}};
-function toast(msg,bad){var t=E("toast");t.textContent=msg;t.style.background=bad?"#8f2731":"#102e50";t.classList.remove("hidden");setTimeout(function(){t.classList.add("hidden")},3200)}
+function toast(msg,bad){var t=E("toast");t.textContent=msg;t.style.background=bad?"#8f2731":"#102e50";t.classList.remove("hidden");setTimeout(function(){t.classList.add("hidden")},4200)}
+function licenceResultToast(result,savedMessage){
+  var sync=result&&result.licenseSync;
+  if(sync&&sync.ok===false){toast(savedMessage+". School sync is pending: "+(sync.message||"retry Sync Licence Now."),false);return}
+  toast(savedMessage+" and synced to School",false)
+}
 async function raw(path,opt){opt=opt||{};opt.headers=Object.assign({"content-type":"application/json"},opt.headers||{},token?{authorization:"Bearer "+token}:{});
  var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}
  if(r.status===401&&refreshToken){var rr=await fetch("/v1/auth/refresh",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({refreshToken:refreshToken})});if(rr.ok){var n=await rr.json();token=n.accessToken;refreshToken=n.refreshToken;sessionStorage.setItem("rx_access",token);sessionStorage.setItem("rx_refresh",refreshToken);return raw(path,opt)}}
@@ -113,31 +118,31 @@ async function openSchool(id){
  E("extendLicense").onclick=function(){
    showModal('<h2>Extend / Renew Licence</h2><p class="sub">Extend from the current expiry date if it is still in the future, otherwise from today. The licence will become Active.</p><div class="fields"><div class="field full"><label>Extension</label><select id="extendMode"><option value="billing_period">1 billing period ('+esc(lic.billingFrequency||"monthly")+')</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">365 days</option></select></div></div><div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Extend Licence</button></div>');
    E("mCancel").onclick=closeModal;
-   E("mSave").onclick=async function(){var b=E("mSave"),v=E("extendMode").value;b.disabled=true;b.textContent="Extending...";try{var body=v==="billing_period"?{mode:"billing_period",periods:1}:{mode:"days",days:Number(v)};var x=await raw("/v1/commercial-control/schools/"+id+"/extend-license",{method:"POST",body:JSON.stringify(body)});closeModal();toast("Licence extended to "+fmt(x.current_period_end)+" and synced to School");await loadBase();await openSchool(id)}catch(e){toast(e.message,true);b.disabled=false;b.textContent="Extend Licence"}}
+   E("mSave").onclick=async function(){var b=E("mSave"),v=E("extendMode").value;b.disabled=true;b.textContent="Extending...";try{var body=v==="billing_period"?{mode:"billing_period",periods:1}:{mode:"days",days:Number(v)};var x=await raw("/v1/commercial-control/schools/"+id+"/extend-license",{method:"POST",body:JSON.stringify(body)});closeModal();licenceResultToast(x,"Licence extended to "+fmt(x.current_period_end));await loadBase();await openSchool(id)}catch(e){toast(e.message,true);b.disabled=false;b.textContent="Extend Licence"}}
  };
  E("changePlan").onclick=function(){
    var options=catalog.plans.map(function(p){return'<option value="'+p.id+'" '+(p.plan_key===lic.plan?'selected':'')+'>'+esc(p.name)+'</option>'}).join("");
    showModal('<h2>Apply School Plan</h2><div class="fields"><div class="field"><label>Plan</label><select id="applyPlan">'+options+'</select></div><div class="field"><label>Billing</label><select id="applyBilling"><option value="monthly" '+(lic.billingFrequency==="monthly"?"selected":"")+'>Monthly</option><option value="termly" '+(lic.billingFrequency==="termly"?"selected":"")+'>Termly</option><option value="annual" '+(lic.billingFrequency==="annual"?"selected":"")+'>Annual</option></select></div><div class="field"><label>Licence status</label><select id="applyStatus"><option value="active">Active</option><option value="trial">Trial</option><option value="grace">Grace</option><option value="suspended">Suspended</option><option value="expired">Expired</option></select></div></div><div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Apply Plan Now</button></div>');
-   E("applyStatus").value=lic.status;E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/subscription",{method:"PUT",body:JSON.stringify({planId:E("applyPlan").value,billingFrequency:E("applyBilling").value,status:E("applyStatus").value})});closeModal();toast("Plan applied and synced to School");await loadBase();openSchool(id)}catch(e){toast(e.message,true)}}
+   E("applyStatus").value=lic.status;E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){try{var x=await raw("/v1/commercial-control/schools/"+id+"/subscription",{method:"PUT",body:JSON.stringify({planId:E("applyPlan").value,billingFrequency:E("applyBilling").value,status:E("applyStatus").value})});closeModal();licenceResultToast(x,"Plan applied");await loadBase();openSchool(id)}catch(e){toast(e.message,true)}}
  };
  E("drawerBody").querySelectorAll("[data-license]").forEach(function(b){
    b.onclick=async function(){
      var status=b.dataset.license;
      if(status==="grace"){
        showModal('<h2>Start Grace Period</h2><p class="sub">The school remains operational during the grace period and receives a licence warning.</p><div class="field"><label>Grace days</label><input id="graceDays" type="number" min="1" max="90" value="14"></div><div class="modal-actions"><button class="btn ghost" id="mCancel">Cancel</button><button class="btn primary" id="mSave">Apply Grace Period</button></div>');
-       E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){var x=E("mSave");x.disabled=true;x.textContent="Applying...";try{await raw("/v1/commercial-control/schools/"+id+"/license",{method:"PATCH",body:JSON.stringify({status:"grace",graceDays:Number(E("graceDays").value)||14})});closeModal();toast("Grace period applied and synced to School");await loadBase();await openSchool(id)}catch(e){toast(e.message,true);x.disabled=false;x.textContent="Apply Grace Period"}};return
+       E("mCancel").onclick=closeModal;E("mSave").onclick=async function(){var x=E("mSave");x.disabled=true;x.textContent="Applying...";try{var r=await raw("/v1/commercial-control/schools/"+id+"/license",{method:"PATCH",body:JSON.stringify({status:"grace",graceDays:Number(E("graceDays").value)||14})});closeModal();licenceResultToast(r,"Grace period applied");await loadBase();await openSchool(id)}catch(e){toast(e.message,true);x.disabled=false;x.textContent="Apply Grace Period"}};return
      }
      var labels={active:"activate / restore",suspended:"suspend",expired:"expire",cancelled:"cancel"};
      if(!confirm("Are you sure you want to "+(labels[status]||status)+" this school licence?"))return;
      var original=b.textContent;b.disabled=true;b.textContent="Working...";
      try{
        var r=await raw("/v1/commercial-control/schools/"+id+"/license",{method:"PATCH",body:JSON.stringify({status:status})});
-       toast(status==="active"?"Licence activated through "+fmt(r.current_period_end)+" and synced":"Licence changed to "+status+" and synced to School");
+       licenceResultToast(r,status==="active"?"Licence activated through "+fmt(r.current_period_end):"Licence changed to "+status);
        await loadBase();await openSchool(id)
      }catch(e){toast(e.message,true);b.disabled=false;b.textContent=original}
    }
  });
- E("drawerBody").querySelectorAll("[data-module]").forEach(function(c){c.onchange=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/modules",{method:"PUT",body:JSON.stringify({moduleKey:c.dataset.module,enabled:c.checked})});toast("Module entitlement updated and synced")}catch(e){c.checked=!c.checked;toast(e.message,true)}}});
+ E("drawerBody").querySelectorAll("[data-module]").forEach(function(c){c.onchange=async function(){try{var x=await raw("/v1/commercial-control/schools/"+id+"/modules",{method:"PUT",body:JSON.stringify({moduleKey:c.dataset.module,enabled:c.checked})});licenceResultToast(x,"Module entitlement updated")}catch(e){c.checked=!c.checked;toast(e.message,true)}}});
  E("issueInvoice").onclick=async function(){try{await raw("/v1/commercial-control/schools/"+id+"/invoices",{method:"POST",body:JSON.stringify({dueDays:14})});toast("Invoice issued");await openSchool(id)}catch(e){toast(e.message,true)}};
  E("drawerBody").querySelectorAll("[data-pay-invoice]").forEach(function(b){
    b.onclick=function(){
