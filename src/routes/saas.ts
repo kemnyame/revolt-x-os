@@ -533,7 +533,11 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const b = z.object({
       firstName: z.string().trim().min(1).max(100),
       lastName: z.string().trim().min(1).max(100),
-      email: z.string().trim().toLowerCase().email()
+      email: z.string().trim().toLowerCase().email(),
+      password: z.string().min(12).max(200)
+        .regex(/[A-Z]/,'Password must contain an uppercase letter')
+        .regex(/[a-z]/,'Password must contain a lowercase letter')
+        .regex(/[0-9]/,'Password must contain a number')
     }).parse(request.body);
 
     const customer = await maybeOne<any>(db,
@@ -543,20 +547,24 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     if (!customer) throw notFound('School customer');
 
     const previousAdminUserId = customer.settings?.primaryAdminUserId ?? null;
-    let temporaryPassword: string | null = null;
     let existingUser = false;
+    const passwordHash = await bcrypt.hash(b.password,12);
 
     const created = await transaction(db, async q => {
       let user = await maybeOne<any>(q,'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1',[b.email]);
       if (user) {
         existingUser = true;
         if (user.status !== 'active') throw conflict('The new administrator email belongs to an inactive Core OS user');
-        await q.query('UPDATE users SET first_name=$1,last_name=$2,updated_at=now() WHERE id=$3',[b.firstName,b.lastName,user.id]);
+        await q.query(
+          'UPDATE users SET first_name=$1,last_name=$2,password_hash=$3,must_change_password=false,updated_at=now() WHERE id=$4',
+          [b.firstName,b.lastName,passwordHash,user.id]
+        );
+        await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[user.id]);
+        await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
       } else {
-        temporaryPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
         user = await one<any>(q,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',true) RETURNING id,email,first_name,last_name,status",
-          [b.email,await bcrypt.hash(temporaryPassword,12),b.firstName,b.lastName]
+          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',false) RETURNING id,email,first_name,last_name,status",
+          [b.email,passwordHash,b.firstName,b.lastName]
         );
       }
 
@@ -658,8 +666,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         existingUser
       },
       adminLoginUrl,
-      temporaryPassword:existingUser?null:temporaryPassword,
-      mustChangePassword:!existingUser,
+      passwordConfigured:true,
+      mustChangePassword:false,
       schoolSync
     };
   });
