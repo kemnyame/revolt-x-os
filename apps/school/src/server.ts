@@ -1740,9 +1740,23 @@ function inferSchoolRoleFromStaff(user:any){
 }
 
 app.get('/api/auth/schools',async()=>{
-  return (await db.query(`SELECT tenant_slug id,school_name name
+  const local=(await db.query(`SELECT tenant_slug id,school_name name
     FROM school_profiles
-    ORDER BY lower(school_name),tenant_slug`)).rows;
+    ORDER BY lower(school_name),tenant_slug`)).rows as any[];
+  if(!config.CORE_SERVICE_KEY)return local;
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const response=await fetch(base+'/v1/internal/school/directory',{
+    headers:coreServiceHeaders(),
+    signal:AbortSignal.timeout(12000)
+  }).catch(()=>null);
+  if(!response?.ok)return local;
+  const remote=await response.json().catch(()=>[]) as any[];
+  const merged=new Map<string,any>();
+  [...remote,...local].forEach((x:any)=>{
+    const id=String(x?.id||'').trim();
+    if(id)merged.set(id,{id,name:String(x?.name||id),licenceStatus:x?.licence_status??x?.licenceStatus??null});
+  });
+  return [...merged.values()].sort((a,b)=>a.name.localeCompare(b.name));
 });
 
 async function handleSchoolStaffIdLogin(request:any,reply:any){
