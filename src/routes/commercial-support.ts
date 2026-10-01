@@ -281,10 +281,10 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
 
     await transaction(db, async c => {
       await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [user.id]);
-      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours')", [user.id, tokenHash(setupToken)]);
+      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')", [user.id, tokenHash(setupToken)]);
     });
 
-    const setupUrl = schoolBase(config) + '/login?school=' + encodeURIComponent(org.slug) + '&setup=' + encodeURIComponent(setupToken);
+    const resetUrl = schoolBase(config) + '/admin-password-reset?school=' + encodeURIComponent(org.slug) + '&token=' + encodeURIComponent(setupToken);
     await audit(db, {
       organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId,
       action: 'commercial.school_admin_password_reset.created', resourceType: 'user', resourceId: user.id,
@@ -294,9 +294,11 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
       ok: true,
       school: { id: org.id, name: org.name, slug: org.slug },
       administrator: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name },
-      setupUrl,
-      expiresInHours: 24,
-      instruction: 'Send this link to the school administrator. They must use the administrator email and the new password they create from this link.'
+      resetUrl,
+      setupUrl: resetUrl,
+      expiresInMinutes: 30,
+      expiresInHours: 0.5,
+      instruction: 'Open this link to create a new School Administrator password. The single-use link expires in 30 minutes.'
     };
   });
 
