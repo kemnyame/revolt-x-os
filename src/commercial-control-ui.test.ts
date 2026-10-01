@@ -23,6 +23,11 @@ describe('commercial control browser script', () => {
     expect(commercialControlFrontend).toContain('E("changePlan").onclick');
     expect(commercialControlFrontend).toContain('E("syncLicense").onclick');
     expect(commercialControlFrontend).toContain('E("retryProvision").onclick');
+    expect(commercialControlFrontend).toContain('id="setSchoolAdmin"');
+    expect(commercialControlFrontend).toContain('E("setSchoolAdmin").onclick');
+    expect(commercialControlFrontend).toContain('id="resetSchoolAdmin"');
+    expect(commercialControlFrontend).toContain('E("resetSchoolAdmin").onclick');
+    expect(commercialControlFrontend).toContain('/v1/commercial-control/schools/"+id+"/admin');
     expect(commercialControlFrontend).toContain('E("issueInvoice").onclick');
   });
 });
