@@ -4,23 +4,23 @@ import { readFile } from 'node:fs/promises';
 
 async function read(name){return readFile(new URL('../dist/'+name,import.meta.url),'utf8')}
 
-test('Quick Login finds staff by school name and requires the shared password to enter a profile',async()=>{
+test('legacy Quick Login is removed and Staff ID login is canonical',async()=>{
   const server=await read('server.js');
   const login=await read('login-ui.js');
   const config=await read('config.js');
 
-  assert.match(config,/ENABLE_QUICK_STAFF_LOGIN/);
-  assert.match(server,/resolveQuickLoginSchool/);
-  assert.match(server,/school_name ILIKE/);
-  assert.match(server,/\/api\/quick-login\/staff/);
-  assert.match(server,/\/api\/quick-login\/staff-login/);
-  assert.match(server,/validateQuickLoginPassword/);
-  assert.match(server,/staff\.quick_authenticated/);
+  assert.doesNotMatch(config,/ENABLE_QUICK_STAFF_LOGIN/);
+  assert.doesNotMatch(config,/STAFF_GENERIC_PASSWORD/);
+  assert.doesNotMatch(server,/\/api\/quick-login\/staff-login/);
+  assert.doesNotMatch(server,/validateQuickLoginPassword/);
+  assert.match(server,/resolveSchoolForStaffIdLogin/);
+  assert.match(server,/handleSchoolStaffIdLogin/);
+  assert.match(server,/\/api\/auth\/staff-id-login/);
+  assert.match(server,/createSchoolStaffSession\(coreContext,'staff_id'\)/);
 
-  assert.match(login,/School name \/ code/);
-  assert.match(login,/Select your name/);
-  assert.match(login,/Enter the school name to display users/);
-  assert.match(login,/Quick Login password/);
-  assert.match(login,/data-quick-user/);
-  assert.match(login,/configureQuickLogin/);
+  assert.match(login,/School ID/);
+  assert.match(login,/Staff ID/);
+  assert.match(login,/Sign in to Revolt-X School/);
+  assert.doesNotMatch(login,/Quick Login password/);
+  assert.doesNotMatch(login,/data-quick-user/);
 });
