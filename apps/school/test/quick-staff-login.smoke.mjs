@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 async function read(name){return readFile(new URL('../dist/'+name,import.meta.url),'utf8')}
 
-test('legacy Quick Login is removed and Staff ID plus password is canonical',async()=>{
+test('legacy Quick Login is removed and School plus Staff ID plus password is canonical',async()=>{
   const server=await read('server.js');
   const login=await read('login-ui.js');
   const config=await read('config.js');
@@ -15,12 +15,14 @@ test('legacy Quick Login is removed and Staff ID plus password is canonical',asy
   assert.doesNotMatch(server,/validateQuickLoginPassword/);
   assert.match(server,/handleSchoolStaffIdLogin/);
   assert.match(server,/authenticate-staff/);
+  assert.match(server,/\/api\/auth\/schools/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
   assert.match(server,/createSchoolStaffSession\(coreContext,\s*['"]staff_id['"]\)/);
 
+  assert.match(login,/<select id="schoolId"/);
   assert.match(login,/Staff ID/);
   assert.match(login,/Password/);
-  assert.match(login,/Sign in to Revolt-X School/);
-  assert.doesNotMatch(login,/School ID/);
+  assert.match(login,/Sign in/);
+  assert.doesNotMatch(login,/Email address/);
   assert.doesNotMatch(login,/Quick Login password/);
 });
