@@ -17,9 +17,10 @@ replaceOnce(
   'assessment type to category mapping'
 );
 
-// After the system knows the category/type/name, force the two-component rule.
+// After the score-readiness patch runs, maxScore has already been adjusted for exams.
+// Replace that block with the two-component rule: many exercises, one exam.
 replaceOnce(
-  "  const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';\n  const maxScore=b.maxScore??Number(category.default_max_score);\n  const cleanName=b.name.trim();",
+  "  const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';\n  const maxScore=type==='exam'?70:(b.maxScore??Number(category.default_max_score));\n  const cleanName=b.name.trim();",
   [
     "  const cleanName=b.name.trim();",
     "  const isExam=category.code==='EXAM'||b.assessmentType==='exam'||/exam/i.test(cleanName);",
@@ -49,7 +50,9 @@ replaceOnce(
 // Improve report readiness messages so users understand the new two-component model.
 source = source
   .replaceAll('Class Assessment (30%) is not configured', 'No exercises have been configured for the 30% class assessment average')
+  .replaceAll('Class Assessment score is not set up. Add or record the Class Assessment mark out of 30.', 'No exercises have been configured or scored for the 30% exercise average')
   .replaceAll('Exam (70%) is not configured', 'One Exam score out of 70 is required')
+  .replaceAll('Exam score is not set up. Create or record the Exam mark out of 70; any score from 0 to 70 is valid.', 'One Exam score out of 70 is required')
   .replaceAll('Missing score', 'Missing exercise/exam score');
 
 fs.writeFileSync(serverPath, source);
