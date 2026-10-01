@@ -107,33 +107,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
     return payload;
   });
 
-  app.post('/api/staff/users/:membershipId/password-reset-link',async request=>{
-    const a=await authorize(request,db,config,'staff.password_reset');
-    const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
-    const base=config.CORE_OS_URL.replace(/\/$/,'');
-    const setupRes=await fetch(base+'/v1/internal/school/users/'+membershipId+'/password-setup',{
-      method:'POST',headers:{...coreServiceHeaders(),'content-type':'application/json'},
-      body:JSON.stringify({organisationId:a.core.organisation_id,actorUserId:a.core.id}),signal:AbortSignal.timeout(15000)
-    }).catch(()=>null);
-    if(!setupRes)throw fail(503,'Core OS could not be reached');
-    const setup=await setupRes.json().catch(()=>null) as any;
-    if(!setupRes.ok)throw fail(setupRes.status,setup?.error?.message||'Could not create password reset link');
-    const sm=await maybeOne(db,
-      'SELECT sm.*,sr.portal_mode FROM school_memberships sm LEFT JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role '+
-      'WHERE sm.organisation_id=$1 AND sm.os_user_id=$2',[a.core.organisation_id,setup.userId]) as any;
-    const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
-    const next=sm?.portal_mode==='teacher'?'/teacher':'/';
-    const setupUrl=publicBase+'/login?next='+encodeURIComponent(next)+'&setup='+encodeURIComponent(setup.setupToken);
-    const delivered=await deliverCommunication({
-      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,channel:'email',
-      recipientName:(setup.firstName+' '+setup.lastName).trim(),recipientAddress:setup.email,
-      subject:'Reset your Revolt-X School password',
-      body:'Hello '+setup.firstName+',\n\nA School administrator has requested a password reset for your Revolt-X School account.\n\nUse this secure link to set a new password:\n'+setupUrl+'\n\nThis link expires in 24 hours.',
-      templateKey:'staff.password_reset',relatedType:'school_membership',relatedId:sm?.id??null
-    });
-    await audit(a.core.organisation_id,a.core.id,'school_user.password_reset_issued','core_membership',membershipId,{deliveryStatus:delivered.status});
-    return{status:delivered.status,expiresInHours:setup.expiresInHours,error:delivered.last_error??null};
-  });
+
 
   app.get('/api/finance/accounts',async request=>{
     const a=await authorize(request,db,config,'finance.view');
