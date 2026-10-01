@@ -350,7 +350,7 @@ app.post('/api/internal/sync-staff',async request=>{
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
         [b.organisationId,member.osUserId,role]);
       await client.query(`INSERT INTO school_user_directory(
-          organisation_id,os_user_id,first_name,last_name,email,job_title,user_status,membership_status,roles,synced_at
+          organisation_id,os_user_id,first_name,last_name,email,job_title,employee_number,user_status,membership_status,roles,synced_at
         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,now())
         ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
           first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=COALESCE(EXCLUDED.email,school_user_directory.email),
