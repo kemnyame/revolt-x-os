@@ -8,11 +8,13 @@ test('School login browser script parses', () => {
   assert.doesNotThrow(()=>new Function(match[1]));
 });
 
-test('School staff login uses Staff ID and password only', () => {
+test('School staff login uses school selection, Staff ID and password', () => {
+  assert.match(loginFrontend,/Select your school/);
+  assert.match(loginFrontend,/<select id="schoolId"/);
   assert.match(loginFrontend,/Staff ID/);
   assert.match(loginFrontend,/Password/);
   assert.match(loginFrontend,/\/api\/auth\/staff-id-login/);
-  assert.match(loginFrontend,/Email is not used/);
   assert.match(loginFrontend,/type="password"/);
-  assert.doesNotMatch(loginFrontend,/School ID/);
+  assert.match(loginFrontend,/schoolId:schoolId,staffId:staffId,password:password/);
+  assert.doesNotMatch(loginFrontend,/Email address/);
 });
