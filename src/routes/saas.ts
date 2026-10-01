@@ -342,14 +342,15 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
 
       let admin = await maybeOne<any>(c, 'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1', [b.adminEmail]);
       let setupToken: string | null = null;
+      let temporaryAdminPassword: string | null = null;
       let newAdministrator = false;
 
       if (!admin) {
-        const generatedPassword = randomBytes(48).toString('base64url');
+        temporaryAdminPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
         admin = await one<any>(
           c,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status) VALUES($1,$2,$3,$4,'active') RETURNING id,email,first_name,last_name,status",
-          [b.adminEmail, await bcrypt.hash(generatedPassword, 12), b.adminFirstName, b.adminLastName]
+          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',true) RETURNING id,email,first_name,last_name,status",
+          [b.adminEmail, await bcrypt.hash(temporaryAdminPassword, 12), b.adminFirstName, b.adminLastName]
         );
         setupToken = randomBytes(32).toString('base64url');
         await c.query(
@@ -405,13 +406,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id }), a.userId]
       );
 
-      return { organisation: org, subscription, domain, jobId: job.id, admin, setupToken, newAdministrator };
+      return { organisation: org, subscription, domain, jobId: job.id, admin, setupToken, temporaryAdminPassword, newAdministrator };
     });
 
     const entitlement = await getEntitlements(db, a.organisationId, created.organisation.id);
     const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(created.organisation.slug);
+    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(created.organisation.slug);
     const setupUrl = created.setupToken
-      ? accessUrl + '&setup=' + encodeURIComponent(created.setupToken)
+      ? adminLoginUrl + '&setup=' + encodeURIComponent(created.setupToken)
       : null;
 
     let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
@@ -459,13 +461,16 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       entitlement,
       domain: created.domain,
       accessUrl,
+      adminLoginUrl,
       setupUrl,
       administrator: {
         id: created.admin.id,
         email: created.admin.email,
         firstName: b.adminFirstName,
         lastName: b.adminLastName,
-        existingUser: !created.newAdministrator
+        existingUser: !created.newAdministrator,
+        temporaryPassword: created.newAdministrator ? created.temporaryAdminPassword : null,
+        mustChangePassword: created.newAdministrator
       },
       provisioning
     };
@@ -476,7 +481,22 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       action: 'commercial.school.created',
       resourceType: 'organisation',
       resourceId: created.organisation.id,
-      afterState: result
+      afterState: {
+        organisation: created.organisation,
+        subscription: created.subscription,
+        entitlement,
+        domain: created.domain,
+        accessUrl,
+        adminLoginUrl,
+        administrator: {
+          id: created.admin.id,
+          email: created.admin.email,
+          firstName: b.adminFirstName,
+          lastName: b.adminLastName,
+          existingUser: !created.newAdministrator
+        },
+        provisioning
+      }
     });
     return reply.code(201).send(result);
   });
