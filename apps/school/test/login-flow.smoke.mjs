@@ -8,10 +8,11 @@ test('School login browser script parses', () => {
   assert.doesNotThrow(()=>new Function(match[1]));
 });
 
-test('first administrator setup explains and continues into sign-in', () => {
-  assert.match(loginFrontend,/What do I use to sign in\?/);
-  assert.match(loginFrontend,/email address provided when your School user account was created/);
-  assert.match(loginFrontend,/temporary generic password issued by the school administrator/);
-  assert.match(loginFrontend,/E\('signin'\)\.onclick=signIn/);
-  assert.match(loginFrontend,/await signIn\(\)/);
+test('School staff login uses only School ID and Staff ID', () => {
+  assert.match(loginFrontend,/School ID/);
+  assert.match(loginFrontend,/Staff ID/);
+  assert.match(loginFrontend,/\/api\/auth\/staff-id-login/);
+  assert.match(loginFrontend,/Email addresses and passwords are not used for staff sign-in/);
+  assert.doesNotMatch(loginFrontend,/type="password"/);
+  assert.doesNotMatch(loginFrontend,/Reset administrator password/);
 });
