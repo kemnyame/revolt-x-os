@@ -306,7 +306,7 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
     <div class="form-wrap">
       <div class="eyebrow">Administrator password reset</div>
       <h2>Enter a new password</h2>
-      <p class="muted">The reset link is single-use and expires after 30 minutes.</p>
+      <p class="muted">This secure link is single-use and expires automatically. Enter and confirm your new administrator password below.</p>
 
       <label for="newPassword">New password</label>
       <input id="newPassword" type="password" autocomplete="new-password">
