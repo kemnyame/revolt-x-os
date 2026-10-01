@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
-const serverPath = path.join(root, 'dist', 'server.js');
-const uiPath = path.join(root, 'dist', 'ui.js');
+const serverPath = path.join(root, 'src', 'server.ts');
+const uiPath = path.join(root, 'src', 'ui.ts');
 
 function patchFile(filePath, patcher) {
-  if (!fs.existsSync(filePath)) throw new Error(`Missing compiled file: ${filePath}`);
+  if (!fs.existsSync(filePath)) throw new Error(`Missing source file: ${filePath}`);
   const before = fs.readFileSync(filePath, 'utf8');
   const after = patcher(before);
   if (after !== before) fs.writeFileSync(filePath, after);
@@ -24,10 +24,10 @@ app.post('/api/grade-levels',async(request,reply)=>{
     isActive:z.boolean().default(true)
   }).parse(request.body);
   try{
-    const row=await one(db,'INSERT INTO grade_levels(organisation_id,code,name,stage,level_order,is_active) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.code.toUpperCase(),b.name,b.stage,b.levelOrder,b.isActive]);
+    const row=await one<any>(db,'INSERT INTO grade_levels(organisation_id,code,name,stage,level_order,is_active) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.code.toUpperCase(),b.name,b.stage,b.levelOrder,b.isActive]);
     await audit(a.core.organisation_id,a.core.id,'grade_level.created','grade_level',row.id,{code:row.code,stage:row.stage,levelOrder:row.level_order});
     return reply.code(201).send(row);
-  }catch(error){
+  }catch(error:any){
     if(error?.code==='23505')throw fail(409,'A grade level with this code or order already exists. Use a unique code and display order.');
     throw error;
   }
@@ -42,9 +42,9 @@ app.patch('/api/grade-levels/:id',async request=>{
     levelOrder:z.coerce.number().int().min(1).max(99).optional(),
     isActive:z.boolean().optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
-  const before=await one(db,'SELECT * FROM grade_levels WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  const before=await one<any>(db,'SELECT * FROM grade_levels WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   try{
-    const row=await one(db,\`UPDATE grade_levels SET
+    const row=await one<any>(db,\`UPDATE grade_levels SET
       code=COALESCE($1,code),
       name=COALESCE($2,name),
       stage=COALESCE($3,stage),
@@ -55,7 +55,7 @@ app.patch('/api/grade-levels/:id',async request=>{
       ]);
     await audit(a.core.organisation_id,a.core.id,'grade_level.updated','grade_level',row.id,{before,after:row});
     return row;
-  }catch(error){
+  }catch(error:any){
     if(error?.code==='23505')throw fail(409,'A grade level with this code or order already exists. Use a unique code and display order.');
     throw error;
   }
@@ -64,7 +64,7 @@ app.patch('/api/grade-levels/:id',async request=>{
 patchFile(serverPath, source => {
   if (source.includes("app.post('/api/grade-levels'")) return source;
   const getGradeLevels = /app\.get\('\/api\/grade-levels',[\s\S]*?\}\);(?=\s*app\.get\('\/api\/classes')/;
-  if (!getGradeLevels.test(source)) throw new Error('Could not find grade-level API anchor in dist/server.js');
+  if (!getGradeLevels.test(source)) throw new Error('Could not find grade-level API anchor in src/server.ts');
   return source.replace(getGradeLevels, gradeLevelApi);
 });
 
@@ -86,7 +86,7 @@ patchFile(uiPath, source => {
   const addGradeHandler = "   E('addGrade').onclick=function(){form('New grade level',[{key:'code',label:'Code e.g. KG1, P1, JHS1'},{key:'name',label:'Grade name e.g. Primary 1'},{key:'stage',label:'Stage',type:'select',options:[{value:'primary',label:'Primary'},{value:'jhs',label:'JHS'}]},{key:'levelOrder',label:'Display / promotion order',type:'number'},{key:'isActive',label:'Status',type:'select',options:[{value:'true',label:'Active'},{value:'false',label:'Inactive'}]}],{stage:'primary',isActive:'true'},function(v){return raw('/api/grade-levels',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage,levelOrder:Number(v.levelOrder),isActive:v.isActive==='true'})})})};\n";
   if (!next.includes("E('addGrade').onclick=function()")) {
     const marker = /\n\s*E\('content'\)\.onclick=async function\(e\)\{/;
-    if (!marker.test(next)) throw new Error('Could not find setup click handler anchor in dist/ui.js');
+    if (!marker.test(next)) throw new Error('Could not find setup click handler anchor in src/ui.ts');
     next = next.replace(marker, '\n' + addGradeHandler + "   E('content').onclick=async function(e){");
   }
 
@@ -98,4 +98,4 @@ patchFile(uiPath, source => {
   return next;
 });
 
-console.log('Grade level create/edit patch applied to compiled School build.');
+console.log('Grade level create/edit patch applied to School source before TypeScript build.');
