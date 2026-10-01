@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loginFrontend, adminLoginFrontend } from '../dist/login-ui.js';
+import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend } from '../dist/login-ui.js';
 
 test('School staff login browser script parses', () => {
   const match=loginFrontend.match(/<script>([\s\S]*?)<\/script>/i);
@@ -31,4 +31,16 @@ test('School Administrator has a separate email and password login', () => {
   assert.match(adminLoginFrontend,/schoolId:schoolId,email:email,password:password/);
   assert.doesNotMatch(adminLoginFrontend,/id="staffId"/);
   assert.match(adminLoginFrontend,/Use Staff Login/);
+});
+
+
+test('School Administrator reset link opens a new-password form', () => {
+  const match=adminPasswordResetFrontend.match(/<script>([\s\S]*?)<\/script>/i);
+  assert.ok(match?.[1]);
+  assert.doesNotThrow(()=>new Function(match[1]));
+  assert.match(adminPasswordResetFrontend,/Reset your administrator password/);
+  assert.match(adminPasswordResetFrontend,/New password/);
+  assert.match(adminPasswordResetFrontend,/Confirm new password/);
+  assert.match(adminPasswordResetFrontend,/\/api\/auth\/admin-password-reset/);
+  assert.match(adminPasswordResetFrontend,/token:token,newPassword:p1,schoolId:school/);
 });
