@@ -527,6 +527,143 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     return sync;
   });
 
+  app.post('/v1/commercial-control/schools/:id/admin', async request => {
+    const a = requirePermission(request, 'commercial.manage');
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const b = z.object({
+      firstName: z.string().trim().min(1).max(100),
+      lastName: z.string().trim().min(1).max(100),
+      email: z.string().trim().toLowerCase().email()
+    }).parse(request.body);
+
+    const customer = await maybeOne<any>(db,
+      'SELECT c.*,o.name,o.slug,o.settings FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2',
+      [a.organisationId,id]
+    );
+    if (!customer) throw notFound('School customer');
+
+    const previousAdminUserId = customer.settings?.primaryAdminUserId ?? null;
+    let temporaryPassword: string | null = null;
+    let existingUser = false;
+
+    const created = await transaction(db, async q => {
+      let user = await maybeOne<any>(q,'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1',[b.email]);
+      if (user) {
+        existingUser = true;
+        if (user.status !== 'active') throw conflict('The new administrator email belongs to an inactive Core OS user');
+        await q.query('UPDATE users SET first_name=$1,last_name=$2,updated_at=now() WHERE id=$3',[b.firstName,b.lastName,user.id]);
+      } else {
+        temporaryPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
+        user = await one<any>(q,
+          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',true) RETURNING id,email,first_name,last_name,status",
+          [b.email,await bcrypt.hash(temporaryPassword,12),b.firstName,b.lastName]
+        );
+      }
+
+      let membership = await maybeOne<any>(q,
+        'SELECT id FROM organisation_memberships WHERE organisation_id=$1 AND user_id=$2',
+        [id,user.id]
+      );
+      if (membership) {
+        await q.query("UPDATE organisation_memberships SET status='active',job_title='School Administrator',updated_at=now() WHERE id=$1",[membership.id]);
+      } else {
+        membership = await one<any>(q,
+          "INSERT INTO organisation_memberships(organisation_id,user_id,status,job_title) VALUES($1,$2,'active','School Administrator') RETURNING id",
+          [id,user.id]
+        );
+      }
+
+      if (previousAdminUserId && previousAdminUserId !== user.id) {
+        await q.query(`DELETE FROM membership_roles mr
+          USING roles r,organisation_memberships m
+          WHERE mr.role_id=r.id AND mr.membership_id=m.id
+            AND r.key='owner' AND m.organisation_id=$1 AND m.user_id=$2`,
+          [id,previousAdminUserId]);
+        await q.query('UPDATE sessions SET revoked_at=now() WHERE organisation_id=$1 AND user_id=$2 AND revoked_at IS NULL',[id,previousAdminUserId]);
+      }
+
+      await q.query(
+        `INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id,granted_by)
+         SELECT $1,r.id,'organisation',$2,$3
+         FROM roles r
+         WHERE r.organisation_id IS NULL AND r.key='owner'
+         ON CONFLICT DO NOTHING`,
+        [membership.id,id,a.userId]
+      );
+
+      await q.query(
+        `UPDATE organisations
+         SET settings=COALESCE(settings,'{}'::jsonb)||jsonb_build_object('primaryAdminUserId',$1::text),updated_at=now()
+         WHERE id=$2`,
+        [user.id,id]
+      );
+      await q.query(
+        `UPDATE saas_customers
+         SET primary_contact_name=$1,primary_contact_email=$2,updated_at=now()
+         WHERE provider_organisation_id=$3 AND customer_organisation_id=$4`,
+        [b.firstName+' '+b.lastName,b.email,a.organisationId,id]
+      );
+
+      return { user, membershipId: membership.id };
+    });
+
+    const entitlement = await getEntitlements(db,a.organisationId,id);
+    let schoolSync:any={ok:false,pending:true,message:'School sync pending'};
+    try {
+      const response = await fetch(schoolApplicationBase(config) + '/api/internal/provision', {
+        method:'POST',
+        headers:schoolServiceHeaders(config),
+        body:JSON.stringify({
+          organisationId:id,
+          tenantSlug:customer.slug,
+          schoolName:customer.name,
+          schoolType:customer.school_type ?? null,
+          adminUserId:created.user.id,
+          adminEmail:b.email,
+          adminFirstName:b.firstName,
+          adminLastName:b.lastName,
+          previousAdminUserId:previousAdminUserId && previousAdminUserId !== created.user.id ? previousAdminUserId : null,
+          phone:customer.primary_contact_phone ?? null,
+          address:customer.address ?? null,
+          entitlement
+        }),
+        signal:AbortSignal.timeout(30000)
+      });
+      const payload=await response.json().catch(()=>null) as any;
+      schoolSync=response.ok?{ok:true,...payload}:{ok:false,pending:true,message:payload?.error?.message||'School sync pending'};
+    } catch(error:any) {
+      schoolSync={ok:false,pending:true,message:String(error?.message||error)};
+    }
+
+    const adminLoginUrl=schoolApplicationBase(config)+'/admin-login?school='+encodeURIComponent(customer.slug);
+    await audit(db,{
+      organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
+      action:'commercial.school_admin.changed',resourceType:'organisation',resourceId:id,
+      afterState:{
+        previousAdminUserId,
+        newAdministratorId:created.user.id,
+        email:b.email,
+        adminLoginUrl,
+        existingUser,
+        schoolSync:{ok:Boolean(schoolSync?.ok),pending:Boolean(schoolSync?.pending)}
+      }
+    });
+
+    return {
+      administrator:{
+        id:created.user.id,
+        email:b.email,
+        firstName:b.firstName,
+        lastName:b.lastName,
+        existingUser
+      },
+      adminLoginUrl,
+      temporaryPassword:existingUser?null:temporaryPassword,
+      mustChangePassword:!existingUser,
+      schoolSync
+    };
+  });
+
   app.post('/v1/commercial-control/schools/:id/admin-invite', async request => {
     const a = requirePermission(request, 'commercial.manage');
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
