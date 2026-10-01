@@ -25,6 +25,9 @@ describe('commercial control browser script', () => {
     expect(commercialControlFrontend).toContain('E("retryProvision").onclick');
     expect(commercialControlFrontend).toContain('id="setSchoolAdmin"');
     expect(commercialControlFrontend).toContain('E("setSchoolAdmin").onclick');
+    expect(commercialControlFrontend).toContain('id="newAdminPassword"');
+    expect(commercialControlFrontend).toContain('id="newAdminPasswordConfirm"');
+    expect(commercialControlFrontend).toContain('password:p');
     expect(commercialControlFrontend).toContain('id="resetSchoolAdmin"');
     expect(commercialControlFrontend).toContain('E("resetSchoolAdmin").onclick');
     expect(commercialControlFrontend).toContain('/v1/commercial-control/schools/"+id+"/admin');
