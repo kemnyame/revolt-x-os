@@ -15,7 +15,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
-import { loginFrontend, adminLoginFrontend, passwordChangeFrontend } from './login-ui.js';
+import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
@@ -1633,6 +1633,7 @@ app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-a
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
+app.get('/admin-password-reset',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend));
 app.get('/teacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/headteacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/bursar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
@@ -1859,6 +1860,34 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 }
 
 app.post('/api/auth/admin-login',handleSchoolAdminLogin);
+
+app.post('/api/auth/admin-password-reset',async(request,reply)=>{
+  const b=z.object({
+    token:z.string().min(32).max(500),
+    newPassword:z.string().min(12).max(200)
+      .regex(/[A-Z]/,'Password must contain an uppercase letter')
+      .regex(/[a-z]/,'Password must contain a lowercase letter')
+      .regex(/[0-9]/,'Password must contain a number'),
+    schoolId:z.string().trim().min(1).max(120).optional()
+  }).parse(request.body);
+
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const changed=await fetch(base+'/v1/auth/password-reset/confirm',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({token:b.token,password:b.newPassword}),
+    signal:AbortSignal.timeout(20000)
+  }).catch(()=>null);
+
+  if(!changed)throw fail(503,'Core Revolt-X OS could not complete the password reset');
+  const payload=await changed.json().catch(()=>null) as any;
+  if(!changed.ok)throw fail(changed.status,payload?.error?.message||'Reset link is invalid or has expired');
+
+  const adminLoginUrl='/admin-login'+(b.schoolId?'?school='+encodeURIComponent(b.schoolId):'');
+  return reply.send({reset:true,email:payload?.email??null,adminLoginUrl});
+});
+
+
 
 async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
