@@ -18,6 +18,7 @@ const schema = z.object({
   PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
   ENABLE_TEST_PORTAL_ACCESS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
   TEST_ACCESS_PASSWORD: z.preprocess(emptyToUndefined,z.string().min(10).max(200).optional()),
+  STAFF_GENERIC_PASSWORD: z.preprocess(emptyToUndefined,z.string().min(12).max(200)).default('RevoltX@2026'),
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 
