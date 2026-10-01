@@ -313,6 +313,57 @@ app.post('/api/internal/license-sync',async request=>{
   return{ok:true,licence:licenceWithWarning(licence)};
 });
 
+app.post('/api/internal/sync-staff',async request=>{
+  requireCoreServiceRequest(request);
+  const b=z.object({
+    organisationId:z.string().uuid(),
+    members:z.array(z.object({
+      osUserId:z.string().uuid(),
+      firstName:z.string().min(1).max(100),
+      lastName:z.string().min(1).max(100),
+      email:z.string().email().nullable().optional(),
+      jobTitle:z.string().max(160).nullable().optional(),
+      userStatus:z.string().max(40).optional(),
+      coreRoles:z.array(z.string()).default([])
+    })).max(500)
+  }).parse(request.body);
+
+  function mapRole(member:any){
+    const job=String(member.jobTitle||'').toLowerCase();
+    const roles=(member.coreRoles||[]).map((x:any)=>String(x).toLowerCase());
+    if(roles.includes('owner'))return 'school_admin';
+    if(/head\s*master|headteacher|head\s*teacher|principal/.test(job))return 'headteacher';
+    if(/bursar/.test(job))return 'bursar';
+    if(/registrar|admission/.test(job))return 'registrar';
+    if(/accountant|finance officer/.test(job))return 'accountant';
+    return 'teacher';
+  }
+
+  let synced=0;
+  await tx(db,async client=>{
+    for(const member of b.members){
+      if(String(member.email||'').toLowerCase()==='preview@revolt-x.local')continue;
+      const role=mapRole(member);
+      await client.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
+        VALUES($1,$2,$3,'active')
+        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
+        [b.organisationId,member.osUserId,role]);
+      await client.query(`INSERT INTO school_user_directory(
+          organisation_id,os_user_id,first_name,last_name,email,job_title,user_status,membership_status,roles,synced_at
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,now())
+        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET
+          first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,email=COALESCE(EXCLUDED.email,school_user_directory.email),
+          job_title=EXCLUDED.job_title,user_status=EXCLUDED.user_status,membership_status='active',
+          roles=EXCLUDED.roles,synced_at=now()`,
+        [b.organisationId,member.osUserId,member.firstName,member.lastName,member.email??null,
+          member.jobTitle??null,member.userStatus||'active',JSON.stringify(member.coreRoles||[])]);
+      synced++;
+    }
+  });
+  coreUsersCache.delete(b.organisationId);
+  return{ok:true,synced};
+});
+
 app.post('/api/internal/provision',async request=>{
   requireCoreServiceRequest(request);
   const b=z.object({
