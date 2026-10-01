@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
-import { one, transaction } from '../db/index.js';
+import { maybeOne, one, transaction } from '../db/index.js';
 import { audit, emitEvent } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
 import { buildPreviewContext } from '../auth/preview.js';
@@ -28,6 +28,107 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     if(!config.ENABLE_PREVIEW_ACCESS)throw new AppError(403,'PREVIEW_DISABLED','Development preview access is disabled');
     return buildPreviewContext(db);
   });
+  app.post('/v1/internal/school/ensure-tenant',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    if(!config.SCHOOL_APP_URL)throw new AppError(503,'SERVICE_UNAVAILABLE','School application URL is not configured');
+    const b=z.object({schoolName:z.string().trim().min(2).max(160)}).parse(request.body);
+    const q=b.schoolName;
+    const slug=q.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+
+    const matches=(await db.query(
+      `SELECT o.id,o.name,o.slug,o.status organisation_status,
+              c.provider_organisation_id,c.customer_type,c.school_type,c.primary_contact_name,
+              c.primary_contact_email,c.primary_contact_phone,c.address,c.status customer_status,
+              s.id subscription_id,s.product_id,s.plan_id,s.billing_frequency,s.status subscription_status,
+              s.currency,s.recurring_amount,s.current_period_end,s.trial_ends_at,s.grace_ends_at,s.limits,s.license_code,
+              p.product_key,p.name product_name,pl.plan_key,pl.name plan_name
+       FROM organisations o
+       JOIN saas_customers c ON c.customer_organisation_id=o.id AND c.customer_type='school'
+       JOIN LATERAL (
+         SELECT * FROM saas_subscriptions sx
+         WHERE sx.customer_organisation_id=o.id AND sx.status IN('trial','active','grace')
+         ORDER BY sx.created_at DESC LIMIT 1
+       ) s ON true
+       JOIN saas_products p ON p.id=s.product_id AND p.product_key='school'
+       LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id
+       WHERE o.status='active'
+         AND (lower(o.name)=lower($1) OR lower(o.slug)=lower($2) OR o.name ILIKE $3 OR o.slug ILIKE $3)
+       ORDER BY CASE WHEN lower(o.name)=lower($1) THEN 0 WHEN lower(o.slug)=lower($2) THEN 1 ELSE 2 END,o.name
+       LIMIT 3`,
+      [q,slug,'%'+q+'%']
+    )).rows;
+    if(!matches.length)throw notFound('Licensed School organisation');
+    if(matches.length>1&&String(matches[0].name).toLowerCase()!==q.toLowerCase()&&String(matches[0].slug).toLowerCase()!==slug)
+      throw conflict('More than one licensed School matches that name');
+    const customer=matches[0] as any;
+
+    const members=(await db.query(
+      `SELECT u.id,u.email,u.first_name,u.last_name,u.status user_status,
+              m.id membership_id,m.job_title,m.employee_number,m.status membership_status,
+              COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
+       FROM organisation_memberships m
+       JOIN users u ON u.id=m.user_id
+       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
+       LEFT JOIN roles r ON r.id=mr.role_id
+       WHERE m.organisation_id=$1 AND m.status='active'
+       GROUP BY u.id,m.id
+       ORDER BY u.first_name,u.last_name`,
+      [customer.id]
+    )).rows as any[];
+
+    const usableMembers=members.filter((u:any)=>String(u.email||'').toLowerCase()!=='preview@revolt-x.local');
+    const admin=usableMembers.find((u:any)=>Array.isArray(u.roles)&&u.roles.includes('owner')&&String(u.email||'').includes('@')&&!String(u.email).endsWith('@revolt-x.local'))
+      || usableMembers.find((u:any)=>String(u.email||'').toLowerCase()===String(customer.primary_contact_email||'').toLowerCase())
+      || usableMembers.find((u:any)=>String(u.user_status)==='active'&&String(u.email||'').includes('@')&&!String(u.email).endsWith('@revolt-x.local'));
+    if(!admin)throw new AppError(409,'SCHOOL_ADMIN_REQUIRED','No usable School administrator exists for this organisation');
+
+    const modules=(await db.query(
+      `SELECT pm.module_key,COALESCE(sm.enabled,COALESCE(ppm.included,false)) enabled
+       FROM saas_product_modules pm
+       LEFT JOIN saas_plan_modules ppm ON ppm.module_id=pm.id AND ppm.plan_id=$1
+       LEFT JOIN saas_subscription_modules sm ON sm.module_id=pm.id AND sm.subscription_id=$2
+       WHERE pm.product_id=$3 AND pm.is_active=true
+       ORDER BY pm.sort_order,pm.name`,
+      [customer.plan_id,customer.subscription_id,customer.product_id]
+    )).rows;
+    const entitlement={
+      licensed:true,status:customer.subscription_status,subscriptionId:customer.subscription_id,
+      licenseCode:customer.license_code,product:customer.product_key,productName:customer.product_name,
+      plan:customer.plan_key,planName:customer.plan_name,billingFrequency:customer.billing_frequency,
+      recurringAmount:Number(customer.recurring_amount||0),currency:customer.currency,
+      periodEnd:customer.current_period_end,trialEndsAt:customer.trial_ends_at,graceEndsAt:customer.grace_ends_at,
+      limits:customer.limits||{},modules:modules.filter((m:any)=>m.enabled).map((m:any)=>m.module_key)
+    };
+
+    const base=config.SCHOOL_APP_URL.replace(/\/$/,'');
+    const response=await fetch(base+'/api/internal/provision',{
+      method:'POST',
+      headers:{'x-revolt-service-key':config.SCHOOL_SERVICE_KEY!,'content-type':'application/json'},
+      body:JSON.stringify({
+        organisationId:customer.id,tenantSlug:customer.slug,schoolName:customer.name,
+        schoolType:customer.school_type??null,adminUserId:admin.id,adminEmail:admin.email,
+        adminFirstName:admin.first_name,adminLastName:admin.last_name,
+        phone:customer.primary_contact_phone??null,address:customer.address??null,entitlement
+      }),
+      signal:AbortSignal.timeout(30000)
+    }).catch(()=>null);
+    if(!response)throw new AppError(503,'SCHOOL_UNAVAILABLE','School provisioning service could not be reached');
+    const payload=await response.json().catch(()=>null) as any;
+    if(!response.ok)throw new AppError(response.status,'SCHOOL_PROVISION_FAILED',payload?.error?.message||'School provisioning failed');
+
+    await db.query('UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),last_synced_at=now(),updated_at=now() WHERE id=$1',[customer.subscription_id]);
+    return{
+      organisation:{id:customer.id,name:customer.name,slug:customer.slug},
+      entitlement,
+      provisioning:payload,
+      members:usableMembers.map((u:any)=>({
+        id:u.id,email:String(u.email||'').endsWith('@revolt-x.local')?null:u.email,
+        first_name:u.first_name,last_name:u.last_name,user_status:u.user_status,
+        membership_status:u.membership_status,job_title:u.job_title,employee_number:u.employee_number,roles:u.roles
+      }))
+    };
+  });
+
   app.get('/v1/internal/school/users',{config:{rateLimit:{max:1200,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const q=scopeSchema.parse(request.query);
