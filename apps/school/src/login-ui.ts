@@ -56,8 +56,8 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
           <div class="eyebrow">What do I use to sign in?</div>
           <p class="muted" style="margin:6px 0 0"><b>School code:</b> comes from the school link and is normally filled automatically.<br><b>Email:</b> use the email address provided when your School user account was created.<br><b>Password:</b> new staff use the temporary generic password issued by the school administrator. Administrators can reset a staff password from Access Management.</p>
         </div>
-        <label>School code</label>
-        <input id="schoolSlug" autocomplete="organization" placeholder="your-school-code">
+        <label>School name / code</label>
+        <input id="schoolSlug" autocomplete="organization" placeholder="Enter your school name">
         <label>Email address</label>
         <input id="email" type="email" autocomplete="username" placeholder="name@school.edu">
         <label>Password</label>
@@ -66,17 +66,13 @@ button:disabled{opacity:.6;cursor:wait}.error,.success,.status{padding:10px 12px
         <button id="adminReset" class="secondary hide" type="button">Reset administrator password</button>
         <div id="status" class="status" style="display:none"></div>
         <div id="quickAccess" class="demo-box hide">
-          <div class="quick-head"><div><div class="eyebrow">Quick Login</div><h3>Open any staff profile</h3></div><button id="lockQuick" class="secondary hide" type="button">Lock</button></div>
-          <p class="muted">Enter the School generic password once, then choose the staff profile you want to open. Active administrators, headteachers, teachers, bursars, registrars and custom staff roles are included.</p>
-          <div id="quickGate">
-            <label>Generic staff password</label>
-            <input id="quickPassword" type="password" autocomplete="current-password">
-            <button id="unlockQuick" class="secondary">Unlock Quick Login</button>
-          </div>
-          <div id="quickChooser" class="hide">
-            <div id="quickProfiles" class="quick-grid"></div>
-          </div>
-          <div id="quickStatus" class="muted" style="margin-top:8px"></div>
+          <div class="eyebrow">Quick Login</div>
+          <h3>Select your name</h3>
+          <p class="muted">Enter the school name above. The active staff names for that school will appear automatically.</p>
+          <label>Quick Login password</label>
+          <input id="quickPassword" type="password" autocomplete="current-password" placeholder="Enter generic staff password">
+          <div id="quickProfiles" class="quick-grid"></div>
+          <div id="quickStatus" class="muted" style="margin-top:8px">Enter the school name to display users.</div>
         </div>
         <div id="demoAccess" class="demo-box hide">
           <div class="eyebrow">Demo access</div>
@@ -175,26 +171,39 @@ async function configureQuickLogin(){
   if(!state.enabled)return;
   E('quickAccess').classList.remove('hide');
 
+  var timer=null,lastSchool='';
   async function loadProfiles(){
-    var slug=E('schoolSlug').value.trim();
-    E('quickStatus').textContent='Loading staff profiles...';
+    var schoolName=E('schoolSlug').value.trim();
+    if(schoolName.length<2){
+      lastSchool='';
+      E('quickProfiles').innerHTML='';
+      E('quickStatus').textContent='Enter the school name to display users.';
+      return
+    }
+    if(schoolName===lastSchool)return;
+    lastSchool=schoolName;
+    E('quickProfiles').innerHTML='';
+    E('quickStatus').textContent='Finding school users...';
     try{
-      var result=await json('/api/quick-login/staff'+(slug?'?schoolSlug='+encodeURIComponent(slug):''));
+      var result=await json('/api/quick-login/staff?schoolName='+encodeURIComponent(schoolName));
       var staff=result.staff||[];
-      E('quickGate').classList.add('hide');E('quickChooser').classList.remove('hide');E('lockQuick').classList.remove('hide');
-      var schoolName=result.school&&result.school.name||'',schoolSlug=result.school&&result.school.slug||'';
-      var gracePrep=/grace\s*prep/i.test(schoolName)||/grace[-_\s]*prep/i.test(schoolSlug);
-      E('quickStatus').textContent=staff.length?((schoolName?schoolName+' • ':'')+staff.length+' active staff profile'+(staff.length===1?'':'s')):'No active staff profiles are available.';
+      E('quickStatus').textContent=staff.length
+        ?(result.school&&result.school.name?result.school.name+' • Select your name to login':'Select your name to login')
+        :'No active staff users were found for this school.';
       E('quickProfiles').innerHTML=staff.length?staff.map(function(u){
-        var fullName=(u.first_name+' '+u.last_name).trim(),role=(u.role_name||u.role||'Staff').replace(/_/g,' ');
-        return gracePrep
-          ?'<div class="quick-profile"><div><b>'+esc(fullName)+'</b></div><button data-quick-user="'+esc(u.id)+'">Login</button></div>'
-          :'<div class="quick-profile"><div><b>'+esc(fullName)+'</b><small>'+esc(role)+(u.job_title?' • '+esc(u.job_title):'')+(u.email?' • '+esc(u.email):'')+'</small></div><button data-quick-user="'+esc(u.id)+'">Open</button></div>'
+        var fullName=(u.first_name+' '+u.last_name).trim();
+        return '<div class="quick-profile"><div><b>'+esc(fullName)+'</b></div><button data-quick-user="'+esc(u.id)+'">Login</button></div>'
       }).join(''):'';
       E('quickProfiles').querySelectorAll('[data-quick-user]').forEach(function(btn){btn.onclick=async function(){
-        var old=btn.textContent;btn.disabled=true;btn.textContent='Opening...';E('quickStatus').textContent='';
+        var password=E('quickPassword').value;
+        if(!password){E('quickStatus').textContent='Enter the Quick Login password first.';E('quickPassword').focus();return}
+        var old=btn.textContent;btn.disabled=true;btn.textContent='Logging in...';E('quickStatus').textContent='';
         try{
-          var x=await json('/api/quick-login/staff-login',{method:'POST',body:JSON.stringify({osUserId:btn.dataset.quickUser,schoolSlug:slug||undefined})});
+          var x=await json('/api/quick-login/staff-login',{method:'POST',body:JSON.stringify({
+            osUserId:btn.dataset.quickUser,
+            schoolName:schoolName,
+            password:password
+          })});
           try{
             sessionStorage.setItem('rx_school_token',x.accessToken);
             if(x.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',x.accessToken);else sessionStorage.removeItem('rx_teacher_token')
@@ -203,26 +212,18 @@ async function configureQuickLogin(){
         }catch(err){E('quickStatus').textContent=err.message;btn.disabled=false;btn.textContent=old}
       }})
     }catch(err){
-      if(err.status===401){E('quickGate').classList.remove('hide');E('quickChooser').classList.add('hide');E('lockQuick').classList.add('hide')}
-      E('quickStatus').textContent=err.message
+      E('quickProfiles').innerHTML='';
+      E('quickStatus').textContent=err.message;
     }
   }
 
-  E('unlockQuick').onclick=async function(){
-    var slug=E('schoolSlug').value.trim(),btn=E('unlockQuick');btn.disabled=true;btn.textContent='Unlocking...';E('quickStatus').textContent='';
-    try{
-      await json('/api/quick-login/unlock',{method:'POST',body:JSON.stringify({password:E('quickPassword').value,schoolSlug:slug||undefined})});
-      E('quickPassword').value='';
-      await loadProfiles()
-    }catch(err){E('quickStatus').textContent=err.message}
-    finally{btn.disabled=false;btn.textContent='Unlock Quick Login'}
-  };
-  E('quickPassword').onkeydown=function(e){if(e.key==='Enter')E('unlockQuick').click()};
-  E('lockQuick').onclick=async function(){
-    try{await json('/api/quick-login/lock',{method:'POST',body:'{}'})}catch(e){}
-    E('quickChooser').classList.add('hide');E('quickGate').classList.remove('hide');E('lockQuick').classList.add('hide');E('quickProfiles').innerHTML='';E('quickStatus').textContent='Quick Login locked.'
-  };
-  if(state.unlocked)await loadProfiles()
+  E('schoolSlug').addEventListener('input',function(){
+    clearTimeout(timer);
+    lastSchool='';
+    timer=setTimeout(loadProfiles,450)
+  });
+  E('schoolSlug').addEventListener('change',loadProfiles);
+  if(E('schoolSlug').value.trim())await loadProfiles()
 }
 
 async function configureDemoAccess(){
@@ -294,8 +295,7 @@ async function boot(){
   if(setupToken){E('signinView').style.display='none';E('setupView').style.display='block';E('savePassword').onclick=setup;return}
   if(await existingSession())return;
   E('signin').onclick=signIn;E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
-  await configureQuickLogin();
-  await configureDemoAccess()
+  await configureQuickLogin()
 }
 boot()
 })();
