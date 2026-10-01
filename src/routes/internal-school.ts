@@ -120,7 +120,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       osUserId:u.id,
       email:String(u.email||'').endsWith('@revolt-x.local')?null:u.email,
       firstName:u.first_name,lastName:u.last_name,userStatus:u.user_status,
-      jobTitle:u.job_title??null,coreRoles:u.roles||[]
+      jobTitle:u.job_title??null,employeeNumber:u.employee_number??null,coreRoles:u.roles||[]
     }));
     const staffSyncResponse=await fetch(base+'/api/internal/sync-staff',{
       method:'POST',
