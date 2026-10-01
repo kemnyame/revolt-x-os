@@ -159,6 +159,65 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     };
   });
 
+  app.post('/v1/internal/school/authenticate-admin',{config:{rateLimit:{max:180,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const b=z.object({
+      schoolId:z.string().trim().min(1).max(120),
+      email:z.string().trim().toLowerCase().email(),
+      password:z.string().min(1).max(200)
+    }).parse(request.body);
+
+    const row=await maybeOne<any>(db,`SELECT
+        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,u.must_change_password,
+        m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
+        o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
+        COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
+      FROM organisation_memberships m
+      JOIN users u ON u.id=m.user_id
+      JOIN organisations o ON o.id=m.organisation_id
+      LEFT JOIN membership_roles mr ON mr.membership_id=m.id
+      LEFT JOIN roles r ON r.id=mr.role_id
+      WHERE lower(o.slug)=lower($1) AND lower(u.email)=lower($2)
+      GROUP BY u.id,m.id,o.id
+      LIMIT 1`,[b.schoolId,b.email]);
+
+    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
+    if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')
+      throw new AppError(403,'ACCOUNT_INACTIVE','This school administrator account is not active');
+
+    const roleKeys=Array.isArray(row.roles)?row.roles.map((x:any)=>String(x)):[];
+    if(!roleKeys.includes('owner'))
+      throw new AppError(403,'ADMIN_ACCESS_REQUIRED','This account is not the primary School Administrator. Staff administrators should use Staff Login.');
+
+    const valid=await bcrypt.compare(b.password,row.password_hash);
+    if(!valid)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
+
+    await audit(db,{
+      organisationId:row.organisation_id,actorUserId:row.user_id,sessionId:null,
+      action:'school_service.admin_signed_in',resourceType:'membership',resourceId:row.membership_id,
+      afterState:{school:row.organisation_name,email:row.email}
+    });
+
+    return{
+      id:row.user_id,
+      membership_id:row.membership_id,
+      organisation_id:row.organisation_id,
+      organisation_name:row.organisation_name,
+      organisation_slug:row.organisation_slug,
+      email:row.email,
+      first_name:row.first_name,
+      last_name:row.last_name,
+      job_title:row.job_title,
+      employee_number:row.employee_number,
+      staff_id:row.employee_number||row.login_staff_id,
+      must_change_password:Boolean(row.must_change_password),
+      status:row.user_status,
+      membership_status:row.membership_status,
+      roles:row.roles,
+      dedicated_admin:true
+    };
+  });
+
   app.post('/v1/internal/school/authenticate-staff',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const b=z.object({
