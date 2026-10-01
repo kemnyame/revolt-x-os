@@ -27,6 +27,7 @@ const schema = z.object({
   BREVO_FROM_NAME: z.preprocess(emptyToUndefined,z.string().max(160).optional()).default('Revolt-X School'),
   RESEND_API_KEY: z.preprocess(emptyToUndefined,z.string().optional()),
   RESEND_FROM_EMAIL: z.preprocess(emptyToUndefined,z.string().optional()),
+  RESEND_TEST_RECIPIENT: z.preprocess(emptyToUndefined,z.string().email().optional()),
 
   TWILIO_ACCOUNT_SID: z.preprocess(emptyToUndefined,z.string().optional()),
   TWILIO_API_KEY_SID: z.preprocess(emptyToUndefined,z.string().optional()),
