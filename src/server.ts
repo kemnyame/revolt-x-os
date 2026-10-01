@@ -58,8 +58,15 @@ async function applyConfiguredOwnerPasswordReset() {
          JOIN membership_roles mr ON mr.membership_id=m.id
          JOIN roles r ON r.id=mr.role_id
          WHERE m.user_id=u.id
-           AND r.key='owner'
            AND m.organisation_id IN (SELECT DISTINCT provider_organisation_id FROM saas_customers)
+           AND (
+             r.key='owner'
+             OR EXISTS (
+               SELECT 1 FROM role_permissions rp
+               JOIN permissions p ON p.id=rp.permission_id
+               WHERE rp.role_id=r.id AND p.key='commercial.manage'
+             )
+           )
        )`,
     [hash]
   );
