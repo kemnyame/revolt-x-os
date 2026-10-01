@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+async function read(name){
+  return readFile(new URL('../dist/'+name,import.meta.url),'utf8');
+}
+
+test('assessment flow is fixed to system-managed 30/70 components without category weight setup',async()=>{
+  const server=await read('server.js');
+  const ui=await read('ui.js');
+  const teacher=await read('teacher-ui.js');
+
+  assert.doesNotMatch(server,/Assessment category weights cannot exceed 100% for a term/);
+  assert.match(server,/systemCode=isEndTermExam\?'EXAM':'CONTINUOUS'/);
+  assert.match(server,/systemWeight=isEndTermExam\?70:30/);
+  assert.match(server,/End-of-Term Exam is fixed at 70 marks/);
+  assert.match(server,/category_average\*assessment_count/);
+  assert.match(server,/class_assessment_raw\*0\.30/);
+  assert.match(server,/exam_raw\*0\.70/);
+
+  assert.doesNotMatch(ui,/id="newCategory"/);
+  assert.doesNotMatch(ui,/Term weight %/);
+  assert.match(ui,/id="exType"/);
+  assert.match(ui,/30% \+ 70% = 100%/);
+  assert.match(ui,/No category weights are required/);
+
+  assert.match(teacher,/id="taType"/);
+  assert.match(teacher,/automatically calculates Continuous Assessment at 30%/);
+  assert.doesNotMatch(teacher,/id="taCat"/);
+});
