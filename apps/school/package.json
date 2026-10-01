@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "node scripts/patch-grade-levels.mjs && node scripts/patch-academic-manager-inline-subjects.mjs && node scripts/patch-admission-grade-flow.mjs && tsc -p tsconfig.json && node scripts/validate-frontends.mjs && node --test test/*.smoke.mjs",
+    "build": "node scripts/patch-grade-levels.mjs && node scripts/patch-academic-manager-inline-subjects.mjs && node scripts/patch-admission-grade-flow.mjs && node scripts/patch-assessment-score-readiness.mjs && tsc -p tsconfig.json && node scripts/validate-frontends.mjs && node --test test/*.smoke.mjs",
     "start": "node dist/server.js",
     "test": "npm run build"
   },
