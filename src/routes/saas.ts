@@ -114,6 +114,15 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
     await db.query("UPDATE saas_subscriptions SET status='expired',updated_at=now() WHERE id=$1 AND status<>'expired'",[sub.id]).catch(()=>null);
   }
 
+  const adminContact = await maybeOne<any>(db,
+    `SELECT c.primary_contact_name,c.primary_contact_email,u.email organisation_admin_email,u.first_name admin_first_name,u.last_name admin_last_name
+     FROM saas_customers c
+     JOIN organisations o ON o.id=c.customer_organisation_id
+     LEFT JOIN users u ON u.id::text=(o.settings->>'primaryAdminUserId')
+     WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2`,
+    [providerId,customerId]
+  );
+
   return {
     licensed: !['expired','cancelled','suspended','unlicensed'].includes(effectiveStatus),
     status: effectiveStatus,
@@ -130,7 +139,11 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
     trialEndsAt: sub.trial_ends_at,
     graceEndsAt: sub.grace_ends_at,
     limits: sub.limits || {},
-    modules: modules.filter((m: any) => m.enabled).map((m: any) => m.module_key)
+    modules: modules.filter((m: any) => m.enabled).map((m: any) => m.module_key),
+    organisationAdminEmail: adminContact?.organisation_admin_email || adminContact?.primary_contact_email || null,
+    organisationAdminName: adminContact?.admin_first_name || adminContact?.admin_last_name
+      ? [adminContact?.admin_first_name,adminContact?.admin_last_name].filter(Boolean).join(' ')
+      : (adminContact?.primary_contact_name || null)
   };
 }
 
@@ -513,9 +526,41 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       db.query('SELECT DISTINCT ON(metric_key) metric_key,metric_value,measured_at FROM saas_usage_snapshots WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY metric_key,measured_at DESC', [a.organisationId, id]),
       db.query('SELECT * FROM saas_provisioning_jobs WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id])
     ]);
+    let administrator:any=null;
+    const primaryAdminUserId=customer.settings?.primaryAdminUserId;
+    if(primaryAdminUserId){
+      administrator=await maybeOne<any>(db,
+        'SELECT id,email,first_name,last_name,status FROM users WHERE id=$1',
+        [primaryAdminUserId]
+      );
+    }
+    if(!administrator&&customer.primary_contact_email){
+      administrator=await maybeOne<any>(db,
+        `SELECT u.id,u.email,u.first_name,u.last_name,u.status
+         FROM users u
+         JOIN organisation_memberships m ON m.user_id=u.id
+         WHERE m.organisation_id=$1 AND lower(u.email)=lower($2)
+         ORDER BY m.joined_at LIMIT 1`,
+        [id,customer.primary_contact_email]
+      );
+    }
     const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug);
     const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(customer.slug);
-    return { customer, license, domains: domains.rows, invoices: invoices.rows, usage: usage.rows, provisioning: provisioning.rows[0] ?? null, accessUrl, adminLoginUrl };
+    return {
+      customer,
+      license,
+      administrator:administrator?{
+        id:administrator.id,email:administrator.email,firstName:administrator.first_name,lastName:administrator.last_name,status:administrator.status
+      }:{
+        id:null,email:customer.primary_contact_email||null,firstName:null,lastName:null,status:null
+      },
+      domains: domains.rows,
+      invoices: invoices.rows,
+      usage: usage.rows,
+      provisioning: provisioning.rows[0] ?? null,
+      accessUrl,
+      adminLoginUrl
+    };
   });
 
   app.post('/v1/commercial-control/schools/:id/sync-license', async request => {
@@ -675,35 +720,73 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
   app.post('/v1/commercial-control/schools/:id/admin-invite', async request => {
     const a = requirePermission(request, 'commercial.manage');
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const org = await maybeOne<any>(db, 'SELECT id,slug,settings FROM organisations WHERE id=$1', [id]);
+    const org = await maybeOne<any>(db,
+      `SELECT o.id,o.slug,o.settings,c.primary_contact_name,c.primary_contact_email
+       FROM organisations o
+       JOIN saas_customers c ON c.customer_organisation_id=o.id
+       WHERE c.provider_organisation_id=$1 AND o.id=$2`,
+      [a.organisationId,id]
+    );
     if (!org) throw notFound('School organisation');
-    const adminId = org.settings?.primaryAdminUserId;
-    if (!adminId) throw notFound('Primary school administrator');
-    const user = await one<any>(db, 'SELECT id,email,first_name,last_name FROM users WHERE id=$1', [adminId]);
-    const temporaryPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
-    const passwordHash = await bcrypt.hash(temporaryPassword,12);
 
-    await transaction(db, async c => {
-      await c.query('UPDATE users SET password_hash=$1,must_change_password=true,updated_at=now() WHERE id=$2',[passwordHash,user.id]);
-      await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[user.id]);
-      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
+    let user:any=null;
+    const adminId=org.settings?.primaryAdminUserId;
+    if(adminId){
+      user=await maybeOne<any>(db,'SELECT id,email,first_name,last_name,status FROM users WHERE id=$1',[adminId]);
+    }
+    if(!user&&org.primary_contact_email){
+      user=await maybeOne<any>(db,
+        `SELECT u.id,u.email,u.first_name,u.last_name,u.status
+         FROM users u
+         JOIN organisation_memberships m ON m.user_id=u.id
+         WHERE m.organisation_id=$1 AND lower(u.email)=lower($2)
+         ORDER BY m.joined_at LIMIT 1`,
+        [id,org.primary_contact_email]
+      );
+    }
+    if(!user)throw notFound('Organisation administrator. Use Set New Admin first.');
+    if(user.status!=='active')throw conflict('The organisation administrator account is inactive');
+
+    const resetToken=randomBytes(32).toString('base64url');
+    await transaction(db,async q=>{
+      await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
+      await q.query(
+        "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')",
+        [user.id,tokenHash(resetToken)]
+      );
+      await q.query(
+        'UPDATE saas_customers SET primary_contact_name=$1,primary_contact_email=$2,updated_at=now() WHERE provider_organisation_id=$3 AND customer_organisation_id=$4',
+        [[user.first_name,user.last_name].filter(Boolean).join(' '),user.email,a.organisationId,id]
+      );
+      await q.query(
+        `UPDATE organisations
+         SET settings=COALESCE(settings,'{}'::jsonb)||jsonb_build_object('primaryAdminUserId',$1::text),updated_at=now()
+         WHERE id=$2`,
+        [user.id,id]
+      );
     });
 
-    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(org.slug);
-    await audit(db, {
-      organisationId: a.organisationId,
-      actorUserId: a.userId,
-      sessionId: a.sessionId,
-      action: 'commercial.school_admin.access_reset',
-      resourceType: 'organisation',
-      resourceId: id,
-      afterState: { administratorId:user.id,email:user.email,adminLoginUrl,mustChangePassword:true }
+    const adminLoginUrl=schoolApplicationBase(config)+'/admin-login?school='+encodeURIComponent(org.slug);
+    const resetUrl=schoolApplicationBase(config)+'/admin-password-reset?school='+encodeURIComponent(org.slug)+'&token='+encodeURIComponent(resetToken);
+    await audit(db,{
+      organisationId:a.organisationId,
+      actorUserId:a.userId,
+      sessionId:a.sessionId,
+      action:'commercial.school_admin.password_reset_link_generated',
+      resourceType:'organisation',
+      resourceId:id,
+      afterState:{
+        administratorId:user.id,
+        administratorEmail:user.email,
+        resetDestination:'revolt_x_school',
+        expiresInMinutes:30
+      }
     });
-    return {
+    return{
       administrator:{id:user.id,email:user.email,firstName:user.first_name,lastName:user.last_name},
       adminLoginUrl,
-      temporaryPassword,
-      mustChangePassword:true
+      resetUrl,
+      expiresInMinutes:30
     };
   });
 
