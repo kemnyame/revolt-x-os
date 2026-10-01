@@ -13,7 +13,7 @@ test('year promotion and School user login/reset flow are wired',async()=>{
 
   assert.match(server,/term_no IN \(1,2,3\)/);
   assert.match(server,/academic_aggregate_score/);
-  assert.match(server,/promotionScore:\\s*annualAverage/);
+  assert.match(server,/promotionScore:\s*annualAverage/);
   assert.match(server,/STAFF_GENERIC_PASSWORD/);
   assert.match(server,/\/api\/auth\/admin-reset\/request/);
   assert.match(server,/\/api\/staff\/users\/:membershipId\/password-reset/);
