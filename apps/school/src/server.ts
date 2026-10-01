@@ -1567,6 +1567,11 @@ app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-ag
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/teacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/headteacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/bursar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/registrar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
 app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
@@ -1747,6 +1752,56 @@ async function handleSchoolStaffLogin(request:any,reply:any){
 
 app.post('/api/auth/login',handleSchoolStaffLogin);
 app.post('/api/auth/teacher-login',handleSchoolStaffLogin);
+
+app.post('/api/auth/admin-reset/request',async(request,reply)=>{
+  const b=z.object({
+    email:z.string().trim().toLowerCase().email(),
+    schoolSlug:z.string().trim().min(2).max(100)
+  }).parse(request.body);
+  const school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE tenant_slug=$1',[b.schoolSlug]);
+  if(!school)return reply.send({accepted:true});
+
+  const users=await fetchCoreUsers(school.organisation_id).catch(()=>[]);
+  const target=users.find((u:any)=>String(u.email||'').toLowerCase()===b.email);
+  if(!target)return reply.send({accepted:true});
+  const membership=await maybeOne<any>(db,`SELECT * FROM school_memberships
+    WHERE organisation_id=$1 AND os_user_id=$2 AND role='school_admin' AND status='active'`,
+    [school.organisation_id,target.id]);
+  if(!membership)return reply.send({accepted:true});
+
+  const wake=await wakeCoreOS();
+  if(!wake.reachable)throw fail(503,'Core Revolt-X OS is still starting. Please retry in a moment.');
+  const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const resetRes=await fetch(base+'/v1/auth/password-reset/request',{
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body:JSON.stringify({email:b.email}),
+    signal:AbortSignal.timeout(20000)
+  }).catch(()=>null);
+  if(!resetRes)throw fail(503,'Core OS could not be reached');
+  const payload=await resetRes.json().catch(()=>null) as any;
+  if(!resetRes.ok)throw fail(resetRes.status,payload?.error?.message||'Could not start password reset');
+
+  if(payload?.resetToken){
+    const publicBase=(config.PUBLIC_BASE_URL||'https://revolt-x-school.onrender.com').replace(/\/$/,'');
+    const resetUrl=publicBase+'/admin-login?school='+encodeURIComponent(b.schoolSlug)+'&setup='+encodeURIComponent(payload.resetToken)+'&next=%2F';
+    await deliverCommunication({
+      organisationId:school.organisation_id,actorOsUserId:null,channel:'email',
+      recipientName:(target.first_name+' '+target.last_name).trim(),recipientAddress:b.email,
+      subject:'Reset your Revolt-X School administrator password',
+      body:`Hello ${target.first_name},
+
+A password reset was requested for your Revolt-X School administrator account.
+
+Reset your password here:
+${resetUrl}
+
+This link expires in 30 minutes. If you did not request this reset, ignore this message.`,
+      templateKey:'admin.password_reset',relatedType:'school_membership',relatedId:membership.id
+    });
+  }
+  return reply.send({accepted:true});
+});
 
 async function handleSchoolPasswordSetup(request:any,reply:any){
   const b=z.object({
