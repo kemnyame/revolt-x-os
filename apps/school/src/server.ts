@@ -373,7 +373,7 @@ app.post('/api/internal/provision',async request=>{
   const b=z.object({
     organisationId:z.string().uuid(),tenantSlug:z.string().min(2).max(100),schoolName:z.string().min(2).max(240),
     schoolType:z.string().max(80).nullable().optional(),adminUserId:z.string().uuid(),adminEmail:z.string().email(),
-    adminFirstName:z.string().min(1).max(100),adminLastName:z.string().min(1).max(100),
+    adminFirstName:z.string().min(1).max(100),adminLastName:z.string().min(1).max(100),previousAdminUserId:z.string().uuid().nullable().optional(),
     phone:z.string().max(60).nullable().optional(),address:z.string().max(2000).nullable().optional(),entitlement:z.any()
   }).parse(request.body);
 
@@ -398,6 +398,15 @@ app.post('/api/internal/provision',async request=>{
     for(const r of roles)await client.query(`INSERT INTO school_roles(organisation_id,key,name,description,portal_mode,can_teach,is_system,is_active)
       VALUES($1,$2,$3,$4,$5,$6,true,true) ON CONFLICT(organisation_id,key) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,portal_mode=EXCLUDED.portal_mode,can_teach=EXCLUDED.can_teach,is_active=true,updated_at=now()`,
       [b.organisationId,...r]);
+
+    if(b.previousAdminUserId&&b.previousAdminUserId!==b.adminUserId){
+      await client.query("UPDATE school_memberships SET status='suspended',updated_at=now() WHERE organisation_id=$1 AND os_user_id=$2",
+        [b.organisationId,b.previousAdminUserId]);
+      await client.query("UPDATE school_user_directory SET membership_status='suspended',synced_at=now() WHERE organisation_id=$1 AND os_user_id=$2",
+        [b.organisationId,b.previousAdminUserId]);
+      await client.query("UPDATE school_sessions SET revoked_at=now() WHERE organisation_id=$1 AND os_user_id=$2 AND revoked_at IS NULL",
+        [b.organisationId,b.previousAdminUserId]);
+    }
 
     await client.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
       VALUES($1,$2,'school_admin','active')
