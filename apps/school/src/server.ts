@@ -190,7 +190,8 @@ function normalizedLicence(entitlement:any){
     trialEndsAt:entitlement?.trialEndsAt??null,
     graceEndsAt:entitlement?.graceEndsAt??null,
     limits:entitlement?.limits??{},
-    modules:Array.isArray(entitlement?.modules)?entitlement.modules:[]
+    modules:Array.isArray(entitlement?.modules)?entitlement.modules:[],
+    organisationAdminEmail:entitlement?.organisationAdminEmail??null
   };
 }
 
@@ -198,16 +199,16 @@ async function persistLicence(organisationId:string,entitlement:any,source='core
   const e=normalizedLicence(entitlement);
   await db.query(`INSERT INTO school_license_state(
     organisation_id,license_code,product_key,plan_key,plan_name,status,billing_frequency,recurring_amount,currency,
-    period_end,trial_ends_at,grace_ends_at,limits,modules,synced_at,source
-  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),$15)
+    period_end,trial_ends_at,grace_ends_at,limits,modules,organisation_admin_email,synced_at,source
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16)
   ON CONFLICT(organisation_id) DO UPDATE SET
     license_code=EXCLUDED.license_code,product_key=EXCLUDED.product_key,plan_key=EXCLUDED.plan_key,
     plan_name=EXCLUDED.plan_name,status=EXCLUDED.status,billing_frequency=EXCLUDED.billing_frequency,
     recurring_amount=EXCLUDED.recurring_amount,currency=EXCLUDED.currency,period_end=EXCLUDED.period_end,
     trial_ends_at=EXCLUDED.trial_ends_at,grace_ends_at=EXCLUDED.grace_ends_at,limits=EXCLUDED.limits,
-    modules=EXCLUDED.modules,synced_at=now(),source=EXCLUDED.source`,[
+    modules=EXCLUDED.modules,organisation_admin_email=EXCLUDED.organisation_admin_email,synced_at=now(),source=EXCLUDED.source`,[
       organisationId,e.licenseCode,e.product,e.plan,e.planName,e.status,e.billingFrequency,e.recurringAmount,e.currency,
-      e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules),source
+      e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules),e.organisationAdminEmail,source
     ]);
   return e;
 }
@@ -220,7 +221,7 @@ async function readLocalLicence(organisationId:string){
     licenseCode:row.license_code,product:row.product_key,plan:row.plan_key,planName:row.plan_name,status:row.status,
     billingFrequency:row.billing_frequency,recurringAmount:Number(row.recurring_amount||0),currency:row.currency,
     periodEnd:row.period_end,trialEndsAt:row.trial_ends_at,graceEndsAt:row.grace_ends_at,
-    limits:row.limits||{},modules:Array.isArray(row.modules)?row.modules:[],syncedAt:row.synced_at,source:row.source
+    limits:row.limits||{},modules:Array.isArray(row.modules)?row.modules:[],organisationAdminEmail:row.organisation_admin_email??null,syncedAt:row.synced_at,source:row.source
   };
 }
 
@@ -458,15 +459,15 @@ app.post('/api/internal/provision',async request=>{
     const e=normalizedLicence(b.entitlement);
     await client.query(`INSERT INTO school_license_state(
       organisation_id,license_code,product_key,plan_key,plan_name,status,billing_frequency,recurring_amount,currency,
-      period_end,trial_ends_at,grace_ends_at,limits,modules,synced_at,source
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),'core_os_provision')
+      period_end,trial_ends_at,grace_ends_at,limits,modules,organisation_admin_email,synced_at,source
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),'core_os_provision')
     ON CONFLICT(organisation_id) DO UPDATE SET license_code=EXCLUDED.license_code,product_key=EXCLUDED.product_key,
       plan_key=EXCLUDED.plan_key,plan_name=EXCLUDED.plan_name,status=EXCLUDED.status,billing_frequency=EXCLUDED.billing_frequency,
       recurring_amount=EXCLUDED.recurring_amount,currency=EXCLUDED.currency,period_end=EXCLUDED.period_end,
       trial_ends_at=EXCLUDED.trial_ends_at,grace_ends_at=EXCLUDED.grace_ends_at,limits=EXCLUDED.limits,
-      modules=EXCLUDED.modules,synced_at=now(),source=EXCLUDED.source`,[
+      modules=EXCLUDED.modules,organisation_admin_email=EXCLUDED.organisation_admin_email,synced_at=now(),source=EXCLUDED.source`,[
         b.organisationId,e.licenseCode,e.product,e.plan,e.planName,e.status,e.billingFrequency,e.recurringAmount,e.currency,
-        e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules)
+        e.periodEnd,e.trialEndsAt,e.graceEndsAt,JSON.stringify(e.limits),JSON.stringify(e.modules),e.organisationAdminEmail
       ]);
     await client.query("INSERT INTO school_provisioning_events(organisation_id,event_type,status,details) VALUES($1,'tenant.provisioned','completed',$2)",
       [b.organisationId,JSON.stringify({tenantSlug:b.tenantSlug,adminUserId:b.adminUserId,plan:e.plan})]);
