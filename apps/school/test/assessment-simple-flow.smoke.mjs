@@ -12,12 +12,12 @@ test('assessment flow is fixed to system-managed 30/70 components without catego
   const teacher=await read('teacher-ui.js');
 
   assert.doesNotMatch(server,/Assessment category weights cannot exceed 100% for a term/);
-  assert.match(server,/systemCode=isEndTermExam\?'EXAM':'CONTINUOUS'/);
-  assert.match(server,/systemWeight=isEndTermExam\?70:30/);
+  assert.match(server,/systemCode\s*=\s*isEndTermExam\s*\?\s*'EXAM'\s*:\s*'CONTINUOUS'/);
+  assert.match(server,/systemWeight\s*=\s*isEndTermExam\s*\?\s*70\s*:\s*30/);
   assert.match(server,/End-of-Term Exam is fixed at 70 marks/);
-  assert.match(server,/category_average\*assessment_count/);
-  assert.match(server,/class_assessment_raw\*0\.30/);
-  assert.match(server,/exam_raw\*0\.70/);
+  assert.match(server,/category_average\s*\*\s*assessment_count/);
+  assert.match(server,/class_assessment_raw\s*\*\s*0\.30/);
+  assert.match(server,/exam_raw\s*\*\s*0\.70/);
 
   assert.doesNotMatch(ui,/id="newCategory"/);
   assert.doesNotMatch(ui,/Term weight %/);
