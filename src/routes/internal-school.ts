@@ -231,6 +231,38 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     });
   });
 
+  app.post('/v1/internal/school/users/:membershipId/password-reset',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
+    requireSchoolService(request,config);
+    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const b=z.object({
+      organisationId:z.string().uuid(),
+      actorUserId:z.string().uuid(),
+      temporaryPassword:z.string().min(12).max(200)
+        .regex(/[A-Z]/,'Password must contain an uppercase letter')
+        .regex(/[a-z]/,'Password must contain a lowercase letter')
+        .regex(/[0-9]/,'Password must contain a number')
+    }).parse(request.body);
+
+    return transaction(db,async c=>{
+      const membership=await one<any>(c,`SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
+        FROM organisation_memberships m JOIN users u ON u.id=m.user_id
+        WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
+      if(String(membership.email||'').endsWith('@revolt-x.local'))throw conflict('Add a real email address before resetting the School login password');
+      const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
+      await c.query("UPDATE users SET password_hash=$1,status='active',updated_at=now() WHERE id=$2",[passwordHash,membership.user_id]);
+      await c.query("UPDATE organisation_memberships SET status='active' WHERE id=$1",[membership.id]);
+      await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
+        [membership.user_id,b.organisationId]);
+      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[membership.user_id]);
+      await audit(c,{
+        organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
+        action:'school_service.password_reset_to_temporary',resourceType:'user',resourceId:membership.user_id,
+        afterState:{email:membership.email,membershipId:membership.id,sessionsRevoked:true}
+      });
+      return{reset:true,userId:membership.user_id,membershipId:membership.id,email:membership.email};
+    });
+  });
+
   app.patch('/v1/internal/school/users/:membershipId/status',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
