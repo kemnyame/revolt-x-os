@@ -10,8 +10,8 @@ test('School login browser script parses', () => {
 
 test('first administrator setup explains and continues into sign-in', () => {
   assert.match(loginFrontend,/What do I use to sign in\?/);
-  assert.match(loginFrontend,/administrator email entered in Revolt-X OS/);
-  assert.match(loginFrontend,/There is no separate default School password/);
+  assert.match(loginFrontend,/email address provided when your School user account was created/);
+  assert.match(loginFrontend,/temporary generic password issued by the school administrator/);
   assert.match(loginFrontend,/E\('signin'\)\.onclick=signIn/);
   assert.match(loginFrontend,/await signIn\(\)/);
 });
