@@ -15,10 +15,6 @@ const schema = z.object({
   PARENT_LOGIN_BLOCK_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
   COMMUNICATION_RETRY_INTERVAL_MS: z.coerce.number().int().min(15000).max(900000).default(60000),
   COMMUNICATION_RETRY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
-  PROVISION_DEMO_TEACHERS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
-  ENABLE_TEST_PORTAL_ACCESS: z.enum(['true','false']).default('false').transform(v=>v==='true'),
-  TEST_ACCESS_PASSWORD: z.preprocess(emptyToUndefined,z.string().min(10).max(200).optional()),
-  STAFF_GENERIC_PASSWORD: z.preprocess(emptyToUndefined,z.string().min(12).max(200)).default('Welcome@2026!'),
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 
