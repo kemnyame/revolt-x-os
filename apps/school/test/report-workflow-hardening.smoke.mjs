@@ -13,7 +13,7 @@ test('report workflow hardening is present',async()=>{
   const parent=await read('parent-ui.js');
   const providers=await read('providers.js');
 
-  assert.match(server,/rc\.workflow_status IN \('draft','returned'\)/);
+  assert.match(server,/COALESCE\(rc\.workflow_status,'not_started'\) IN \('not_started','draft','returned'\)/);
   assert.match(server,/report_signatures/);
   assert.match(server,/promotion_override_reason/);
   assert.match(server,/reviewer_override/);
@@ -21,9 +21,9 @@ test('report workflow hardening is present',async()=>{
   assert.match(server,/Student ID is required/);
 
   assert.match(teacher,/My Report Signature/);
-  assert.match(teacher,/Save & Send to Headteacher/);
+  assert.match(teacher,/removed from your remaining-work queue/);
   assert.match(teacher,/System Promotion Decision/);
-  assert.match(teacher,/returned report/);
+  assert.match(teacher,/Returned reports will reappear here/);
 
   assert.match(ui,/Report Signatures/);
   assert.match(ui,/Add fee and assign/);
