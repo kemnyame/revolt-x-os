@@ -1,5 +1,5 @@
 name: Export Revolt-X School Build
-# export-trigger-2026-09-21-a
+# export-trigger-2026-10-02-aa619
 
 on:
   workflow_dispatch:
