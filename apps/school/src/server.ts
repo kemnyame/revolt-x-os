@@ -2595,8 +2595,15 @@ app.get('/api/classes',async request=>{const a=await authorize(request,db,config
   WHERE c.organisation_id=$1 AND ($2::uuid IS NULL OR c.academic_year_id=$2)
   ORDER BY g.level_order,c.name`,[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/classes',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:z.string().uuid(),gradeLevelId:z.string().uuid(),name:z.string().min(2).max(120),stream:z.string().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:z.string().uuid().optional()}).parse(request.body);
-  const row=await one<any>(db,'INSERT INTO classrooms(organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.gradeLevelId,b.name,b.stream??null,b.capacity??null,b.classTeacherOsUserId??null]);
+  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:z.string().uuid(),gradeLevelId:z.string().uuid(),name:z.string().trim().min(2).max(120),stream:z.string().trim().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:z.string().uuid().optional()}).parse(request.body);
+  const cleanName=b.name.trim(),cleanStream=b.stream?.trim()||null;
+  const duplicate=await maybeOne<any>(db,`SELECT id FROM classrooms
+    WHERE organisation_id=$1 AND academic_year_id=$2
+      AND lower(trim(name))=lower($3)
+      AND COALESCE(lower(trim(stream)),'')=COALESCE(lower(trim($4::text)),'')
+    LIMIT 1`,[a.core.organisation_id,b.academicYearId,cleanName,cleanStream]);
+  if(duplicate)throw fail(409,'This class already exists for the selected academic year');
+  const row=await one<any>(db,'INSERT INTO classrooms(organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.gradeLevelId,cleanName,cleanStream,b.capacity??null,b.classTeacherOsUserId??null]);
   await audit(a.core.organisation_id,a.core.id,'class.created','classroom',row.id);return reply.code(201).send(row);
 });
 app.get('/api/subjects',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM subjects WHERE organisation_id=$1 ORDER BY name',[a.core.organisation_id])).rows});
@@ -3378,8 +3385,10 @@ app.post('/api/assessments',async(request,reply)=>{
     name:z.string().min(2).max(160),maxScore:z.number().positive().optional(),assessmentDate:z.string().date().optional(),
     teacherOsUserId:z.string().uuid().optional()
   }).parse(request.body);
-  const teacherId=a.role==='teacher'?a.core.id:(b.teacherOsUserId??a.core.id);
-  if(a.role==='teacher')await ensureTeacherScope(a,b.classroomId,b.subjectId);
+  const creatorRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const teacherPortal=creatorRole?.portal_mode==='teacher';
+  const teacherId=teacherPortal?a.core.id:(b.teacherOsUserId??a.core.id);
+  if(teacherPortal)await ensureTeacherScope(a,b.classroomId,b.subjectId);
   else await validateTeachingAssignment({
     organisationId:a.core.organisation_id,academicYearId:b.academicYearId,termId:b.termId,
     classroomId:b.classroomId,subjectId:b.subjectId,teacherOsUserId:teacherId
@@ -3414,10 +3423,10 @@ app.post('/api/assessments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.get('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);if(a.role==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 async function buildAcademicStatement(organisationId:string,studentId:string){
@@ -5791,7 +5800,7 @@ app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request
 app.get('/api/parent/me',async request=>{
   const g=await guardianAuth(request);
   const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.name classroom_name FROM student_guardians sg JOIN students s ON s.id=sg.student_id LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id WHERE sg.guardian_id=$1 ORDER BY s.first_name,s.last_name`,[g.guardian_id])).rows;
-  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,logo_image_data,logo_url,email_accent_color FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
   return{guardian:g,students,school};
 });
 
@@ -6117,6 +6126,25 @@ app.get('/api/teacher/dashboard',async request=>{
     pendingAssessments:q.rows[0]?.pending_assessments??0,presentToday:q.rows[0]?.present_today??0,
     absentToday:q.rows[0]?.absent_today??0,unreadNotifications:Number(notices.unread||0),term
   };
+});
+
+app.get('/api/notifications',async request=>{
+  const a=await authorize(request,db,config);
+  const q=z.object({limit:z.coerce.number().int().min(1).max(100).default(40),unread:z.coerce.boolean().optional()}).parse(request.query);
+  const rows=(await db.query(`SELECT * FROM staff_notifications
+    WHERE organisation_id=$1 AND recipient_os_user_id=$2 AND ($3::boolean IS NULL OR ($3=true AND read_at IS NULL))
+    ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,a.core.id,q.unread??null,q.limit])).rows;
+  return{alerts:rows,unread:rows.filter((x:any)=>!x.read_at).length};
+});
+app.post('/api/notifications/:id/read',async request=>{
+  const a=await authorize(request,db,config);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  return one<any>(db,'UPDATE staff_notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND organisation_id=$2 AND recipient_os_user_id=$3 RETURNING *',[id,a.core.organisation_id,a.core.id]);
+});
+app.post('/api/notifications/read-all',async request=>{
+  const a=await authorize(request,db,config);
+  const result=await db.query('UPDATE staff_notifications SET read_at=now() WHERE organisation_id=$1 AND recipient_os_user_id=$2 AND read_at IS NULL',[a.core.organisation_id,a.core.id]);
+  return{updated:result.rowCount||0};
 });
 
 app.get('/api/teacher/notifications',async request=>{
