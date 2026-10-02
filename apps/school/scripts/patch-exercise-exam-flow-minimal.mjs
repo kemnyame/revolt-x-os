@@ -118,7 +118,7 @@ source = source
   .replaceAll('Class Assessment (30%) is not configured','Continuous Assessment (30%) is not configured')
   .replaceAll('Class Assessment score is not set up. Add or record the Class Assessment mark out of 30.','Continuous Assessment scores are not complete')
   .replaceAll('Exam (70%) is not configured','End-of-Term Exam (70%) is not configured')
-  .replaceAll('Exam score is not set up. Create or record the End-of-Term Exam mark; Revolt-X scales it to the 70% report component.','End-of-Term Exam score out of 70 is required')
+  .replaceAll('Exam score is not set up. Create or record the End-of-Term Exam mark; Revolt-X scales it to the 70% report component.','End-of-Term Exam raw score is required; Revolt-X scales it to the 70% report component')
   .replaceAll("component',CASE WHEN COALESCE(ac.code,upper(a.assessment_type))='EXAM' THEN 'Exam' ELSE 'Class Assessment' END",
               "component',CASE WHEN COALESCE(ac.code,upper(a.assessment_type))='EXAM' THEN 'End-of-Term Exam' ELSE 'Continuous Assessment' END");
 
