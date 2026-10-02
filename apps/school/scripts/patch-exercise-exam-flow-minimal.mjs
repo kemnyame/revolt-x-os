@@ -55,7 +55,7 @@ const newCategoryBlock = `  const cleanName=b.name.trim();
   const systemCode=isEndTermExam?'EXAM':'CONTINUOUS';
   const systemName=isEndTermExam?'End-of-Term Examination':'Continuous Assessment';
   const systemWeight=isEndTermExam?70:30;
-  const systemDefaultMax=isEndTermExam?70:100;
+  const systemDefaultMax=100;
   let category=await maybeOne<any>(db,\`SELECT * FROM assessment_categories
     WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND code=$4\`,
     [a.core.organisation_id,b.academicYearId,b.termId,systemCode]);
@@ -69,8 +69,8 @@ const newCategoryBlock = `  const cleanName=b.name.trim();
     RETURNING *\`,
     [a.core.organisation_id,b.academicYearId,b.termId,systemCode,systemName,systemDefaultMax,systemWeight,isEndTermExam?20:10]);
   }
-  const maxScore=isEndTermExam?70:(b.maxScore??Number(category.default_max_score||100));
-  if(isEndTermExam&&b.maxScore!=null&&Number(b.maxScore)!==70)throw fail(400,'End-of-Term Exam is fixed at 70 marks');
+  const maxScore=b.maxScore??Number(category.default_max_score||100);
+  if(isEndTermExam&&Number(maxScore)<=0)throw fail(400,'End-of-Term Exam maximum mark must be greater than zero');
   if(!isEndTermExam&&Number(maxScore)<=0)throw fail(400,'Continuous assessment maximum mark must be greater than zero');
   if(isEndTermExam){
     const existingExam=await maybeOne<any>(db,\`SELECT ax.id,ax.name FROM assessments ax
@@ -118,7 +118,7 @@ source = source
   .replaceAll('Class Assessment (30%) is not configured','Continuous Assessment (30%) is not configured')
   .replaceAll('Class Assessment score is not set up. Add or record the Class Assessment mark out of 30.','Continuous Assessment scores are not complete')
   .replaceAll('Exam (70%) is not configured','End-of-Term Exam (70%) is not configured')
-  .replaceAll('Exam score is not set up. Create or record the Exam mark out of 70; any score from 0 to 70 is valid.','End-of-Term Exam score out of 70 is required')
+  .replaceAll('Exam score is not set up. Create or record the End-of-Term Exam mark; Revolt-X scales it to the 70% report component.','End-of-Term Exam score out of 70 is required')
   .replaceAll("component',CASE WHEN COALESCE(ac.code,upper(a.assessment_type))='EXAM' THEN 'Exam' ELSE 'Class Assessment' END",
               "component',CASE WHEN COALESCE(ac.code,upper(a.assessment_type))='EXAM' THEN 'End-of-Term Exam' ELSE 'Continuous Assessment' END");
 
