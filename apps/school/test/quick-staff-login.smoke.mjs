@@ -10,7 +10,9 @@ test('legacy Quick Login is removed and School plus Staff ID plus password is ca
   const config=await read('config.js');
 
   assert.doesNotMatch(config,/ENABLE_QUICK_STAFF_LOGIN/);
-  assert.match(config,/STAFF_GENERIC_PASSWORD/);
+  assert.doesNotMatch(config,/STAFF_GENERIC_PASSWORD/);
+  assert.match(server,/function randomTemporaryPassword\(\)/);
+  assert.doesNotMatch(server,/Welcome@2026!/);
   assert.doesNotMatch(server,/\/api\/quick-login\/staff-login/);
   assert.doesNotMatch(server,/validateQuickLoginPassword/);
   assert.match(server,/handleSchoolStaffIdLogin/);
