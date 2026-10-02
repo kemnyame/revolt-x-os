@@ -1,0 +1,80 @@
+name: Package latest Revolt-X build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/school/package-lock.json
+
+      - name: Build Revolt-X OS
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Revolt-X School
+        run: |
+          cd apps/school
+          npm ci
+          npm run build
+
+      - name: Prepare clean release folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE="revolt-x-os-school-latest"
+          rm -rf "$RELEASE"
+          mkdir -p "$RELEASE"
+
+          rsync -a ./ "$RELEASE"/ \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "node_modules" \
+            --exclude "apps/school/node_modules" \
+            --exclude "$RELEASE"
+
+          cat > "$RELEASE/BUILD_INFO.txt" <<EOF
+          Revolt-X OS + Revolt-X School
+          Source branch: ${GITHUB_REF_NAME}
+          Commit: ${GITHUB_SHA}
+          Built: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          Included:
+          - Revolt-X OS source and compiled dist/
+          - Revolt-X School source and compiled apps/school/dist/
+          - Database migrations
+          - package.json and lock files
+          - tests and scripts
+
+          Excluded:
+          - .git metadata
+          - GitHub workflow metadata
+          - node_modules
+          - deployment secrets/environment values
+          EOF
+
+      - name: Upload packaged build
+        uses: actions/upload-artifact@v4
+        with:
+          name: revolt-x-os-school-latest
+          path: revolt-x-os-school-latest/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14
