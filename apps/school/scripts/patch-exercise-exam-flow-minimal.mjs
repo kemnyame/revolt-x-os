@@ -44,7 +44,7 @@ const oldCategoryBlock = `  let category:any=null;
   }
   if(!category)throw fail(400,'Select a valid assessment category for this term');
   const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';
-  const maxScore=type==='exam'?70:(b.maxScore??Number(category.default_max_score));
+  const maxScore=b.maxScore??Number(category.default_max_score);
   const cleanName=b.name.trim();`;
 
 const newCategoryBlock = `  const cleanName=b.name.trim();
