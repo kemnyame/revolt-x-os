@@ -5872,7 +5872,7 @@ async function buildGuardianReleasedReport(g:any,id:string){
   const attendance:any={present:0,absent:0,late:0,excused:0,total:0,rate:0};
   for(const r of attRows){attendance[r.status]=Number(r.count);attendance.total+=Number(r.count)}
   if(attendance.total)attendance.rate=Math.round(((attendance.present+attendance.late+attendance.excused)/attendance.total)*10000)/100;
-  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,logo_image_data,logo_url,email_accent_color FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
   const coreUsers=await fetchCoreUsers(g.organisation_id);
   const defaultHead=await maybeOne<any>(db,`SELECT os_user_id FROM school_memberships WHERE organisation_id=$1 AND status='active' AND role='headteacher' ORDER BY created_at LIMIT 1`,[g.organisation_id]);
   const headId=approved.reviewed_by_os_user_id??defaultHead?.os_user_id??null;
