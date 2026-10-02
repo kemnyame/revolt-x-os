@@ -4785,7 +4785,8 @@ app.get('/api/homework',async request=>{
     ORDER BY h.created_at DESC`,[
       a.core.organisation_id,q.classroomId??null,q.termId??null,q.status??null,q.teacherOsUserId??null
     ])).rows;
-  if(a.role==='teacher')rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(homeworkRole?.portal_mode==='teacher')rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
   return rows.map((r:any)=>{
     const total=Number(r.student_count||r.tracked_students||0),submitted=Number(r.submitted_students||0),graded=Number(r.graded_students||0);
     let progressStatus='pending',progressPercent=0;
@@ -4807,8 +4808,10 @@ app.post('/api/homework',async(request,reply)=>{
     title:z.string().min(2).max(200),instructions:z.string().min(1).max(10000),dueAt:z.string().datetime().optional(),
     maxScore:z.number().positive().optional(),teacherOsUserId:z.string().uuid().optional()
   }).parse(request.body);
-  const teacherId=a.role==='teacher'?a.core.id:(b.teacherOsUserId??a.core.id);
-  if(a.role==='teacher')await ensureTeacherScope(a,b.classroomId,b.subjectId);
+  const creatorRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const teacherPortal=creatorRole?.portal_mode==='teacher';
+  const teacherId=teacherPortal?a.core.id:(b.teacherOsUserId??a.core.id);
+  if(teacherPortal)await ensureTeacherScope(a,b.classroomId,b.subjectId);
   else await validateTeachingAssignment({
     organisationId:a.core.organisation_id,academicYearId:b.academicYearId,termId:b.termId,
     classroomId:b.classroomId,subjectId:b.subjectId,teacherOsUserId:teacherId
@@ -4832,13 +4835,15 @@ app.patch('/api/homework/:id',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
-  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const teacherPortal=homeworkRole?.portal_mode==='teacher';
+  if(teacherPortal&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   const b=z.object({
     title:z.string().min(2).max(200).optional(),instructions:z.string().min(1).max(10000).optional(),
     dueAt:z.string().datetime().nullable().optional(),maxScore:z.number().positive().nullable().optional(),
     status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:z.string().uuid().optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
-  if(a.role==='teacher'&&b.teacherOsUserId&&b.teacherOsUserId!==a.core.id)throw fail(403,'Teachers cannot reassign homework');
+  if(teacherPortal&&b.teacherOsUserId&&b.teacherOsUserId!==a.core.id)throw fail(403,'Teachers cannot reassign homework');
   if(b.teacherOsUserId&&b.teacherOsUserId!==current.teacher_os_user_id){
     await validateTeachingAssignment({
       organisationId:a.core.organisation_id,academicYearId:current.academic_year_id,termId:current.term_id,
@@ -4861,7 +4866,8 @@ app.post('/api/homework/:id/publish',async request=>{
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
     WHERE h.id=$1 AND h.organisation_id=$2`,[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(homeworkRole?.portal_mode==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   if(h.status==='closed')throw fail(409,'Closed homework cannot be published again');
   const wasPublished=h.status==='published';
   const row=await tx(db,async client=>{
@@ -4895,7 +4901,8 @@ app.get('/api/homework/:id/submissions',async request=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
-  if(a.role==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(homeworkRole?.portal_mode==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   return (await db.query(`SELECT hs.*,s.admission_no,s.first_name,s.last_name
     FROM homework_submissions hs JOIN students s ON s.id=hs.student_id
     WHERE hs.homework_id=$1 ORDER BY s.last_name,s.first_name`,[id])).rows;
