@@ -4421,8 +4421,10 @@ app.patch('/api/assessments/:id',async request=>{
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
-  if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');
-  if(a.role==='teacher'&&b.teacherOsUserId&&b.teacherOsUserId!==a.core.id)throw fail(403,'Teachers cannot reassign exercises to another teacher');
+  const assessmentRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const teacherPortal=assessmentRole?.portal_mode==='teacher';
+  if(teacherPortal&&current.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');
+  if(teacherPortal&&b.teacherOsUserId&&b.teacherOsUserId!==a.core.id)throw fail(403,'Teachers cannot reassign exercises to another teacher');
   if(b.teacherOsUserId&&b.teacherOsUserId!==current.teacher_os_user_id){
     await validateTeachingAssignment({
       organisationId:a.core.organisation_id,academicYearId:current.academic_year_id,termId:current.term_id,
@@ -4454,7 +4456,8 @@ app.delete('/api/assessments/:id',async(request,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,row.classroom_id,row.subject_id);
-  if(a.role==='teacher'&&row.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');
+  const assessmentRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(assessmentRole?.portal_mode==='teacher'&&row.teacher_os_user_id!==a.core.id)throw fail(403,'This exercise is assigned to another teacher');
   await db.query('DELETE FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'assessment.deleted','assessment',id,{name:row.name});
   return reply.code(204).send();
@@ -4915,6 +4918,8 @@ app.post('/api/homework/:id/submissions',async request=>{
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
     WHERE h.id=$1 AND h.organisation_id=$2`,[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(homeworkRole?.portal_mode==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   const b=z.object({records:z.array(z.object({
     studentId:z.string().uuid(),status:z.enum(['not_submitted','submitted','late','graded']),
     score:z.number().min(0).nullable().optional(),teacherComment:z.string().max(1000).nullable().optional()
@@ -4965,6 +4970,8 @@ app.delete('/api/homework/:id',async(request,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
+  const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(homeworkRole?.portal_mode==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   await db.query('DELETE FROM homework_assignments WHERE id=$1',[id]);
   await audit(a.core.organisation_id,a.core.id,'homework.deleted','homework',id);
   return reply.code(204).send();
