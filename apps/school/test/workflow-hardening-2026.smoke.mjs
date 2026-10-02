@@ -12,6 +12,8 @@ test('October School workflow hardening is installed',async()=>{
   const ui=await read('ui.js');
   const providers=await read('providers.js');
   const migration=await readFile(new URL('../migrations/050_workflow_notifications_email_branding.sql',import.meta.url),'utf8');
+  const accessBackfill=await readFile(new URL('../migrations/051_lesson_note_review_access_backfill.sql',import.meta.url),'utf8');
+  const config=await read('config.js');
 
   assert.match(server,/function randomTemporaryPassword\(\)/);
   assert.match(server,/function dateOnlyValue\(value\)/);
@@ -25,6 +27,11 @@ test('October School workflow hardening is installed',async()=>{
   assert.match(server,/portal_mode === 'teacher'/);
   assert.match(server,/OFFICIAL ACADEMIC RECORD/);
   assert.match(server,/Headteacher \/ Reviewer/);
+  assert.doesNotMatch(server,/\/api\/test-access\//);
+  assert.doesNotMatch(server,/provisionDemoTeachers/);
+  assert.match(server,/app\.get\('\/demo'.*redirect\('\/login'/);
+  assert.match(server,/app\.get\('\/main'.*redirect\('\/login'/);
+  assert.match(server,/app\.get\('\/quick-login'.*redirect\('\/login'/);
 
   assert.match(teacher,/rx_teacher_page/);
   assert.match(teacher,/Pending assessment scores/);
@@ -43,4 +50,10 @@ test('October School workflow hardening is installed',async()=>{
   assert.match(migration,/CREATE TABLE IF NOT EXISTS staff_notifications/);
   assert.match(migration,/email_accent_color/);
   assert.match(migration,/lesson_notes\.review/);
+  assert.match(accessBackfill,/headteacher','lesson_notes\.review',true/);
+  assert.match(accessBackfill,/teacher','lesson_notes\.review',false/);
+  assert.doesNotMatch(config,/STAFF_GENERIC_PASSWORD/);
+  assert.doesNotMatch(config,/ENABLE_TEST_PORTAL_ACCESS/);
+  assert.doesNotMatch(config,/TEST_ACCESS_PASSWORD/);
+  assert.doesNotMatch(config,/Welcome@2026!/);
 });
