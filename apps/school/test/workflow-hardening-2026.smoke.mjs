@@ -39,7 +39,7 @@ test('October School workflow hardening is installed',async()=>{
   assert.match(ui,/OFFICIAL ACADEMIC RECORD/);
   assert.match(ui,/Notifications & Pending Work/);
 
-  assert.match(providers,/html\?: string/);
+  assert.match(providers,/input\.html\s*\|\|/);
   assert.match(migration,/CREATE TABLE IF NOT EXISTS staff_notifications/);
   assert.match(migration,/email_accent_color/);
   assert.match(migration,/lesson_notes\.review/);
