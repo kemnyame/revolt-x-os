@@ -744,6 +744,70 @@ function normalizePhone(phone:string){
   return p;
 }
 
+function randomTemporaryPassword(){
+  const random=randomBytes(15).toString('base64url').replace(/[-_]/g,'A').slice(0,18);
+  return 'Rx!'+random+'9a';
+}
+
+function dateOnlyValue(value:any){
+  if(value==null||value==='')return null;
+  if(value instanceof Date&&!Number.isNaN(value.getTime()))return value.toISOString().slice(0,10);
+  const raw=String(value).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(raw))return raw.slice(0,10);
+  const parsed=new Date(raw);
+  return Number.isNaN(parsed.getTime())?null:parsed.toISOString().slice(0,10);
+}
+
+const optionalEmailSchema=z.preprocess(value=>{
+  if(value==null)return undefined;
+  if(typeof value!=='string')return value;
+  const clean=value.trim().toLowerCase();
+  return clean||undefined;
+},z.string().email().optional());
+
+function emailHtmlEscape(value:any){
+  return String(value==null?'':value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c));
+}
+
+async function brandedSchoolEmailHtml(organisationId:string,recipientName:string|null|undefined,subject:string|null|undefined,body:string){
+  const school=await maybeOne<any>(db,'SELECT school_name,short_name,motto,logo_image_data,logo_url,email_accent_color,email_header_text,email_footer_text FROM school_profiles WHERE organisation_id=$1',[organisationId]);
+  const accent=/^#[0-9a-f]{6}$/i.test(String(school?.email_accent_color||''))?school.email_accent_color:'#24634e';
+  const schoolName=school?.email_header_text||school?.school_name||school?.short_name||'Revolt-X School';
+  const logo=school?.logo_image_data||school?.logo_url||'';
+  const greeting=recipientName?'<p style="margin:0 0 18px">Hello '+emailHtmlEscape(recipientName)+',</p>':'';
+  const bodyHtml=emailHtmlEscape(body).replace(/\n/g,'<br>');
+  const footer=school?.email_footer_text||('Sent securely by '+(school?.school_name||'Revolt-X School')+'.');
+  return '<!doctype html><html><body style="margin:0;background:#f4f7f6;font-family:Arial,Helvetica,sans-serif;color:#1b2b35">'+
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f6;padding:28px 12px"><tr><td align="center">'+
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #dde8e3">'+
+    '<tr><td style="background:'+accent+';padding:22px 28px;color:#fff">'+
+    (logo?'<img src="'+emailHtmlEscape(logo)+'" alt="" style="max-height:54px;max-width:170px;display:block;margin-bottom:12px">':'')+
+    '<div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.84">School Communication</div>'+
+    '<div style="font-size:24px;font-weight:700;margin-top:5px">'+emailHtmlEscape(schoolName)+'</div>'+
+    (school?.motto?'<div style="font-size:13px;margin-top:4px;opacity:.88">'+emailHtmlEscape(school.motto)+'</div>':'')+
+    '</td></tr><tr><td style="padding:30px 28px">'+
+    '<h1 style="font-size:20px;line-height:1.3;margin:0 0 20px;color:#152733">'+emailHtmlEscape(subject||'School notification')+'</h1>'+
+    greeting+'<div style="font-size:15px;line-height:1.75">'+bodyHtml+'</div>'+
+    '<div style="margin-top:28px;padding-top:18px;border-top:1px solid #e5ece9;font-size:12px;line-height:1.6;color:#667780">'+emailHtmlEscape(footer)+'</div>'+
+    '</td></tr></table></td></tr></table></body></html>';
+}
+
+async function notifyStaff(input:{
+  organisationId:string;
+  recipientOsUserId:string;
+  eventKey:string;
+  subject:string;
+  body:string;
+  relatedType?:string|null;
+  relatedId?:string|null;
+  actorOsUserId?:string|null;
+}){
+  return maybeOne<any>(db,'INSERT INTO staff_notifications(organisation_id,recipient_os_user_id,event_key,subject,body,related_type,related_id,created_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING *',[
+    input.organisationId,input.recipientOsUserId,input.eventKey,input.subject,input.body,
+    input.relatedType??null,input.relatedId??null,input.actorOsUserId??null
+  ]);
+}
+
 async function deliverCommunication(input:{
   organisationId:string;
   actorOsUserId?:string|null|undefined;
@@ -774,7 +838,8 @@ async function deliverCommunication(input:{
       to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
       subject:input.subject,
       recipientName:input.recipientName,
-      body:input.body
+      body:input.body,
+      html:input.channel==='email'?await brandedSchoolEmailHtml(input.organisationId,input.recipientName,input.subject,input.body):undefined
     });
     return await one<any>(db,`UPDATE communication_outbox
       SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL,next_attempt_at=NULL
@@ -946,7 +1011,7 @@ async function postStudentFeeReceivable(client:any,studentFeeId:string,actorOsUs
     ?await one<any>(client,"SELECT * FROM finance_accounts WHERE id=$1 AND organisation_id=$2 AND account_type='income' AND is_active=true",[sf.income_account_id,sf.organisation_id])
     :await financeAccountByCode(client,sf.organisation_id,'4000');
   const journal=await postFinanceJournal(client,{
-    organisationId:sf.organisation_id,entryDate:String(sf.created_at||new Date().toISOString()).slice(0,10),
+    organisationId:sf.organisation_id,entryDate:dateOnlyValue(sf.created_at)??new Date().toISOString().slice(0,10),
     description:`School fee receivable - ${sf.first_name} ${sf.last_name} (${sf.admission_no}) - ${sf.fee_name}`,
     sourceType:'student_fee',sourceId:sf.id,actorOsUserId:actorOsUserId??null,
     lines:[
@@ -975,7 +1040,7 @@ async function postStudentPaymentLedger(client:any,paymentId:string,actorOsUserI
       ?await one<any>(client,"SELECT * FROM finance_accounts WHERE id=$1 AND organisation_id=$2 AND account_type='income' AND is_active=true",[p.income_account_id,p.organisation_id])
       :await financeAccountByCode(client,p.organisation_id,'4000'));
   return postFinanceJournal(client,{
-    organisationId:p.organisation_id,entryDate:String(p.paid_at||new Date().toISOString()).slice(0,10),
+    organisationId:p.organisation_id,entryDate:dateOnlyValue(p.paid_at)??new Date().toISOString().slice(0,10),
     description:`School fee payment - ${p.first_name} ${p.last_name} (${p.admission_no})`,
     sourceType:'student_payment',sourceId:p.id,reference:p.reference??null,actorOsUserId:actorOsUserId??p.received_by_os_user_id??null,
     lines:[
@@ -2917,7 +2982,7 @@ app.post('/api/students',async(request,reply)=>{
     lastName:z.string().min(1).max(100),sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),
     admissionDate:z.string().date().optional(),notes:z.string().max(5000).optional(),
     guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianEmail:z.string().email().optional(),
+    guardianPhone:z.string().min(5).max(60),guardianEmail:optionalEmailSchema,
     guardianRelationship:z.string().min(2).max(60)
   }).parse(request.body);
   const result=await tx(db,async client=>{
@@ -4096,6 +4161,7 @@ app.post('/api/staff/users',async(request,reply)=>{
     [a.core.organisation_id,b.schoolRole]);
 
   const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const temporaryPassword=randomTemporaryPassword();
   const created=await fetch(base+'/v1/internal/school/users',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
@@ -4107,7 +4173,7 @@ app.post('/api/staff/users',async(request,reply)=>{
       ...(b.email?{email:b.email}:{}),
       jobTitle:b.jobTitle||role.name,
       roleKey:'member',
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
+      temporaryPassword:temporaryPassword
     }),
     signal:AbortSignal.timeout(15000)
   }).catch(()=>null);
@@ -4146,7 +4212,7 @@ app.post('/api/staff/users',async(request,reply)=>{
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
-    email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:config.STAFF_GENERIC_PASSWORD
+    email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:temporaryPassword
   });
 });
 
@@ -4160,6 +4226,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
     jobTitle:z.string().min(2).max(160).default('Teacher')
   }).parse(request.body);
   const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const temporaryPassword=randomTemporaryPassword();
   const created=await fetch(base+'/v1/internal/school/users',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
@@ -4168,7 +4235,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
       actorUserId:a.core.id,
       ...b,
       roleKey:'member',
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
+      temporaryPassword:temporaryPassword
     }),
     signal:AbortSignal.timeout(15000)
   }).catch(()=>null);
@@ -4206,7 +4273,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,firstName:b.firstName,lastName:b.lastName,
-    jobTitle:b.jobTitle,temporaryPassword:config.STAFF_GENERIC_PASSWORD
+    jobTitle:b.jobTitle,temporaryPassword:temporaryPassword
   });
 });
 app.post('/api/staff/users/:membershipId/password-reset',async request=>{
@@ -4218,13 +4285,14 @@ app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   if(!coreUser)throw fail(404,'School user was not found');
 
   const base=config.CORE_OS_URL.replace(/\/$/,'');
+  const temporaryPassword=randomTemporaryPassword();
   const resetRes=await fetch(base+'/v1/internal/school/users/'+membershipId+'/password-reset',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
     body:JSON.stringify({
       organisationId:a.core.organisation_id,
       actorUserId:a.core.id,
-      temporaryPassword:config.STAFF_GENERIC_PASSWORD
+      temporaryPassword:temporaryPassword
     }),
     signal:AbortSignal.timeout(15000)
   }).catch(()=>null);
@@ -4237,7 +4305,7 @@ app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   await audit(a.core.organisation_id,a.core.id,'school_user.password_reset','school_membership',membershipId,{
     osUserId:coreUser.id,staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null
   });
-  return{status:'reset',staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,temporaryPassword:config.STAFF_GENERIC_PASSWORD};
+  return{status:'reset',staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,temporaryPassword:temporaryPassword};
 });
 
 app.get('/api/staff/module-memberships',async request=>{
@@ -5429,8 +5497,8 @@ app.post('/api/report-comments/:studentId/review',async request=>{
   const updated=status==='approved'
     ?await one<any>(db,`UPDATE report_comments SET workflow_status='approved',headteacher_comment=$1::text,
         next_term_begins=$2::date,return_note=NULL,reviewed_by_os_user_id=$3::uuid,reviewed_at=now(),
-        promotion_decision=$4,promotion_basis=$5,promotion_override_reason=$6,
-        promotion_overridden_by_os_user_id=CASE WHEN $5='reviewer_override' THEN $3::uuid ELSE NULL END,
+        promotion_decision=$4,promotion_basis=$5::text,promotion_override_reason=$6,
+        promotion_overridden_by_os_user_id=CASE WHEN $5::text='reviewer_override' THEN $3::uuid ELSE NULL END,
         released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
       WHERE id=$7::uuid RETURNING *`,[b.headteacherComment??null,term.next_term_begins??null,a.core.id,
         report.promotion_decision,report.promotion_basis,b.promotionOverrideReason??null,report.id])
@@ -6246,7 +6314,7 @@ app.post('/api/public/admissions',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:optionalEmailSchema,
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
@@ -6284,7 +6352,7 @@ app.post('/api/admissions/internal',async(request,reply)=>{
     firstName:z.string().min(1).max(100),middleName:z.string().max(100).optional(),lastName:z.string().min(1).max(100),
     sex:z.enum(['male','female']).optional(),dateOfBirth:z.string().date().optional(),requestedGradeCode:z.string().min(1).max(20),
     previousSchool:z.string().max(240).optional(),guardianFirstName:z.string().min(1).max(100),guardianLastName:z.string().min(1).max(100),
-    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:z.string().email().optional(),
+    guardianPhone:z.string().min(5).max(60),guardianAltPhone:z.string().max(60).optional(),guardianEmail:optionalEmailSchema,
     guardianRelationship:z.string().min(2).max(60),address:z.string().max(2000).optional(),
     emergencyContactName:z.string().max(200).optional(),emergencyContactPhone:z.string().max(60).optional(),notes:z.string().max(5000).optional()
   }).parse(request.body);
