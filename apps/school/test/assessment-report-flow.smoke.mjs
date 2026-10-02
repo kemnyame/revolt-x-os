@@ -28,6 +28,7 @@ test('assessment and report flow uses homework-aware 30 percent CA and a raw exa
   assert.match(server,/systemDefaultMax\s*=\s*100/);
   assert.match(server,/exam_raw\*0\.70/);
   assert.doesNotMatch(server,/End-of-Term Exam is fixed at 70 marks/);
+  assert.doesNotMatch(server,/For Exam, enter a mark from 0 to 70/);
   assert.match(teacher,/exam:100/);
   assert.match(ui,/exam:100/);
 
@@ -65,6 +66,8 @@ test('academic years use fixed terms and rollover prepares destination classes',
   assert.match(server,/INSERT INTO classrooms/);
   assert.match(server,/INSERT INTO class_subjects/);
   assert.match(ui,/Destination-year classes are prepared automatically/);
+  assert.match(ui,/previous=years\.filter/);
+  assert.match(ui,/No classes found for this source year/);
 });
 
 test('admin dashboard has a recovery path instead of staying on Loading',async()=>{
