@@ -22,7 +22,7 @@ test('report workflow hardening is present',async()=>{
 
   assert.match(teacher,/My Report Signature/);
   assert.match(teacher,/removed from your remaining-work queue/);
-  assert.match(teacher,/System Promotion Decision/);
+  assert.match(teacher,/Cumulative Third Term Promotion/);
   assert.match(teacher,/Returned reports will reappear here/);
 
   assert.match(ui,/Report Signatures/);
