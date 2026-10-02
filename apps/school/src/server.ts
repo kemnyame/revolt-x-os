@@ -5906,7 +5906,7 @@ app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
   if(!report.available)throw fail(404,'No released report card is available');
 
   const pdf:Buffer=await new Promise((resolve,reject)=>{
-    const doc=new PDFDocument({size:'A4',margin:42,info:{Title:'Student Report Card'}});
+    const doc=new PDFDocument({size:'A4',margin:32,info:{Title:'Official Student Performance Report',Author:report.school?.school_name||'Revolt-X School'}});
     const chunks:Buffer[]=[];
     doc.on('data',(chunk:Buffer)=>chunks.push(chunk));
     doc.on('error',reject);
@@ -5914,59 +5914,182 @@ app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
 
     const school=report.school||{},student=report.student||{},term=report.term||{},
       performance=report.performance||{},attendance=report.attendance||{},comments=report.comments||{};
-    const title=school.school_name||'Revolt-X School';
-    doc.fontSize(19).font('Helvetica-Bold').text(title,{align:'center'});
-    if(school.motto)doc.fontSize(9).font('Helvetica').text(String(school.motto),{align:'center'});
-    doc.moveDown(.2).fontSize(8).text([school.address,school.phone,school.email].filter(Boolean).join('  •  '),{align:'center'});
-    doc.moveDown(.8).fontSize(15).font('Helvetica-Bold').text('STUDENT REPORT CARD',{align:'center'});
-    doc.fontSize(10).font('Helvetica').text((term.academic_year||'')+' • '+(term.name||''),{align:'center'});
-    doc.moveDown();
-
+    const accent=/^#[0-9a-f]{6}$/i.test(String(school.email_accent_color||''))?String(school.email_accent_color):'#176b57';
+    const ink='#203b34',muted='#667a74',line='#d7e3de',soft='#f2f7f5';
+    const left=32,right=563,width=531;
     const fullName=[student.first_name,student.middle_name,student.last_name].filter(Boolean).join(' ');
-    const meta=[
-      ['Student',fullName],['Student ID',student.admission_no||'—'],
-      ['Class',student.classroom_name||'—'],['Grade',student.grade_name||'—'],
+    const title=school.school_name||'Revolt-X School';
+
+    const ensureSpace=(height:number)=>{
+      if(doc.y+height<=795)return;
+      doc.addPage();
+      doc.y=34;
+    };
+    const safeImage=(data:any,x:number,y:number,w:number,h:number)=>{
+      if(!data||!/^data:image\/(png|jpe?g);base64,/i.test(String(data)))return false;
+      try{const raw=String(data).split(',')[1]||'';doc.image(Buffer.from(raw,'base64'),x,y,{fit:[w,h],align:'center',valign:'center'});return true}catch{return false}
+    };
+    const sectionTitle=(text:string)=>{
+      ensureSpace(34);
+      doc.moveDown(.55);
+      const y=doc.y;
+      doc.roundedRect(left,y,4,18,2).fill(accent);
+      doc.fillColor(accent).font('Helvetica-Bold').fontSize(9).text(text.toUpperCase(),left+12,y+4,{width:width-12,characterSpacing:.8});
+      doc.y=y+24;
+    };
+    const infoCell=(label:string,value:any,x:number,y:number,w:number,h:number)=>{
+      doc.roundedRect(x,y,w,h,6).lineWidth(.6).strokeColor(line).stroke();
+      doc.fillColor(muted).font('Helvetica').fontSize(6.8).text(label.toUpperCase(),x+9,y+7,{width:w-18,characterSpacing:.4});
+      doc.fillColor(ink).font('Helvetica-Bold').fontSize(9).text(String(value??'—'),x+9,y+18,{width:w-18,height:h-20,ellipsis:true});
+    };
+
+    // Branded document header.
+    doc.rect(0,0,595,9).fill(accent);
+    const logo=school.logo_image_data||school.logo_url;
+    const logoOk=safeImage(logo,38,25,62,58);
+    if(!logoOk){
+      doc.roundedRect(40,27,54,54,10).fill(soft);
+      doc.fillColor(accent).font('Helvetica-Bold').fontSize(18).text('RX',40,45,{width:54,align:'center'});
+    }
+    doc.fillColor(ink).font('Helvetica-Bold').fontSize(18).text(title,112,28,{width:300});
+    if(school.motto)doc.fillColor(muted).font('Helvetica').fontSize(8).text(String(school.motto),112,51,{width:300});
+    doc.fillColor(muted).fontSize(7).text([school.address,school.phone,school.email].filter(Boolean).join('  •  '),112,64,{width:330});
+    doc.fillColor(accent).font('Helvetica-Bold').fontSize(8).text('OFFICIAL ACADEMIC RECORD',425,29,{width:132,align:'right',characterSpacing:.5});
+    doc.fillColor(ink).fontSize(11).text('STUDENT PERFORMANCE REPORT',410,43,{width:147,align:'right'});
+    doc.fillColor(muted).font('Helvetica').fontSize(7.5).text((term.academic_year||'')+'  •  '+(term.name||''),410,62,{width:147,align:'right'});
+    doc.moveTo(left,92).lineTo(right,92).lineWidth(.7).strokeColor(line).stroke();
+    doc.y=106;
+
+    // Student identity.
+    const colGap=7,colW=(width-colGap*2)/3,cellH=42;
+    infoCell('Student',fullName,left,doc.y,colW*2+colGap,cellH);
+    infoCell('Student ID',student.admission_no||'—',left+(colW+colGap)*2,doc.y,colW,cellH);
+    doc.y+=cellH+7;
+    infoCell('Class',student.classroom_name||'—',left,doc.y,colW,cellH);
+    infoCell('Grade',student.grade_name||'—',left+colW+colGap,doc.y,colW,cellH);
+    infoCell('Term',term.name||'—',left+(colW+colGap)*2,doc.y,colW,cellH);
+    doc.y+=cellH+10;
+
+    // Performance dashboard.
+    const summary=[
       ['Overall Average',performance.overallAverage==null?'—':performance.overallAverage+'%'],
       ['Class Position',performance.classPosition?(performance.classPosition+' / '+performance.classSize):'—'],
-      ['Attendance',String(attendance.rate||0)+'%'],['Promotion',String(comments.promotion_decision||'Pending').replace(/_/g,' ')]
+      ['Attendance',String(attendance.rate||0)+'%'],
+      ['Promotion',String(comments.promotion_decision||'Pending').replace(/_/g,' ')]
     ];
-    meta.forEach(([label,value])=>{
-      doc.fontSize(8).fillColor('#667780').text(label,{continued:true,width:120});
-      doc.fillColor('#172027').font('Helvetica-Bold').text('  '+value).font('Helvetica');
+    const sumGap=7,sumW=(width-sumGap*3)/4,sumY=doc.y;
+    summary.forEach((item:any[],i:number)=>{
+      const x=left+i*(sumW+sumGap);
+      doc.roundedRect(x,sumY,sumW,50,7).fillAndStroke(soft,line);
+      doc.fillColor(muted).font('Helvetica').fontSize(6.5).text(String(item[0]).toUpperCase(),x+7,sumY+8,{width:sumW-14,align:'center',characterSpacing:.3});
+      doc.fillColor(accent).font('Helvetica-Bold').fontSize(14).text(String(item[1]),x+7,sumY+24,{width:sumW-14,align:'center'});
     });
-    doc.moveDown(.7).fillColor('#172027').fontSize(11).font('Helvetica-Bold').text('Academic Performance');
-    doc.moveDown(.2);
-    const widths=[180,95,95,70];
-    const headers=['Subject','Class Assessment','Exam','Total'];
-    let x=doc.x,y=doc.y;
-    doc.fontSize(8).font('Helvetica-Bold');
-    headers.forEach((h,i)=>doc.text(h,x+widths.slice(0,i).reduce((a,b)=>a+b,0),y,{width:widths[i]}));
-    y+=16;doc.moveTo(x,y-3).lineTo(x+widths.reduce((a,b)=>a+b,0),y-3).strokeColor('#cccccc').stroke();
-    doc.font('Helvetica');
-    for(const row of report.subjects||[]){
-      if(y>720){doc.addPage();y=48}
-      const vals=[row.subject_name||'',row.class_assessment_score==null?'—':row.class_assessment_score+' / 30',row.exam_score==null?'—':row.exam_score+' / 70',row.total==null?'—':row.total+'%'];
-      vals.forEach((v,i)=>doc.text(String(v),x+widths.slice(0,i).reduce((a,b)=>a+b,0),y,{width:widths[i]}));
-      y+=15;
-    }
-    doc.y=y+8;
-    doc.fontSize(10).font('Helvetica-Bold').text('Attendance Summary');
-    doc.fontSize(9).font('Helvetica').text('Present: '+(attendance.present||0)+'   Absent: '+(attendance.absent||0)+'   Late: '+(attendance.late||0)+'   Excused: '+(attendance.excused||0));
-    doc.moveDown(.7).font('Helvetica-Bold').text('Class Teacher Remark');
-    doc.font('Helvetica').text(comments.class_teacher_comment||'—');
-    doc.moveDown(.5).font('Helvetica-Bold').text('Headteacher Remark');
-    doc.font('Helvetica').text(comments.headteacher_comment||'—');
-    const signatures=report.signatures||{};
-    const drawSignature=(label:string,sig:any)=>{
-      doc.moveDown(.7).font('Helvetica-Bold').fontSize(9).fillColor('#172027').text(label);
-      if(sig?.imageData&&/^data:image\/(png|jpe?g);base64,/i.test(sig.imageData)){
-        try{const raw=String(sig.imageData).split(',')[1]||'';doc.image(Buffer.from(raw,'base64'),{fit:[130,42],align:'left'})}catch{}
+    doc.y=sumY+59;
+
+    // Academic results table.
+    sectionTitle('Academic Performance');
+    const cols=[
+      {label:'Subject',w:165,align:'left'},
+      {label:'CA 30%',w:62,align:'center'},
+      {label:'Exam 70%',w:62,align:'center'},
+      {label:'Total',w:56,align:'center'},
+      {label:'Grade',w:50,align:'center'},
+      {label:'Remark',w:136,align:'left'}
+    ];
+    let y=doc.y;
+    const tableW=cols.reduce((s:number,x:any)=>s+x.w,0);
+    doc.rect(left,y,tableW,24).fill(accent);
+    let tx=left;
+    cols.forEach((col:any)=>{
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7).text(col.label,tx+5,y+8,{width:col.w-10,align:col.align});
+      tx+=col.w;
+    });
+    y+=24;
+    const subjects=report.subjects||[];
+    for(let index=0;index<subjects.length;index++){
+      const row=subjects[index];
+      if(y>700){
+        doc.addPage();y=40;
+        doc.rect(left,y,tableW,24).fill(accent);tx=left;
+        cols.forEach((col:any)=>{doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7).text(col.label,tx+5,y+8,{width:col.w-10,align:col.align});tx+=col.w});
+        y+=24;
       }
-      doc.font('Helvetica').fontSize(8).text(sig?.name||'________________________');
+      const rowH=25;
+      if(index%2===1)doc.rect(left,y,tableW,rowH).fill('#f8fbfa');
+      doc.rect(left,y,tableW,rowH).lineWidth(.45).strokeColor(line).stroke();
+      const values=[
+        row.subject_name||'',
+        row.class_assessment_score==null?'—':String(row.class_assessment_score),
+        row.exam_score==null?'—':String(row.exam_score),
+        row.total==null?'—':String(row.total)+'%',
+        row.grade||'—',
+        row.remark||'—'
+      ];
+      tx=left;
+      cols.forEach((col:any,i:number)=>{
+        if(i>0)doc.moveTo(tx,y).lineTo(tx,y+rowH).lineWidth(.35).strokeColor(line).stroke();
+        doc.fillColor(i===3||i===4?accent:ink).font(i===0||i===3||i===4?'Helvetica-Bold':'Helvetica').fontSize(7.4)
+          .text(String(values[i]),tx+5,y+8,{width:col.w-10,align:col.align,height:11,ellipsis:true});
+        tx+=col.w;
+      });
+      y+=rowH;
+    }
+    doc.y=y+5;
+
+    // Attendance.
+    sectionTitle('Attendance');
+    const attendanceItems=[['Present',attendance.present||0],['Absent',attendance.absent||0],['Late',attendance.late||0],['Excused',attendance.excused||0],['Recorded Days',attendance.total||0]];
+    const aGap=6,aW=(width-aGap*4)/5,aY=doc.y;
+    attendanceItems.forEach((item:any[],i:number)=>{
+      const x=left+i*(aW+aGap);
+      doc.roundedRect(x,aY,aW,36,5).lineWidth(.5).strokeColor(line).stroke();
+      doc.fillColor(accent).font('Helvetica-Bold').fontSize(12).text(String(item[1]),x+4,aY+7,{width:aW-8,align:'center'});
+      doc.fillColor(muted).font('Helvetica').fontSize(6.5).text(String(item[0]).toUpperCase(),x+4,aY+22,{width:aW-8,align:'center'});
+    });
+    doc.y=aY+44;
+
+    // Remarks.
+    sectionTitle('Remarks & Development');
+    const remarkY=doc.y,remarkGap=8,remarkW=(width-remarkGap)/2;
+    const teacherRemark=comments.class_teacher_comment||'—';
+    const headRemark=comments.headteacher_comment||'—';
+    const remarkHeight=Math.max(
+      76,
+      doc.heightOfString(String(teacherRemark),{width:remarkW-20})+34,
+      doc.heightOfString(String(headRemark),{width:remarkW-20})+34
+    );
+    ensureSpace(remarkHeight+100);
+    const drawRemark=(label:string,value:any,x:number)=>{
+      doc.roundedRect(x,doc.y,remarkW,remarkHeight,7).fillAndStroke('#fbfcfc',line);
+      doc.fillColor(accent).font('Helvetica-Bold').fontSize(7).text(label.toUpperCase(),x+10,doc.y+10,{width:remarkW-20,characterSpacing:.4});
+      doc.fillColor(ink).font('Helvetica').fontSize(8).text(String(value||'—'),x+10,doc.y+27,{width:remarkW-20,lineGap:2});
     };
-    drawSignature('Class Teacher Signature',signatures.teacher);
-    drawSignature('Headteacher Signature',signatures.headteacher);
-    doc.moveDown(.7).fontSize(8).fillColor('#667780').text('Official report released by the school through Revolt-X School and available in the Parent Portal. Generated '+new Date().toLocaleString()+'.',{align:'center'});
+    const rY=doc.y;
+    drawRemark('Class Teacher Remark',teacherRemark,left);
+    doc.y=rY;drawRemark('Headteacher Remark',headRemark,left+remarkW+remarkGap);
+    doc.y=rY+remarkHeight+8;
+    doc.fillColor(muted).font('Helvetica').fontSize(7.5).text('Conduct: ',left,doc.y,{continued:true}).fillColor(ink).font('Helvetica-Bold').text(String(comments.conduct||'—'),{continued:true}).fillColor(muted).font('Helvetica').text('    Interests: ',{continued:true}).fillColor(ink).font('Helvetica-Bold').text(String(comments.interest||'—'));
+    if(comments.next_term_begins)doc.fillColor(muted).font('Helvetica').fontSize(7.5).text('Next term begins: ',left,doc.y+4,{continued:true}).fillColor(ink).font('Helvetica-Bold').text(String(comments.next_term_begins).slice(0,10));
+
+    // Signatures.
+    ensureSpace(105);
+    sectionTitle('Verification');
+    const signatures=report.signatures||{},sigGap=20,sigW=(width-sigGap)/2,sigY=doc.y+5;
+    const drawSignature=(label:string,sig:any,x:number)=>{
+      if(sig?.imageData)safeImage(sig.imageData,x,sigY,sigW,34);
+      doc.moveTo(x,sigY+42).lineTo(x+sigW,sigY+42).lineWidth(.55).strokeColor('#80908b').stroke();
+      doc.fillColor(ink).font('Helvetica-Bold').fontSize(8).text(sig?.name||'________________________',x,sigY+47,{width:sigW,align:'center'});
+      doc.fillColor(muted).font('Helvetica').fontSize(6.5).text(label.toUpperCase(),x,sigY+59,{width:sigW,align:'center',characterSpacing:.4});
+    };
+    drawSignature('Class Teacher',signatures.teacher,left);
+    drawSignature('Headteacher / Reviewer',signatures.headteacher,left+sigW+sigGap);
+    doc.y=sigY+82;
+
+    // Security footer.
+    doc.moveTo(left,doc.y).lineTo(right,doc.y).lineWidth(.5).strokeColor(line).stroke();
+    doc.fillColor(muted).font('Helvetica').fontSize(6.5)
+      .text('Official school record generated from released assessment, attendance and approval data in Revolt-X School.',left,doc.y+8,{width:width,align:'center'});
+    doc.fillColor('#83918d').fontSize(6).text('Generated '+new Date().toLocaleString()+' • Student ID '+String(student.admission_no||'—'),left,doc.y+20,{width:width,align:'center'});
     doc.end();
   });
   const safeName=String(report.student.admission_no||'student').replace(/[^A-Za-z0-9_-]/g,'_');
