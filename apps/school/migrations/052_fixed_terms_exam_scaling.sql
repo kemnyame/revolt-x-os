@@ -10,6 +10,17 @@ UPDATE terms
 SET name=CASE term_no WHEN 1 THEN 'First Term' WHEN 2 THEN 'Second Term' WHEN 3 THEN 'Third Term' ELSE name END
 WHERE term_no IN(1,2,3);
 
+-- Promotion is an annual/cumulative outcome and belongs only on Third Term reports.
+UPDATE report_comments rc
+SET promotion_decision=NULL,
+    promotion_basis=NULL,
+    promotion_threshold_percent=NULL,
+    promotion_override_reason=NULL,
+    promotion_overridden_by_os_user_id=NULL
+FROM terms t
+WHERE rc.term_id=t.id AND t.term_no IN(1,2);
+
+
 WITH year_span AS (
   SELECT y.id academic_year_id,y.organisation_id,y.start_date,y.end_date,
     GREATEST(3,(y.end_date-y.start_date)+1) total_days
