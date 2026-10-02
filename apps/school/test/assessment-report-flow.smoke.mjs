@@ -44,7 +44,7 @@ test('promotion appears only on cumulative Third Term reports',async()=>{
   const parent=await read('parent-ui.js');
   const student=await read('student-ui.js');
 
-  assert.match(server,/Number\(term\.term_no\)!==3/);
+  assert.match(server,/Number\s*\(\s*term\.term_no\s*\)\s*!==\s*3/);
   assert.match(server,/annualAverage/);
   assert.match(server,/academic_year_average/);
   assert.match(teacher,/promo\.applicable/);
@@ -71,6 +71,6 @@ test('admin dashboard has a recovery path instead of staying on Loading',async()
   const server=await read('server.js');
   const ui=await read('ui.js');
   assert.match(server,/screen\.dashboard\.view/);
-  assert.match(server,/degraded:warnings\.length>0/);
+  assert.match(server,/degraded:\s*warnings\.length\s*>\s*0/);
   assert.match(ui,/Dashboard loaded in recovery mode/);
 });
