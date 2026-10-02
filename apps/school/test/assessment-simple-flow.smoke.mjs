@@ -14,8 +14,9 @@ test('assessment flow is fixed to system-managed 30/70 components without catego
   assert.doesNotMatch(server,/Assessment category weights cannot exceed 100% for a term/);
   assert.match(server,/systemCode\s*=\s*isEndTermExam\s*\?\s*'EXAM'\s*:\s*'CONTINUOUS'/);
   assert.match(server,/systemWeight\s*=\s*isEndTermExam\s*\?\s*70\s*:\s*30/);
-  assert.match(server,/End-of-Term Exam is fixed at 70 marks/);
-  assert.match(server,/category_average\s*\*\s*assessment_count/);
+  assert.doesNotMatch(server,/End-of-Term Exam is fixed at 70 marks/);
+  assert.match(server,/systemDefaultMax\s*=\s*100/);
+  assert.match(server,/homework_summary/);
   assert.match(server,/class_assessment_raw\s*\*\s*0\.30/);
   assert.match(server,/exam_raw\s*\*\s*0\.70/);
 
