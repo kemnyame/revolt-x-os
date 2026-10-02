@@ -7233,7 +7233,9 @@ app.get('/api/lesson-note-attachments/:attachmentId/download',async(request,repl
   const row=await one<any>(db,`SELECT lna.*,ln.teacher_os_user_id FROM lesson_note_attachments lna
     JOIN lesson_notes ln ON ln.id=lna.lesson_note_id
     WHERE lna.id=$1 AND lna.organisation_id=$2`,[attachmentId,a.core.organisation_id]);
-  if(a.role==='teacher'&&row.teacher_os_user_id!==a.core.id)throw fail(403,'You can only download attachments for your own lesson notes');
+  const attachmentRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const attachmentCapabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
+  if(attachmentRole?.portal_mode==='teacher'&&row.teacher_os_user_id!==a.core.id&&!attachmentCapabilities.includes('lesson_notes.review'))throw fail(403,'You can only download attachments for your own lesson notes unless your role can review lesson notes');
   reply.header('content-type',row.mime_type);
   reply.header('content-length',String(row.file_size));
   reply.header('content-disposition','attachment; filename="'+String(row.file_name).replace(/["\\]/g,'_')+'"');
