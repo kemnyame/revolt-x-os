@@ -134,14 +134,15 @@ export async function sendMessage(config:SchoolConfig,input:{
   subject?:string|null|undefined;
   recipientName?:string|null|undefined;
   body:string;
+  html?:string|null|undefined;
 }){
   if(input.channel==='email'){
     const subject=input.subject||'Revolt-X School notification';
-    const htmlContent='<div style="font-family:Arial,sans-serif;line-height:1.6;color:#172027">'+
+    const htmlContent=input.html||('<div style="font-family:Arial,sans-serif;line-height:1.6;color:#172027">'+
       '<h2 style="margin:0 0 14px">Revolt-X School</h2>'+
       (input.recipientName?'<p>Hello '+htmlEscape(input.recipientName)+',</p>':'')+
       '<div style="white-space:pre-wrap">'+htmlEscape(input.body).replace(/\n/g,'<br>')+'</div>'+
-      '<p style="margin-top:24px;color:#667780;font-size:12px">This is an automated notification from Revolt-X School.</p></div>';
+      '<p style="margin-top:24px;color:#667780;font-size:12px">This is an automated notification from Revolt-X School.</p></div>');
     const candidates=emailProviderCandidates(config);
     if(!candidates.length)throw new Error('No email provider is configured');
     const failures:string[]=[];
