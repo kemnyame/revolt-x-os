@@ -1700,10 +1700,10 @@ app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFront
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
 app.get('/admin-password-reset',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend));
-app.get('/teacher-login',async(_r,p)=>p.redirect(302,'/login'));
-app.get('/headteacher-login',async(_r,p)=>p.redirect(302,'/login'));
-app.get('/bursar-login',async(_r,p)=>p.redirect(302,'/login'));
-app.get('/registrar-login',async(_r,p)=>p.redirect(302,'/login'));
+app.get('/teacher-login',async(_r,p)=>p.redirect('/login',302));
+app.get('/headteacher-login',async(_r,p)=>p.redirect('/login',302));
+app.get('/bursar-login',async(_r,p)=>p.redirect('/login',302));
+app.get('/registrar-login',async(_r,p)=>p.redirect('/login',302));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
 app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
@@ -6473,7 +6473,7 @@ app.patch('/api/admissions/:id',async request=>{
   }).refine(v=>Object.keys(v).length>0,{message:'Enter at least one application change'}).parse(request.body);
 
   const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  if(current.status==='enrolled'&&b.status&&b.status!=='enrolled')throw fail(409,'An enrolled application cannot be moved back into review');
+  if(current.status==='enrolled'&&b.status)throw fail(409,'An enrolled application cannot be moved back into review');
   if(b.requestedGradeCode){
     const grade=await maybeOne<any>(db,'SELECT 1 FROM grade_levels WHERE organisation_id=$1 AND code=$2 AND is_active=true',[a.core.organisation_id,b.requestedGradeCode]);
     if(!grade)throw fail(400,'Requested grade is not available');
