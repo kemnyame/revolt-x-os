@@ -6374,32 +6374,80 @@ app.patch('/api/admissions/:id',async request=>{
   const a=await authorize(request,db,config,'admissions.manage');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({
-    status:z.enum(['submitted','under_review','approved','waitlisted','declined']),
+    firstName:z.string().trim().min(1).max(100).optional(),
+    middleName:z.string().trim().max(100).nullable().optional(),
+    lastName:z.string().trim().min(1).max(100).optional(),
+    sex:z.enum(['male','female']).nullable().optional(),
+    dateOfBirth:z.string().date().nullable().optional(),
+    requestedGradeCode:z.string().trim().min(1).max(20).optional(),
+    previousSchool:z.string().trim().max(240).nullable().optional(),
+    guardianFirstName:z.string().trim().min(1).max(100).optional(),
+    guardianLastName:z.string().trim().min(1).max(100).optional(),
+    guardianPhone:z.string().trim().min(5).max(60).optional(),
+    guardianAltPhone:z.string().trim().max(60).nullable().optional(),
+    guardianEmail:z.preprocess(value=>{
+      if(value==null)return null;
+      if(typeof value!=='string')return value;
+      const clean=value.trim().toLowerCase();
+      return clean||null;
+    },z.string().email().nullable().optional()),
+    guardianRelationship:z.string().trim().min(2).max(60).optional(),
+    address:z.string().trim().max(2000).nullable().optional(),
+    emergencyContactName:z.string().trim().max(200).nullable().optional(),
+    emergencyContactPhone:z.string().trim().max(60).nullable().optional(),
+    notes:z.string().trim().max(5000).nullable().optional(),
+    status:z.enum(['submitted','under_review','approved','waitlisted','declined']).optional(),
     reviewNote:z.string().max(5000).nullable().optional(),
     assignedReviewerOsUserId:z.string().uuid().nullable().optional()
-  }).parse(request.body);
+  }).refine(v=>Object.keys(v).length>0,{message:'Enter at least one application change'}).parse(request.body);
+
   const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  if(current.status==='enrolled')throw fail(409,'An enrolled application cannot be moved back into review');
-  const row=await one<any>(db,`UPDATE admission_applications SET status=$1,
-      review_note=CASE WHEN $2 THEN $3 ELSE review_note END,
-      assigned_reviewer_os_user_id=CASE WHEN $4 THEN $5 ELSE assigned_reviewer_os_user_id END,
-      reviewed_by_os_user_id=$6,reviewed_at=now(),updated_at=now()
-    WHERE id=$7 AND organisation_id=$8 RETURNING *`,[
-      b.status,Object.hasOwn(b,'reviewNote'),b.reviewNote??null,Object.hasOwn(b,'assignedReviewerOsUserId'),b.assignedReviewerOsUserId??null,
-      a.core.id,id,a.core.organisation_id
-    ]);
+  if(current.status==='enrolled'&&b.status&&b.status!=='enrolled')throw fail(409,'An enrolled application cannot be moved back into review');
+  if(b.requestedGradeCode){
+    const grade=await maybeOne<any>(db,'SELECT 1 FROM grade_levels WHERE organisation_id=$1 AND code=$2 AND is_active=true',[a.core.organisation_id,b.requestedGradeCode]);
+    if(!grade)throw fail(400,'Requested grade is not available');
+  }
+
+  const map:Record<string,string>={
+    firstName:'first_name',middleName:'middle_name',lastName:'last_name',sex:'sex',dateOfBirth:'date_of_birth',
+    requestedGradeCode:'requested_grade_code',previousSchool:'previous_school',
+    guardianFirstName:'guardian_first_name',guardianLastName:'guardian_last_name',guardianPhone:'guardian_phone',
+    guardianAltPhone:'guardian_alt_phone',guardianEmail:'guardian_email',guardianRelationship:'guardian_relationship',
+    address:'address',emergencyContactName:'emergency_contact_name',emergencyContactPhone:'emergency_contact_phone',notes:'notes',
+    reviewNote:'review_note',assignedReviewerOsUserId:'assigned_reviewer_os_user_id'
+  };
+  const sets:string[]=[];
+  const values:any[]=[];
+  for(const [key,column] of Object.entries(map)){
+    if(Object.hasOwn(b,key)){
+      values.push((b as any)[key]??null);
+      sets.push(column+'=$'+values.length);
+    }
+  }
+  if(Object.hasOwn(b,'status')){
+    values.push(b.status);
+    sets.push('status=$'+values.length);
+    sets.push('reviewed_by_os_user_id=$'+(values.push(a.core.id)));
+    sets.push('reviewed_at=now()');
+  }
+  sets.push('updated_at=now()');
+  values.push(id,a.core.organisation_id);
+  const row=await one<any>(db,'UPDATE admission_applications SET '+sets.join(',')+' WHERE id=$'+(values.length-1)+' AND organisation_id=$'+values.length+' RETURNING *',values);
+
   if(current.status!==row.status){
-    await db.query(`INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id)
-      VALUES($1,$2,$3,$4,$5,$6)`,[a.core.organisation_id,id,current.status,row.status,b.reviewNote??null,a.core.id]);
+    await db.query('INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id) VALUES($1,$2,$3,$4,$5,$6)',
+      [a.core.organisation_id,id,current.status,row.status,b.reviewNote??null,a.core.id]);
     await notifyContact({
       organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'admission.status_changed',
       name:row.guardian_first_name+' '+row.guardian_last_name,email:row.guardian_email,phone:row.guardian_phone,
       subject:'Admission application status updated',
-      body:`Admission application ${row.application_no} for ${row.first_name} ${row.last_name} is now ${row.status.replace('_',' ')}.${row.review_note?' Note: '+row.review_note:''}`,
+      body:'Admission application '+row.application_no+' for '+row.first_name+' '+row.last_name+' is now '+String(row.status).replace('_',' ')+'.'+(row.review_note?' Note: '+row.review_note:''),
       relatedType:'admission_application',relatedId:id
     });
   }
-  await audit(a.core.organisation_id,a.core.id,'admission.reviewed','admission_application',id,{status:b.status});
+  await audit(a.core.organisation_id,a.core.id,'admission.updated','admission_application',id,{
+    status:row.status,previousStatus:current.status,fields:Object.keys(b)
+  });
   return row;
 });
 app.post('/api/admissions/:id/contact',async(request,reply)=>{
