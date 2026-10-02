@@ -632,7 +632,7 @@ app.get('/api/license',async request=>{
 app.addHook('preHandler',async request=>{
   const path=String(request.url).split('?')[0] || String(request.url);
   if(!path.startsWith('/api/'))return;
-  if(path.startsWith('/api/internal/')||path.startsWith('/api/auth/')||path==='/api/context'||path==='/api/license'||path.startsWith('/api/system/core-')||path.startsWith('/api/test-access/'))return;
+  if(path.startsWith('/api/internal/')||path.startsWith('/api/auth/')||path==='/api/context'||path==='/api/license'||path.startsWith('/api/system/core-'))return;
   if(path==='/api/parent/login'||path==='/api/student/login'||path.startsWith('/api/public/'))return;
   const actor=await requestActor(request);
   const organisationId=actor.organisationId;
@@ -1572,88 +1572,6 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
   `,[orgId,classroomId,termId,studentId]);
 }
 
-async function provisionDemoTeachers(){
-  if(!config.PROVISION_DEMO_TEACHERS)return;
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  try{
-    const previewRes=await fetch(base+'/v1/auth/preview-session',{method:'POST',signal:AbortSignal.timeout(10000)});
-    if(!previewRes.ok){console.warn('Demo teacher provisioning skipped: Core OS preview access unavailable');return}
-    const preview=await previewRes.json() as any;
-    const token=preview.accessToken as string;
-    const headers={authorization:'Bearer '+token,'content-type':'application/json'};
-    const specs=[
-      {email:'akua.mensah@revoltxacademy.edu.gh',firstName:'Akua',lastName:'Mensah',jobTitle:'Primary Class Teacher',employeeNumber:'RX-T001'},
-      {email:'daniel.osei@revoltxacademy.edu.gh',firstName:'Daniel',lastName:'Osei',jobTitle:'Mathematics Teacher',employeeNumber:'RX-T002'},
-      {email:'mabel.addo@revoltxacademy.edu.gh',firstName:'Mabel',lastName:'Addo',jobTitle:'English Language Teacher',employeeNumber:'RX-T003'},
-      {email:'samuel.boateng@revoltxacademy.edu.gh',firstName:'Samuel',lastName:'Boateng',jobTitle:'Science Teacher',employeeNumber:'RX-T004'},
-      {email:'grace.asante@revoltxacademy.edu.gh',firstName:'Grace',lastName:'Asante',jobTitle:'Social Studies Teacher',employeeNumber:'RX-T005'},
-      {email:'linda.owusu@revoltxacademy.edu.gh',firstName:'Linda',lastName:'Owusu',jobTitle:'Computing Teacher',employeeNumber:'RX-T006'},
-      {email:'josephine.tetteh@revoltxacademy.edu.gh',firstName:'Josephine',lastName:'Tetteh',jobTitle:'French Teacher',employeeNumber:'RX-T007'},
-      {email:'richard.boadu@revoltxacademy.edu.gh',firstName:'Richard',lastName:'Boadu',jobTitle:'Physical Education & Creative Arts Teacher',employeeNumber:'RX-T008'}
-    ];
-    let usersRes=await fetch(base+'/v1/users',{headers,signal:AbortSignal.timeout(10000)});
-    if(!usersRes.ok)throw new Error('Could not read Core OS users');
-    let users=await usersRes.json() as any[];
-    for(const spec of specs){
-      if(!users.some(u=>String(u.email).toLowerCase()===spec.email)){
-        const created=await fetch(base+'/v1/users',{method:'POST',headers,body:JSON.stringify({...spec,roleKey:'member'}),signal:AbortSignal.timeout(10000)});
-        if(!created.ok&&created.status!==409)console.warn('Could not provision demo teacher',spec.email,created.status);
-      }
-    }
-    usersRes=await fetch(base+'/v1/users',{headers,signal:AbortSignal.timeout(10000)});
-    if(!usersRes.ok)throw new Error('Could not refresh Core OS users');
-    users=await usersRes.json() as any[];
-    const orgId=preview.organisationId||preview.organisation_id;
-    const teacherUsers=users.filter(u=>specs.some(s=>s.email===String(u.email).toLowerCase()));
-    for(const u of teacherUsers){
-      if(u.membership_status!=='active'){
-        await fetch(base+'/v1/users/'+u.membership_id+'/status',{method:'PATCH',headers,body:JSON.stringify({status:'active'}),signal:AbortSignal.timeout(10000)});
-      }
-      await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
-        VALUES($1,$2,'teacher','active')
-        ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='teacher',status='active',updated_at=now()`,[orgId,u.id]);
-    }
-    const year=await activeYear(orgId);if(!year)return;
-    const term=await activeTerm(orgId);
-    const classes=(await db.query(`SELECT c.id,c.name,g.code grade_code,g.stage FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.organisation_id=$1 AND c.academic_year_id=$2 AND c.is_active=true ORDER BY g.level_order,c.name`,[orgId,year.id])).rows;
-    const subjects=(await db.query('SELECT id,code,stage FROM subjects WHERE organisation_id=$1 AND is_active=true',[orgId])).rows;
-    const byEmail=(email:string)=>teacherUsers.find(u=>String(u.email).toLowerCase()===email);
-    const subjectTeacher:Record<string,string>={
-      MATH:'daniel.osei@revoltxacademy.edu.gh',ENG:'mabel.addo@revoltxacademy.edu.gh',
-      SCI:'samuel.boateng@revoltxacademy.edu.gh',SOC:'grace.asante@revoltxacademy.edu.gh',
-      ICT:'linda.owusu@revoltxacademy.edu.gh',FREN:'josephine.tetteh@revoltxacademy.edu.gh',
-      CREA:'richard.boadu@revoltxacademy.edu.gh',PE:'richard.boadu@revoltxacademy.edu.gh',
-      RME:'akua.mensah@revoltxacademy.edu.gh',CAREER:'linda.owusu@revoltxacademy.edu.gh'
-    };
-    const classTeacherEmails=['akua.mensah@revoltxacademy.edu.gh','mabel.addo@revoltxacademy.edu.gh','grace.asante@revoltxacademy.edu.gh','daniel.osei@revoltxacademy.edu.gh','samuel.boateng@revoltxacademy.edu.gh','linda.owusu@revoltxacademy.edu.gh','josephine.tetteh@revoltxacademy.edu.gh','richard.boadu@revoltxacademy.edu.gh','samuel.boateng@revoltxacademy.edu.gh'];
-    for(let i=0;i<classes.length;i++){
-      const cls=classes[i];
-      const classTeacher=byEmail(classTeacherEmails[i%classTeacherEmails.length]!);
-      if(classTeacher)await db.query('UPDATE classrooms SET class_teacher_os_user_id=$1 WHERE id=$2',[classTeacher.id,cls.id]);
-      const allowed=subjects.filter((s:any)=>s.stage==='both'||s.stage===cls.stage);
-      for(const sub of allowed){
-        await db.query(`INSERT INTO class_subjects(organisation_id,academic_year_id,classroom_id,subject_id,is_active)
-          VALUES($1,$2,$3,$4,true)
-          ON CONFLICT(academic_year_id,classroom_id,subject_id) DO UPDATE SET is_active=true,updated_at=now()`,[orgId,year.id,cls.id,sub.id]);
-        const teacherEmail=subjectTeacher[sub.code];
-        const t=teacherEmail?byEmail(teacherEmail):undefined;
-        if(t){
-          await db.query(`INSERT INTO teacher_assignments(organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,is_active)
-            SELECT $1,$2,$3,$4,$5,$6,true
-            WHERE NOT EXISTS(
-              SELECT 1 FROM teacher_assignments
-              WHERE organisation_id=$1 AND academic_year_id=$2 AND classroom_id=$4 AND subject_id=$5 AND teacher_os_user_id=$6
-                AND (($3::uuid IS NULL AND term_id IS NULL) OR term_id=$3)
-            )`,[orgId,year.id,term?.id??null,cls.id,sub.id,t.id]);
-        }
-      }
-    }
-    console.log(`Provisioned ${teacherUsers.length} demo teachers and academic assignments`);
-  }catch(error){
-    console.warn('Demo teacher provisioning failed',error);
-  }
-}
-
 app.get('/',async(request,p)=>{
   // Do not depend on browser JavaScript to discover that a School session is missing
   // or expired. Route unauthenticated users straight to sign-in on the server.
@@ -1704,6 +1622,9 @@ app.get('/teacher-login',async(_r,p)=>p.redirect('/login',302));
 app.get('/headteacher-login',async(_r,p)=>p.redirect('/login',302));
 app.get('/bursar-login',async(_r,p)=>p.redirect('/login',302));
 app.get('/registrar-login',async(_r,p)=>p.redirect('/login',302));
+app.get('/demo',async(_r,p)=>p.redirect('/login',302));
+app.get('/main',async(_r,p)=>p.redirect('/login',302));
+app.get('/quick-login',async(_r,p)=>p.redirect('/login',302));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
 app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
@@ -6290,140 +6211,6 @@ app.post('/api/teacher/notifications/read-all',async request=>{
   return{updated:result.rowCount||0};
 });
 
-function testAccessCookieValue(request:any){
-  const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_test_access='));
-  return cookie?decodeURIComponent(cookie.slice('rx_test_access='.length)):'';
-}
-function verifyTestAccessCookie(request:any){
-  if(!config.ENABLE_TEST_PORTAL_ACCESS||!config.TEST_ACCESS_PASSWORD)return false;
-  const value=testAccessCookieValue(request);
-  const [expRaw,sig]=value.split('.');
-  const exp=Number(expRaw);
-  if(!exp||!sig||Date.now()>exp)return false;
-  const expected=createHmac('sha256',config.TEST_ACCESS_PASSWORD).update('revolt-x-school-demo|'+expRaw).digest('base64url');
-  const a=Buffer.from(expected),b=Buffer.from(sig);
-  return a.length===b.length&&timingSafeEqual(a,b);
-}
-function requireTestAccess(request:any){
-  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
-  if(!config.TEST_ACCESS_PASSWORD)throw fail(503,'Test access password is not configured');
-  if(!verifyTestAccessCookie(request))throw fail(401,'Demo access password required');
-}
-app.get('/api/test-access/status',async request=>{
-  return{enabled:config.ENABLE_TEST_PORTAL_ACCESS,unlocked:verifyTestAccessCookie(request)};
-});
-app.post('/api/test-access/unlock',async(request,reply)=>{
-  if(!config.ENABLE_TEST_PORTAL_ACCESS)throw fail(404,'Test access is disabled');
-  if(!config.TEST_ACCESS_PASSWORD)throw fail(503,'Test access password is not configured');
-  const b=z.object({password:z.string().min(1).max(200)}).parse(request.body);
-  const expected=Buffer.from(config.TEST_ACCESS_PASSWORD),provided=Buffer.from(b.password);
-  if(expected.length!==provided.length||!timingSafeEqual(expected,provided))throw fail(401,'Invalid demo access password');
-  const exp=Date.now()+8*60*60*1000;
-  const sig=createHmac('sha256',config.TEST_ACCESS_PASSWORD).update('revolt-x-school-demo|'+String(exp)).digest('base64url');
-  const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_test_access='+encodeURIComponent(String(exp)+'.'+sig)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  return{unlocked:true,expiresIn:28800};
-});
-app.post('/api/test-access/lock',async(_request,reply)=>{
-  const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_test_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
-  return{unlocked:false};
-});
-app.get('/api/test-access/students',async request=>{
-  requireTestAccess(request);
-  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
-  return (await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,c.name classroom_name,g.name grade_name
-    FROM students s
-    LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active'
-    LEFT JOIN classrooms c ON c.id=e.classroom_id
-    LEFT JOIN grade_levels g ON g.id=c.grade_level_id
-    WHERE s.organisation_id=$1 AND s.status='active'
-    ORDER BY c.name NULLS LAST,s.last_name,s.first_name`,[school.organisation_id])).rows;
-});
-app.post('/api/test-access/student-login',async request=>{
-  requireTestAccess(request);
-  const b=z.object({studentId:z.string().uuid()}).parse(request.body);
-  const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND status=\'active\'',[b.studentId]);
-  const token=randomBytes(48).toString('base64url');
-  await db.query(`INSERT INTO student_portal_sessions(student_id,token_hash,expires_at)
-    VALUES($1,$2,now()+interval '8 hours')`,[student.id,hashPortalToken(token)]);
-  return{token,expiresIn:28800,testAccess:true};
-});
-async function testStaffDirectory(portalMode?:'teacher'|'admin'){
-  const school=await one<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
-  const memberships=(await db.query(`SELECT sm.os_user_id,sm.role,sr.name role_name,sr.portal_mode,sr.can_teach
-    FROM school_memberships sm
-    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-    WHERE sm.organisation_id=$1 AND sm.status='active' AND sr.is_active=true
-      AND ($2::text IS NULL OR sr.portal_mode=$2)
-    ORDER BY CASE sm.role WHEN 'school_admin' THEN 1 WHEN 'headteacher' THEN 2 WHEN 'teacher' THEN 3 ELSE 4 END,sr.name,sm.created_at`,
-    [school.organisation_id,portalMode??null])).rows;
-  const users=await fetchCoreUsers(school.organisation_id);
-  return memberships.map((m:any)=>{
-    const u=users.find((x:any)=>x.id===m.os_user_id)||{};
-    return{
-      id:m.os_user_id,role:m.role,role_name:m.role_name,portal_mode:m.portal_mode,can_teach:m.can_teach,email:u.email||'',
-      first_name:u.first_name||(m.role==='headteacher'?'Headteacher':m.role==='school_admin'?'Administrator':'Demo'),
-      last_name:u.last_name||'User',job_title:u.job_title||m.role_name||m.role.replace('_',' ')
-    };
-  });
-}
-function roleWorkspace(profile:any){
-  return profile?.portal_mode==='teacher'?'/teacher':'/';
-}
-async function createTestStaffLogin(request:any,reply:any,requiredPortalMode?:'teacher'|'admin'){
-  requireTestAccess(request);
-  const b=z.object({osUserId:z.string().uuid()}).parse(request.body);
-  const school=await one<any>(db,'SELECT organisation_id,school_name FROM school_profiles ORDER BY created_at LIMIT 1');
-  const membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
-    FROM school_memberships sm
-    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true
-      AND ($3::text IS NULL OR sr.portal_mode=$3)`,
-    [school.organisation_id,b.osUserId,requiredPortalMode??null]);
-  const users=await fetchCoreUsers(school.organisation_id);
-  const u=users.find((x:any)=>x.id===b.osUserId)||{};
-  const coreContext={
-    id:b.osUserId,
-    email:u.email||('test-'+b.osUserId+'@revolt-x.local'),
-    first_name:u.first_name||'Demo',
-    last_name:u.last_name||'User',
-    status:'active',
-    membership_id:'test-'+b.osUserId,
-    membership_status:'active',
-    organisation_id:school.organisation_id,
-    organisation_name:school.school_name,
-    organisation_slug:'revolt-x-school-test',
-    sessionId:'test-'+randomBytes(8).toString('hex'),
-    permissions:[],
-    preview:true
-  };
-  const session=await createSchoolStaffSession(coreContext,'preview');
-  const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
-  await audit(school.organisation_id,b.osUserId,'staff.test_authenticated','school_session',null,{role:membership.role,portalMode:membership.portal_mode});
-  return reply.send({
-    accessToken:session.localToken,expiresIn:28800,schoolRole:membership.role,
-    roleProfile:{key:membership.role,name:membership.role_name,portal_mode:membership.portal_mode,can_teach:membership.can_teach},
-    redirectTo:roleWorkspace(membership),testAccess:true,
-    user:{id:b.osUserId,firstName:coreContext.first_name,lastName:coreContext.last_name,email:coreContext.email}
-  });
-}
-app.get('/api/test-access/teachers',async request=>{
-  requireTestAccess(request);
-  return testStaffDirectory('teacher');
-});
-app.post('/api/test-access/teacher-login',async(request,reply)=>{
-  return createTestStaffLogin(request,reply,'teacher');
-});
-app.get('/api/test-access/staff',async request=>{
-  requireTestAccess(request);
-  return testStaffDirectory();
-});
-app.post('/api/test-access/staff-login',async(request,reply)=>{
-  return createTestStaffLogin(request,reply);
-});
-
 app.post('/api/students/:id/portal-reset',async request=>{
   const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');
@@ -8001,7 +7788,6 @@ async function shutdown(){
 process.once('SIGTERM',()=>void shutdown().finally(()=>process.exit(0)));
 process.once('SIGINT',()=>void shutdown().finally(()=>process.exit(0)));
 
-await provisionDemoTeachers();
 
 await app.listen({host:config.HOST,port:config.PORT});
 console.log(`Revolt-X School listening on ${config.HOST}:${config.PORT}`);
