@@ -6431,8 +6431,11 @@ app.get('/api/student/latest-report',async request=>{
     ORDER BY rc.released_at DESC NULLS LAST,rc.reviewed_at DESC NULLS LAST,rc.updated_at DESC LIMIT 1`,[s.organisation_id,s.student_id]);
   if(!approved)return{available:false,term:null,subjects:[],comments:null};
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1',[approved.term_id]);
+  const current=await maybeOne<any>(db,`SELECT c.id classroom_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
+    WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[s.student_id,term.academic_year_id]);
   const subjects=await calculateStudentTermResults(s.organisation_id,s.student_id,term.id);
-  return{available:true,term,subjects,comments:approved};
+  const promotion=await reportPromotionInfo(s.organisation_id,s.student_id,term.id,current?.classroom_id??null,subjects);
+  return{available:true,term,subjects,comments:approved,promotion:{...promotion,decision:promotion.applicable?(approved.promotion_decision??promotion.suggestedDecision??null):null}};
 });
 
 async function createAdmissionApplication(input:{
