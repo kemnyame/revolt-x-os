@@ -1700,10 +1700,10 @@ app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFront
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
 app.get('/admin-password-reset',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend));
-app.get('/teacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
-app.get('/headteacher-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
-app.get('/bursar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
-app.get('/registrar-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/teacher-login',async(_r,p)=>p.redirect(302,'/login'));
+app.get('/headteacher-login',async(_r,p)=>p.redirect(302,'/login'));
+app.get('/bursar-login',async(_r,p)=>p.redirect(302,'/login'));
+app.get('/registrar-login',async(_r,p)=>p.redirect(302,'/login'));
 app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
 app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
 app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
@@ -3359,7 +3359,8 @@ app.get('/api/assessments',async request=>{
       AND ($6::uuid IS NULL OR a.teacher_os_user_id=$6)
     ORDER BY ac.sort_order NULLS LAST,a.assessment_date DESC NULLS LAST,a.created_at DESC`,
     [a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,q.categoryId??null,q.teacherOsUserId??null])).rows;
-  if(a.role==='teacher'){
+  const assessmentRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  if(assessmentRole?.portal_mode==='teacher'){
     rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id);
   }
   return rows.map((r:any)=>{
@@ -6918,8 +6919,12 @@ app.get('/api/lesson-notes',async request=>{
     termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional(),subjectId:z.string().uuid().optional(),
     teacherOsUserId:z.string().uuid().optional(),status:z.enum(['draft','submitted','approved','returned','taught']).optional(),q:z.string().max(100).optional()
   }).parse(request.query);
-  const teacherFilter=a.role==='teacher'?a.core.id:(q.teacherOsUserId??null),like=q.q?'%'+q.q+'%':null;
-  return (await db.query(`SELECT ln.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
+  const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
+  const roleCapabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
+  const canReview=roleCapabilities.includes('lesson_notes.review');
+  const teacherPortal=roleProfile?.portal_mode==='teacher';
+  const teacherFilter=teacherPortal&&!canReview?a.core.id:(q.teacherOsUserId??null),like=q.q?'%'+q.q+'%':null;
+  let rows=(await db.query(`SELECT ln.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM lesson_notes ln JOIN classrooms c ON c.id=ln.classroom_id JOIN subjects s ON s.id=ln.subject_id
     JOIN terms t ON t.id=ln.term_id JOIN academic_years y ON y.id=ln.academic_year_id
     WHERE ln.organisation_id=$1 AND ($2::uuid IS NULL OR ln.term_id=$2) AND ($3::uuid IS NULL OR ln.classroom_id=$3)
@@ -6929,6 +6934,10 @@ app.get('/api/lesson-notes',async request=>{
     ORDER BY ln.lesson_date DESC NULLS LAST,ln.updated_at DESC`,[
       a.core.organisation_id,q.termId??null,q.classroomId??null,q.subjectId??null,teacherFilter,q.status??null,like
     ])).rows;
+  if(teacherPortal&&canReview&&!q.teacherOsUserId){
+    rows=rows.filter((r:any)=>r.teacher_os_user_id===a.core.id||r.status==='submitted');
+  }
+  return rows;
 });
 app.post('/api/lesson-notes',async(request,reply)=>{
   const a=await authorize(request,db,config,'lesson_notes.create');
