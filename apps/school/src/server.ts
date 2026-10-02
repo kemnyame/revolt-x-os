@@ -5238,7 +5238,7 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   for(const reviewerId of [...new Set(reviewerIds)]){
     const reviewer=coreUsers.find((u:any)=>u.id===reviewerId);
     const subject='Report card awaiting review';
-    const body=`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. All required Class Assessment and Exam grades are present. Open the approval queue in Revolt-X School.`;
+    const body=`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. All required Continuous Assessment, scored homework and End-of-Term Exam grades are present. Open the approval queue in Revolt-X School.`;
     await notifyStaff({
       organisationId:a.core.organisation_id,recipientOsUserId:reviewerId,eventKey:'reports.submitted',
       subject,body,relatedType:'report_comment',relatedId:report.id,actorOsUserId:a.core.id
@@ -5328,10 +5328,13 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
     ) g ON true
     WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.academic_year_id=$4 AND e.status='active' AND s.status='active'
     ORDER BY s.last_name,s.first_name
-  `,[organisationId,classroomId,termId,term.academic_year_id])).rows.map((row:any)=>({
-    ...row,
-    assessment_ready:Number(row.required_subjects)>0&&Number(row.incomplete_subjects)===0
-  }));
+  `,[organisationId,classroomId,termId,term.academic_year_id])).rows;
+  for(const row of rows){
+    const readiness=await reportAssessmentReadiness(organisationId,row.student_id,termId,classroomId);
+    row.assessment_ready=readiness.complete;
+    row.required_subjects=readiness.totalSubjects;
+    row.incomplete_subjects=readiness.totalSubjects-readiness.completeSubjects;
+  }
   return{term,classroom,rows};
 }
 
@@ -5523,7 +5526,7 @@ app.post('/api/teacher/report-pool/release',async request=>{
         decision=promotion.suggestedDecision;
       }
       const updated=await one<any>(client,`UPDATE report_comments
-        SET promotion_decision=COALESCE(promotion_decision,$1),
+        SET promotion_decision=$1,
             promotion_basis=CASE WHEN $1::text IS NULL THEN NULL ELSE COALESCE(promotion_basis,'academic_year_average') END,
             released_at=now(),released_by_os_user_id=$2,updated_at=now()
         WHERE organisation_id=$3 AND student_id=$4 AND term_id=$5 AND workflow_status='approved'
