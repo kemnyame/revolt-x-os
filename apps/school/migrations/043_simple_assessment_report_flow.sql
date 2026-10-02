@@ -12,10 +12,10 @@ DO UPDATE SET name='Continuous Assessment',default_max_score=100,weight_percent=
 INSERT INTO assessment_categories(
   organisation_id,academic_year_id,term_id,code,name,default_max_score,weight_percent,sort_order,is_active
 )
-SELECT t.organisation_id,t.academic_year_id,t.id,'EXAM','End-of-Term Examination',70,70,20,true
+SELECT t.organisation_id,t.academic_year_id,t.id,'EXAM','End-of-Term Examination',100,70,20,true
 FROM terms t
 ON CONFLICT(organisation_id,academic_year_id,term_id,code)
-DO UPDATE SET name='End-of-Term Examination',default_max_score=70,weight_percent=70,
+DO UPDATE SET name='End-of-Term Examination',default_max_score=100,weight_percent=70,
               sort_order=20,is_active=true,updated_at=now();
 
 -- Preserve the assessment subtype, but place every non-final assessment under CONTINUOUS.
