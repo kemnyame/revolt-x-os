@@ -1354,6 +1354,7 @@ async function ensureTeacherScope(a:any,classroomId:string,subjectId?:string|nul
 }
 
 
+
 async function calculateStudentTermResults(orgId:string,studentId:string,termId:string){
   const rows=(await db.query(`
     WITH current_class AS (
@@ -1371,47 +1372,58 @@ async function calculateStudentTermResults(orgId:string,studentId:string,termId:
       JOIN terms t ON t.id=$3 AND t.academic_year_id=cs.academic_year_id
       WHERE cs.organisation_id=$1 AND cs.is_active=true
     ),
-    category_scores AS (
-      SELECT
-        sl.subject_id,sl.subject_name,
-        COALESCE(ac.id,a.id) category_id,
-        COALESCE(ac.code,upper(a.assessment_type)) category_code,
-        COALESCE(ac.name,initcap(a.assessment_type)) category_name,
-        COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
-        ROUND(AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END)::numeric,2) category_average,
-        COUNT(a.id)::int assessment_count,
-        COUNT(sc.score)::int scored_count
+    assessment_summary AS (
+      SELECT sl.subject_id,
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_assessment_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_assessment_scored,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric ca_assessment_percent_sum,
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_scored_count,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric exam_percent_sum
       FROM subject_list sl
       LEFT JOIN current_class cc ON true
       LEFT JOIN assessments a ON a.subject_id=sl.subject_id AND a.term_id=$3 AND a.classroom_id=cc.classroom_id
       LEFT JOIN assessment_categories ac ON ac.id=a.category_id
       LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=$2
-      GROUP BY sl.subject_id,sl.subject_name,COALESCE(ac.id,a.id),COALESCE(ac.code,upper(a.assessment_type)),
-               COALESCE(ac.name,initcap(a.assessment_type)),COALESCE(ac.weight_percent,a.weight,0)
+      GROUP BY sl.subject_id
+    ),
+    homework_summary AS (
+      SELECT sl.subject_id,
+        COUNT(h.id)::int homework_count,
+        COUNT(hs.score)::int homework_scored_count,
+        COALESCE(SUM(CASE WHEN hs.score IS NOT NULL THEN (hs.score/h.max_score)*100.0 ELSE 0 END),0)::numeric homework_percent_sum
+      FROM subject_list sl
+      LEFT JOIN current_class cc ON true
+      LEFT JOIN homework_assignments h ON h.organisation_id=$1 AND h.classroom_id=cc.classroom_id
+        AND h.subject_id=sl.subject_id AND h.term_id=$3 AND h.max_score IS NOT NULL
+        AND h.status IN('published','closed')
+      LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2
+      GROUP BY sl.subject_id
     ),
     subject_scores AS (
-      SELECT subject_id,subject_name,
-        COALESCE(SUM(assessment_count),0)::int assessment_count,
-        COALESCE(SUM(scored_count),0)::int scored_assessment_count,
-        COALESCE(SUM(assessment_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_assessment_count,
-        COALESCE(SUM(scored_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_scored_count,
-        COALESCE(SUM(assessment_count) FILTER(WHERE category_code='EXAM'),0)::int exam_count,
-        COALESCE(SUM(scored_count) FILTER(WHERE category_code='EXAM'),0)::int exam_scored_count,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
-               / SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
+      SELECT sl.subject_id,sl.subject_name,
+        COALESCE(a.ca_assessment_count,0)+COALESCE(h.homework_count,0) class_assessment_count,
+        COALESCE(a.ca_assessment_scored,0)+COALESCE(h.homework_scored_count,0) class_scored_count,
+        COALESCE(h.homework_count,0) homework_count,
+        COALESCE(h.homework_scored_count,0) homework_scored_count,
+        COALESCE(a.exam_count,0) exam_count,
+        COALESCE(a.exam_scored_count,0) exam_scored_count,
+        CASE WHEN COALESCE(a.ca_assessment_scored,0)+COALESCE(h.homework_scored_count,0)>0
+          THEN (COALESCE(a.ca_assessment_percent_sum,0)+COALESCE(h.homework_percent_sum,0))
+            /(COALESCE(a.ca_assessment_scored,0)+COALESCE(h.homework_scored_count,0))
           ELSE NULL END class_assessment_raw,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
-               / SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
+        CASE WHEN COALESCE(a.exam_scored_count,0)>0
+          THEN COALESCE(a.exam_percent_sum,0)/a.exam_scored_count
           ELSE NULL END exam_raw,
-        COALESCE(jsonb_agg(jsonb_build_object(
-          'categoryId',category_id,'code',category_code,'name',category_name,
-          'weightPercent',weight_percent,'average',category_average,'exerciseCount',assessment_count,
-          'scoredCount',scored_count
-        ) ORDER BY category_name) FILTER(WHERE category_id IS NOT NULL),'[]'::jsonb) components
-      FROM category_scores
-      GROUP BY subject_id,subject_name
+        jsonb_build_array(
+          jsonb_build_object('code','CONTINUOUS','name','Continuous Assessment','assessmentCount',COALESCE(a.ca_assessment_count,0),'homeworkCount',COALESCE(h.homework_count,0)),
+          jsonb_build_object('code','EXAM','name','End-of-Term Examination','assessmentCount',COALESCE(a.exam_count,0))
+        ) components
+      FROM subject_list sl
+      LEFT JOIN assessment_summary a ON a.subject_id=sl.subject_id
+      LEFT JOIN homework_summary h ON h.subject_id=sl.subject_id
     )
     SELECT *,
       ROUND(class_assessment_raw::numeric,2) class_assessment_raw,
@@ -1443,6 +1455,7 @@ async function calculateStudentTermResults(orgId:string,studentId:string,termId:
   });
 }
 
+
 async function reportAssessmentReadiness(orgId:string,studentId:string,termId:string,classroomId?:string|null){
   let classId=classroomId??null;
   if(!classId){
@@ -1458,11 +1471,11 @@ async function reportAssessmentReadiness(orgId:string,studentId:string,termId:st
   const rows=(await db.query(`
     SELECT cs.subject_id,s.name subject_name,
       COUNT(a.id)::int assessment_count,
-      COUNT(a.id) FILTER(WHERE COALESCE(ac.code,upper(a.assessment_type))<>'EXAM')::int class_assessment_count,
-      COUNT(a.id) FILTER(WHERE COALESCE(ac.code,upper(a.assessment_type))='EXAM')::int exam_count,
-      COUNT(a.id) FILTER(WHERE sc.score IS NULL)::int missing_score_count,
+      COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int class_assessment_count,
+      COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_count,
+      COUNT(a.id) FILTER(WHERE a.id IS NOT NULL AND sc.score IS NULL)::int missing_score_count,
       COALESCE(jsonb_agg(jsonb_build_object(
-        'assessmentId',a.id,'name',a.name,'component',CASE WHEN COALESCE(ac.code,upper(a.assessment_type))='EXAM' THEN 'Exam' ELSE 'Class Assessment' END
+        'assessmentId',a.id,'name',a.name,'component',CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM' THEN 'End-of-Term Exam' ELSE 'Continuous Assessment' END
       ) ORDER BY a.name) FILTER(WHERE a.id IS NOT NULL AND sc.score IS NULL),'[]'::jsonb) missing_scores
     FROM class_subjects cs
     JOIN subjects s ON s.id=cs.subject_id
@@ -1476,21 +1489,49 @@ async function reportAssessmentReadiness(orgId:string,studentId:string,termId:st
     ORDER BY s.name
   `,[orgId,studentId,termId,classId])).rows;
 
+  const homeworkRows=(await db.query(`
+    SELECT cs.subject_id,
+      COUNT(h.id)::int homework_count,
+      COUNT(h.id) FILTER(WHERE h.id IS NOT NULL AND hs.score IS NULL)::int missing_homework_score_count,
+      COALESCE(jsonb_agg(jsonb_build_object('homeworkId',h.id,'name',h.title,'component','Homework')
+        ORDER BY h.due_at,h.title) FILTER(WHERE h.id IS NOT NULL AND hs.score IS NULL),'[]'::jsonb) missing_homework_scores
+    FROM class_subjects cs
+    JOIN terms t ON t.id=$3 AND t.academic_year_id=cs.academic_year_id
+    LEFT JOIN homework_assignments h ON h.organisation_id=$1 AND h.classroom_id=cs.classroom_id
+      AND h.subject_id=cs.subject_id AND h.term_id=$3 AND h.max_score IS NOT NULL
+      AND h.status IN('published','closed')
+    LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2
+    WHERE cs.organisation_id=$1 AND cs.classroom_id=$4 AND cs.is_active=true
+    GROUP BY cs.subject_id
+  `,[orgId,studentId,termId,classId])).rows;
+  const homeworkBySubject=new Map(homeworkRows.map((x:any)=>[x.subject_id,x]));
+
   const missing:any[]=[];
   for(const row of rows){
+    const hw:any=homeworkBySubject.get(row.subject_id)??{};
     const reasons:string[]=[];
-    if(Number(row.class_assessment_count||0)===0)reasons.push('Class Assessment (30%) is not configured');
-    if(Number(row.exam_count||0)===0)reasons.push('Exam (70%) is not configured');
+    const caCount=Number(row.class_assessment_count||0)+Number(hw.homework_count||0);
+    if(caCount===0)reasons.push('Continuous Assessment (30%) is not configured');
+    if(Number(row.exam_count||0)===0)reasons.push('End-of-Term Exam (70%) is not configured');
     if(Number(row.missing_score_count||0)>0){
       const names=(Array.isArray(row.missing_scores)?row.missing_scores:[]).map((x:any)=>x.name).filter(Boolean);
-      reasons.push('Missing score'+(names.length?': '+names.join(', '):''));
+      reasons.push('Missing assessment score'+(names.length?': '+names.join(', '):''));
     }
-    if(reasons.length)missing.push({subjectId:row.subject_id,subjectName:row.subject_name,missing:reasons,missingScores:row.missing_scores||[]});
+    if(Number(hw.missing_homework_score_count||0)>0){
+      const names=(Array.isArray(hw.missing_homework_scores)?hw.missing_homework_scores:[]).map((x:any)=>x.name).filter(Boolean);
+      reasons.push('Missing homework score'+(names.length?': '+names.join(', '):''));
+    }
+    if(reasons.length)missing.push({
+      subjectId:row.subject_id,subjectName:row.subject_name,missing:reasons,
+      missingScores:[...(row.missing_scores||[]),...(hw.missing_homework_scores||[])]
+    });
   }
   return{complete:rows.length>0&&missing.length===0,classroomId:classId,totalSubjects:rows.length,completeSubjects:rows.length-missing.length,missing};
 }
 
+
 async function reportPromotionInfo(orgId:string,studentId:string,termId:string,classroomId?:string|null,results?:any[]){
+  const term=await one<any>(db,'SELECT id,term_no,academic_year_id FROM terms WHERE id=$1 AND organisation_id=$2',[termId,orgId]);
   let current:any=null;
   if(classroomId){
     current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.grade_level_id,g.level_order,g.code grade_code,g.name grade_name
@@ -1512,9 +1553,27 @@ async function reportPromotionInfo(orgId:string,studentId:string,termId:string,c
   const overallAverage=subjectResults.length&&complete.length===subjectResults.length
     ?Math.round((complete.reduce((sum:number,x:any)=>sum+Number(x.total),0)/complete.length)*100)/100
     :null;
-  const suggestedDecision=overallAverage==null?null:(!nextGrade?'completed':overallAverage>=threshold?'promoted':'repeated');
-  return{threshold,overallAverage,suggestedDecision,hasNextGrade:Boolean(nextGrade),nextGrade:nextGrade??null,currentGrade:current};
+
+  if(Number(term.term_no)!==3){
+    return{
+      applicable:false,cumulative:false,termNo:Number(term.term_no),threshold,overallAverage,
+      annualAverage:null,annualAggregate:null,termAverages:[],suggestedDecision:null,
+      hasNextGrade:Boolean(nextGrade),nextGrade:nextGrade??null,currentGrade:current
+    };
+  }
+
+  const evidence=await academicYearPromotionEvidence(db,orgId,term.academic_year_id,current?.classroom_id??null);
+  const annual=evidence.byStudent.get(studentId);
+  const annualAverage=annual?.annualAverage??null;
+  const annualAggregate=annual?.annualAggregate??null;
+  const suggestedDecision=annualAverage==null||!current?null:(!nextGrade?'completed':Number(annualAverage)>=threshold?'promoted':'repeated');
+  return{
+    applicable:true,cumulative:true,termNo:3,threshold,overallAverage,
+    annualAverage,annualAggregate,termAverages:annual?.termAverages??[],
+    suggestedDecision,hasNextGrade:Boolean(nextGrade),nextGrade:nextGrade??null,currentGrade:current
+  };
 }
+
 
 async function calculateClassRank(orgId:string,classroomId:string,termId:string,studentId:string){
   return maybeOne<any>(db,`
@@ -1527,31 +1586,46 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
       JOIN terms t ON t.id=$3 AND t.academic_year_id=cs.academic_year_id
       WHERE cs.organisation_id=$1 AND cs.classroom_id=$2 AND cs.is_active=true
     ),
-    category_scores AS (
-      SELECT en.student_id,cs.subject_id,COALESCE(ac.id,a.id) category_id,
-        COALESCE(ac.code,upper(a.assessment_type)) category_code,
-        COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
-        AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END) category_average
-      FROM enrolled en
-      CROSS JOIN class_subjects_active cs
+    assessment_summary AS (
+      SELECT en.student_id,cs.subject_id,
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_scored,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric ca_sum,
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_scored,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric exam_sum
+      FROM enrolled en CROSS JOIN class_subjects_active cs
       LEFT JOIN assessments a ON a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
       LEFT JOIN assessment_categories ac ON ac.id=a.category_id
       LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=en.student_id
-      GROUP BY en.student_id,cs.subject_id,COALESCE(ac.id,a.id),COALESCE(ac.code,upper(a.assessment_type)),
-        COALESCE(ac.weight_percent,a.weight,0)
+      GROUP BY en.student_id,cs.subject_id
+    ),
+    homework_summary AS (
+      SELECT en.student_id,cs.subject_id,
+        COUNT(h.id)::int homework_count,COUNT(hs.score)::int homework_scored,
+        COALESCE(SUM(CASE WHEN hs.score IS NOT NULL THEN (hs.score/h.max_score)*100.0 ELSE 0 END),0)::numeric homework_sum
+      FROM enrolled en CROSS JOIN class_subjects_active cs
+      LEFT JOIN homework_assignments h ON h.organisation_id=$1 AND h.classroom_id=$2 AND h.term_id=$3
+        AND h.subject_id=cs.subject_id AND h.max_score IS NOT NULL AND h.status IN('published','closed')
+      LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=en.student_id
+      GROUP BY en.student_id,cs.subject_id
     ),
     subject_scores AS (
-      SELECT student_id,subject_id,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
-               /SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL) ELSE NULL END ca_raw,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
-               /SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL) ELSE NULL END exam_raw
-      FROM category_scores GROUP BY student_id,subject_id
+      SELECT a.student_id,a.subject_id,
+        (a.ca_count+COALESCE(h.homework_count,0)) ca_count,
+        (a.ca_scored+COALESCE(h.homework_scored,0)) ca_scored,
+        a.exam_count,a.exam_scored,
+        CASE WHEN a.ca_scored+COALESCE(h.homework_scored,0)>0
+          THEN (a.ca_sum+COALESCE(h.homework_sum,0))/(a.ca_scored+COALESCE(h.homework_scored,0)) ELSE NULL END ca_raw,
+        CASE WHEN a.exam_scored>0 THEN a.exam_sum/a.exam_scored ELSE NULL END exam_raw
+      FROM assessment_summary a
+      LEFT JOIN homework_summary h ON h.student_id=a.student_id AND h.subject_id=a.subject_id
     ),
     subject_totals AS (
       SELECT student_id,subject_id,
+        (ca_count>0 AND exam_count>0 AND ca_scored=ca_count AND exam_scored=exam_count) subject_complete,
         CASE WHEN ca_raw IS NOT NULL AND exam_raw IS NOT NULL THEN ca_raw*0.30+exam_raw*0.70 ELSE NULL END subject_total
       FROM subject_scores
     ),
@@ -1559,7 +1633,7 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
       SELECT student_id,AVG(subject_total) overall_average
       FROM subject_totals
       GROUP BY student_id
-      HAVING COUNT(*) FILTER(WHERE subject_total IS NOT NULL)=(SELECT COUNT(*) FROM class_subjects_active)
+      HAVING COUNT(*) FILTER(WHERE subject_complete)=(SELECT COUNT(*) FROM class_subjects_active)
         AND (SELECT COUNT(*) FROM class_subjects_active)>0
     ),
     ranked AS (
@@ -2237,30 +2311,110 @@ app.patch('/api/school/promotion-settings',async request=>{
   return row;
 });
 
+
+function fixedTermName(termNo:number){return termNo===1?'First Term':termNo===2?'Second Term':'Third Term'}
+function isoDateAdd(value:string,days:number){
+  const d=new Date(value+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);
+}
+async function ensureFixedAcademicYearTerms(queryDb:any,organisationId:string,academicYearId:string){
+  const year=(await queryDb.query('SELECT id,start_date,end_date FROM academic_years WHERE id=$1 AND organisation_id=$2',[academicYearId,organisationId])).rows[0];
+  if(!year)return[];
+  const start=String(year.start_date).slice(0,10),end=String(year.end_date).slice(0,10);
+  const totalDays=Math.max(3,Math.floor((new Date(end+'T00:00:00Z').getTime()-new Date(start+'T00:00:00Z').getTime())/86400000)+1);
+  const cut1=Math.max(1,Math.floor(totalDays/3)),cut2=Math.max(cut1+1,Math.floor(totalDays*2/3));
+  const ranges=[
+    {termNo:1,startDate:start,endDate:isoDateAdd(start,cut1-1)},
+    {termNo:2,startDate:isoDateAdd(start,cut1),endDate:isoDateAdd(start,cut2-1)},
+    {termNo:3,startDate:isoDateAdd(start,cut2),endDate:end}
+  ];
+  const rows:any[]=[];
+  for(const r of ranges){
+    const x=(await queryDb.query(`INSERT INTO terms(organisation_id,academic_year_id,term_no,name,start_date,end_date)
+      VALUES($1,$2,$3,$4,$5,$6)
+      ON CONFLICT(academic_year_id,term_no) DO UPDATE SET name=EXCLUDED.name
+      RETURNING *`,[organisationId,academicYearId,r.termNo,fixedTermName(r.termNo),r.startDate,r.endDate])).rows[0];
+    rows.push(x);
+  }
+  return rows;
+}
+async function ensureRolloverClassStructure(queryDb:any,organisationId:string,fromYearId:string,toYearId:string){
+  const source=(await queryDb.query(`SELECT id,grade_level_id,name,stream,capacity FROM classrooms
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true ORDER BY name`,[organisationId,fromYearId])).rows;
+  let created=0,subjectsCopied=0;
+  for(const cls of source){
+    let target=(await queryDb.query(`SELECT id FROM classrooms WHERE organisation_id=$1 AND academic_year_id=$2
+      AND grade_level_id=$3 AND lower(trim(name))=lower(trim($4))
+      AND COALESCE(lower(trim(stream)),'')=COALESCE(lower(trim($5::text)),'') LIMIT 1`,
+      [organisationId,toYearId,cls.grade_level_id,cls.name,cls.stream??null])).rows[0];
+    if(!target){
+      target=(await queryDb.query(`INSERT INTO classrooms(
+        organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id,is_active
+      ) VALUES($1,$2,$3,$4,$5,$6,NULL,true) RETURNING id`,
+      [organisationId,toYearId,cls.grade_level_id,cls.name,cls.stream??null,cls.capacity??null])).rows[0];
+      created++;
+    }
+    const copy=await queryDb.query(`INSERT INTO class_subjects(organisation_id,academic_year_id,classroom_id,subject_id,is_active)
+      SELECT $1,$2,$3,cs.subject_id,true FROM class_subjects cs
+      WHERE cs.organisation_id=$1 AND cs.academic_year_id=$4 AND cs.classroom_id=$5 AND cs.is_active=true
+      ON CONFLICT(academic_year_id,classroom_id,subject_id) DO UPDATE SET is_active=true,updated_at=now()`,
+      [organisationId,toYearId,target.id,fromYearId,cls.id]);
+    subjectsCopied+=copy.rowCount??0;
+  }
+  return{created,subjectsCopied,totalSourceClasses:source.length};
+}
+
+
 app.get('/api/dashboard',async request=>{
-  const a=await authorize(request,db,config,'reports.view');
-  const y=await activeYear(a.core.organisation_id),t=await activeTerm(a.core.organisation_id);
-  const q=await db.query(`SELECT
-    (SELECT count(*) FROM students WHERE organisation_id=$1 AND status='active') students,
-    (SELECT count(*) FROM classrooms WHERE organisation_id=$1 AND is_active=true) classes,
-    (SELECT count(*) FROM subjects WHERE organisation_id=$1 AND is_active=true) subjects,
-    (SELECT count(*) FROM school_memberships WHERE organisation_id=$1 AND status='active') staff_users,
-    (SELECT count(*) FROM attendance_records WHERE organisation_id=$1 AND attendance_date=current_date AND status='present') present_today,
-    (SELECT count(*) FROM attendance_records WHERE organisation_id=$1 AND attendance_date=current_date AND status='absent') absent_today,
-    (SELECT COALESCE(sum(amount),0) FROM payments WHERE organisation_id=$1 AND voided_at IS NULL) payments_received,
-    (SELECT COALESCE(sum(sf.amount_due-sf.discount),0) FROM student_fees sf WHERE sf.organisation_id=$1) fees_billed`,[a.core.organisation_id]);
-  return {...q.rows[0],activeYear:y,activeTerm:t};
+  const a=await authorize(request,db,config,'screen.dashboard.view');
+  const warnings:string[]=[];
+  const metric=async(label:string,sql:string)=>{
+    try{
+      const row=(await db.query(sql,[a.core.organisation_id])).rows[0];
+      return Number(row?.value??0);
+    }catch(error){
+      warnings.push(label);
+      return 0;
+    }
+  };
+  const [y,t,students,classes,subjects,staffUsers,presentToday,absentToday,paymentsReceived,feesBilled]=await Promise.all([
+    activeYear(a.core.organisation_id).catch(()=>null),
+    activeTerm(a.core.organisation_id).catch(()=>null),
+    metric('students',"SELECT count(*) value FROM students WHERE organisation_id=$1 AND status='active'"),
+    metric('classes',"SELECT count(*) value FROM classrooms WHERE organisation_id=$1 AND is_active=true"),
+    metric('subjects',"SELECT count(*) value FROM subjects WHERE organisation_id=$1 AND is_active=true"),
+    metric('staff',"SELECT count(*) value FROM school_memberships WHERE organisation_id=$1 AND status='active'"),
+    metric('present attendance',"SELECT count(*) value FROM attendance_records WHERE organisation_id=$1 AND attendance_date=current_date AND status='present'"),
+    metric('absent attendance',"SELECT count(*) value FROM attendance_records WHERE organisation_id=$1 AND attendance_date=current_date AND status='absent'"),
+    metric('payments',"SELECT COALESCE(sum(amount),0) value FROM payments WHERE organisation_id=$1 AND voided_at IS NULL"),
+    metric('fees',"SELECT COALESCE(sum(sf.amount_due-sf.discount),0) value FROM student_fees sf WHERE sf.organisation_id=$1")
+  ]);
+  return{
+    students,classes,subjects,staff_users:staffUsers,present_today:presentToday,absent_today:absentToday,
+    payments_received:paymentsReceived,fees_billed:feesBilled,activeYear:y,activeTerm:t,
+    degraded:warnings.length>0,warnings
+  };
 });
 
 app.get('/api/academic-years',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM academic_years WHERE organisation_id=$1 ORDER BY start_date DESC',[a.core.organisation_id])).rows});
+
 app.post('/api/academic-years',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
   const b=z.object({name:z.string().min(4).max(40),startDate:z.string().date(),endDate:z.string().date()}).parse(request.body);
   if(b.endDate<=b.startDate)throw fail(400,'Academic year end date must be after start date');
-  const row=await one<any>(db,'INSERT INTO academic_years(organisation_id,name,start_date,end_date) VALUES($1,$2,$3,$4) RETURNING *',[a.core.organisation_id,b.name,b.startDate,b.endDate]);
-  await audit(a.core.organisation_id,a.core.id,'academic_year.created','academic_year',row.id);
+  const row=await tx(db,async client=>{
+    const created=await one<any>(client,'INSERT INTO academic_years(organisation_id,name,start_date,end_date) VALUES($1,$2,$3,$4) RETURNING *',[a.core.organisation_id,b.name,b.startDate,b.endDate]);
+    await ensureFixedAcademicYearTerms(client,a.core.organisation_id,created.id);
+    const source=(await client.query("SELECT id,start_date FROM academic_years WHERE organisation_id=$1 AND status='active' AND id<>$2 ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id,created.id])).rows[0];
+    if(source&&new Date(created.start_date)>new Date(source.start_date)){
+      await ensureRolloverClassStructure(client,a.core.organisation_id,source.id,created.id);
+    }
+    return created;
+  });
+  await audit(a.core.organisation_id,a.core.id,'academic_year.created','academic_year',row.id,{fixedTerms:true});
   return reply.code(201).send(row);
 });
+
+
 async function academicYearPromotionEvidence(queryDb:any,organisationId:string,academicYearId:string,classroomId?:string|null){
   const terms=(await queryDb.query(`SELECT id,term_no,name,start_date,end_date
     FROM terms WHERE organisation_id=$1 AND academic_year_id=$2 AND term_no IN (1,2,3)
@@ -2271,66 +2425,65 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
 
   const rows=(await queryDb.query(`
     WITH year_terms AS (
-      SELECT id term_id,term_no,name term_name
-      FROM terms
+      SELECT id term_id,term_no,name term_name FROM terms
       WHERE organisation_id=$1 AND academic_year_id=$2 AND term_no IN (1,2,3)
     ),
     source_students AS (
       SELECT e.student_id,e.classroom_id
-      FROM enrolments e
-      JOIN students s ON s.id=e.student_id
+      FROM enrolments e JOIN students s ON s.id=e.student_id
       WHERE e.organisation_id=$1 AND e.academic_year_id=$2
-        AND e.status='active' AND s.status='active'
+        AND e.status IN('active','promoted','repeated','completed')
+        AND s.status IN('active','graduated')
         AND ($3::uuid IS NULL OR e.classroom_id=$3)
     ),
-    category_scores AS (
+    assessment_summary AS (
       SELECT ss.student_id,yt.term_id,yt.term_no,yt.term_name,cs.subject_id,
-        COALESCE(ac.id,a.id) category_id,
-        COALESCE(ac.code,upper(a.assessment_type)) category_code,
-        COALESCE(ac.weight_percent,a.weight,0)::numeric weight_percent,
-        ROUND(AVG(CASE WHEN sc.score IS NOT NULL THEN (sc.score/a.max_score)*100.0 END)::numeric,2) category_average,
-        COUNT(a.id)::int assessment_count,
-        COUNT(sc.score)::int scored_count
-      FROM source_students ss
-      CROSS JOIN year_terms yt
-      JOIN class_subjects cs ON cs.organisation_id=$1
-        AND cs.classroom_id=ss.classroom_id
-        AND cs.academic_year_id=$2
-        AND cs.is_active=true
-      LEFT JOIN assessments a ON a.organisation_id=$1
-        AND a.classroom_id=ss.classroom_id
-        AND a.subject_id=cs.subject_id
-        AND a.term_id=yt.term_id
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM')::int ca_scored,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)<>'EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric ca_sum,
+        COUNT(a.id) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_count,
+        COUNT(sc.score) FILTER(WHERE COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM')::int exam_scored,
+        COALESCE(SUM(CASE WHEN COALESCE(ac.code,CASE WHEN lower(COALESCE(a.assessment_type,''))='exam' THEN 'EXAM' ELSE 'CONTINUOUS' END)='EXAM' AND sc.score IS NOT NULL
+          THEN (sc.score/a.max_score)*100.0 ELSE 0 END),0)::numeric exam_sum
+      FROM source_students ss CROSS JOIN year_terms yt
+      JOIN class_subjects cs ON cs.organisation_id=$1 AND cs.classroom_id=ss.classroom_id
+        AND cs.academic_year_id=$2 AND cs.is_active=true
+      LEFT JOIN assessments a ON a.organisation_id=$1 AND a.classroom_id=ss.classroom_id
+        AND a.subject_id=cs.subject_id AND a.term_id=yt.term_id
       LEFT JOIN assessment_categories ac ON ac.id=a.category_id
       LEFT JOIN assessment_scores sc ON sc.assessment_id=a.id AND sc.student_id=ss.student_id
-      GROUP BY ss.student_id,yt.term_id,yt.term_no,yt.term_name,cs.subject_id,
-        COALESCE(ac.id,a.id),COALESCE(ac.code,upper(a.assessment_type)),
-        COALESCE(ac.weight_percent,a.weight,0)
+      GROUP BY ss.student_id,yt.term_id,yt.term_no,yt.term_name,cs.subject_id
+    ),
+    homework_summary AS (
+      SELECT ss.student_id,yt.term_id,yt.term_no,cs.subject_id,
+        COUNT(h.id)::int homework_count,COUNT(hs.score)::int homework_scored,
+        COALESCE(SUM(CASE WHEN hs.score IS NOT NULL THEN (hs.score/h.max_score)*100.0 ELSE 0 END),0)::numeric homework_sum
+      FROM source_students ss CROSS JOIN year_terms yt
+      JOIN class_subjects cs ON cs.organisation_id=$1 AND cs.classroom_id=ss.classroom_id
+        AND cs.academic_year_id=$2 AND cs.is_active=true
+      LEFT JOIN homework_assignments h ON h.organisation_id=$1 AND h.classroom_id=ss.classroom_id
+        AND h.subject_id=cs.subject_id AND h.term_id=yt.term_id AND h.max_score IS NOT NULL
+        AND h.status IN('published','closed')
+      LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=ss.student_id
+      GROUP BY ss.student_id,yt.term_id,yt.term_no,cs.subject_id
     ),
     subject_scores AS (
-      SELECT student_id,term_id,term_no,term_name,subject_id,
-        COALESCE(SUM(assessment_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_assessment_count,
-        COALESCE(SUM(scored_count) FILTER(WHERE category_code<>'EXAM'),0)::int class_scored_count,
-        COALESCE(SUM(assessment_count) FILTER(WHERE category_code='EXAM'),0)::int exam_count,
-        COALESCE(SUM(scored_count) FILTER(WHERE category_code='EXAM'),0)::int exam_scored_count,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
-            / SUM(weight_percent) FILTER(WHERE category_code<>'EXAM' AND category_average IS NOT NULL)
-          ELSE NULL END class_assessment_raw,
-        CASE WHEN SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)>0
-          THEN SUM(category_average*weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
-            / SUM(weight_percent) FILTER(WHERE category_code='EXAM' AND category_average IS NOT NULL)
-          ELSE NULL END exam_raw
-      FROM category_scores
-      GROUP BY student_id,term_id,term_no,term_name,subject_id
+      SELECT a.student_id,a.term_id,a.term_no,a.term_name,a.subject_id,
+        (a.ca_count+COALESCE(h.homework_count,0)) class_assessment_count,
+        (a.ca_scored+COALESCE(h.homework_scored,0)) class_scored_count,
+        a.exam_count,a.exam_scored exam_scored_count,
+        CASE WHEN a.ca_scored+COALESCE(h.homework_scored,0)>0
+          THEN (a.ca_sum+COALESCE(h.homework_sum,0))/(a.ca_scored+COALESCE(h.homework_scored,0)) ELSE NULL END class_assessment_raw,
+        CASE WHEN a.exam_scored>0 THEN a.exam_sum/a.exam_scored ELSE NULL END exam_raw
+      FROM assessment_summary a
+      LEFT JOIN homework_summary h ON h.student_id=a.student_id AND h.term_id=a.term_id AND h.subject_id=a.subject_id
     ),
     subject_totals AS (
       SELECT *,
         (class_assessment_count>0 AND exam_count>0
-          AND class_scored_count=class_assessment_count
-          AND exam_scored_count=exam_count
-          AND class_assessment_raw IS NOT NULL
-          AND exam_raw IS NOT NULL) subject_complete,
+          AND class_scored_count=class_assessment_count AND exam_scored_count=exam_count
+          AND class_assessment_raw IS NOT NULL AND exam_raw IS NOT NULL) subject_complete,
         ROUND((class_assessment_raw*0.30+exam_raw*0.70)::numeric,2) total
       FROM subject_scores
     ),
@@ -2339,52 +2492,43 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
         COUNT(*)::int subject_count,
         COUNT(*) FILTER(WHERE subject_complete)::int complete_subjects,
         ROUND(AVG(total) FILTER(WHERE subject_complete)::numeric,2) term_average
-      FROM subject_totals
-      GROUP BY student_id,term_id,term_no,term_name
+      FROM subject_totals GROUP BY student_id,term_id,term_no,term_name
     ),
     term_evidence AS (
       SELECT ts.*,
         (ts.subject_count>0 AND ts.complete_subjects=ts.subject_count) academic_complete,
         (rc.workflow_status='approved' AND rc.released_at IS NOT NULL) report_released
       FROM term_summary ts
-      LEFT JOIN report_comments rc ON rc.organisation_id=$1
-        AND rc.student_id=ts.student_id AND rc.term_id=ts.term_id
+      LEFT JOIN report_comments rc ON rc.organisation_id=$1 AND rc.student_id=ts.student_id AND rc.term_id=ts.term_id
     )
     SELECT student_id,
       COUNT(*)::int configured_terms,
       COUNT(*) FILTER(WHERE academic_complete)::int complete_terms,
       COUNT(*) FILTER(WHERE academic_complete AND report_released)::int ready_terms,
       CASE WHEN COUNT(*) FILTER(WHERE academic_complete)=3
-        THEN ROUND(SUM(term_average) FILTER(WHERE academic_complete)::numeric,2)
-        ELSE NULL END academic_aggregate_score,
+        THEN ROUND(SUM(term_average) FILTER(WHERE academic_complete)::numeric,2) ELSE NULL END academic_aggregate_score,
       CASE WHEN COUNT(*) FILTER(WHERE academic_complete)=3
-        THEN ROUND((SUM(term_average) FILTER(WHERE academic_complete)/3.0)::numeric,2)
-        ELSE NULL END academic_average,
+        THEN ROUND((SUM(term_average) FILTER(WHERE academic_complete)/3.0)::numeric,2) ELSE NULL END academic_average,
       jsonb_agg(jsonb_build_object(
-        'termId',term_id,'termNo',term_no,'termName',term_name,
-        'average',term_average,'academicComplete',academic_complete,
-        'reportReleased',report_released,'subjectCount',subject_count,
-        'completeSubjects',complete_subjects
+        'termId',term_id,'termNo',term_no,'termName',term_name,'average',term_average,
+        'academicComplete',academic_complete,'reportReleased',report_released,
+        'subjectCount',subject_count,'completeSubjects',complete_subjects
       ) ORDER BY term_no) term_averages
-    FROM term_evidence
-    GROUP BY student_id
+    FROM term_evidence GROUP BY student_id
   `,[organisationId,academicYearId,classroomId??null])).rows;
 
   const byStudent=new Map<string,any>();
   for(const row of rows){
-    const configuredTerms=Number(row.configured_terms||0);
-    const completeTerms=Number(row.complete_terms||0);
-    const readyTerms=Number(row.ready_terms||0);
+    const configuredTerms=Number(row.configured_terms||0),completeTerms=Number(row.complete_terms||0),readyTerms=Number(row.ready_terms||0);
     const annualAggregate=row.academic_aggregate_score==null?null:Number(row.academic_aggregate_score);
     const annualAverage=row.academic_average==null?null:Number(row.academic_average);
     const ready=configuredTerms===3&&completeTerms===3&&readyTerms===3&&annualAggregate!=null&&annualAverage!=null;
     let reason:string|null=null;
-    if(configuredTerms<3)reason='All three terms must be configured before promotion';
-    else if(completeTerms<3)reason='All three terms must have complete assessment results';
+    if(configuredTerms<3)reason='All three fixed terms must be available before promotion';
+    else if(completeTerms<3)reason='All three terms must have complete assessment and homework results';
     else if(readyTerms<3)reason='All three term reports must be approved and released';
     byStudent.set(row.student_id,{
-      configuredTerms,completeTerms,readyTerms,annualAggregate,annualAverage,
-      promotionScore:annualAverage,
+      configuredTerms,completeTerms,readyTerms,annualAggregate,annualAverage,promotionScore:annualAverage,
       termAverages:row.term_averages||[],ready,reason,threshold
     });
   }
@@ -2484,7 +2628,10 @@ app.post('/api/academic-years/:id/activate',async request=>{
     const target=await one<any>(c,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const source=await maybeOne<any>(c,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' AND id<>$2 ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id,id]);
     let rollover:any={processed:0,promoted:0,repeated:0,completed:0,unresolved:[]};
+    await ensureFixedAcademicYearTerms(c,a.core.organisation_id,target.id);
     if(source&&new Date(target.start_date)>new Date(source.start_date)){
+      await ensureFixedAcademicYearTerms(c,a.core.organisation_id,source.id);
+      await ensureRolloverClassStructure(c,a.core.organisation_id,source.id,target.id);
       rollover=await autoRolloverReleasedReports(c,a.core.organisation_id,source.id,target.id,a.core.id);
     }
     await c.query("UPDATE academic_years SET status='closed' WHERE organisation_id=$1 AND status='active' AND id<>$2",[a.core.organisation_id,id]);
@@ -2496,17 +2643,13 @@ app.post('/api/academic-years/:id/activate',async request=>{
 });
 
 app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
+
 app.post('/api/terms',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
-  const b=z.object({
-    academicYearId:z.string().uuid(),termNo:z.number().int().min(1).max(3),name:z.string().min(2).max(80),
-    startDate:z.string().date(),endDate:z.string().date(),nextTermBegins:z.string().date().nullable().optional()
-  }).parse(request.body);
-  if(b.endDate<=b.startDate)throw fail(400,'Term end date must be after start date');
-  if(b.nextTermBegins&&b.nextTermBegins<=b.endDate)throw fail(400,'Next term begins must be after the current term ends');
-  const row=await one<any>(db,'INSERT INTO terms(organisation_id,academic_year_id,term_no,name,start_date,end_date,next_term_begins) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.termNo,b.name,b.startDate,b.endDate,b.nextTermBegins??null]);
-  await audit(a.core.organisation_id,a.core.id,'term.created','term',row.id);return reply.code(201).send(row);
+  void request;void reply;
+  throw fail(409,'First Term, Second Term and Third Term are created automatically for every academic year. Edit the term dates instead.');
 });
+
 app.post('/api/terms/:id/activate',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   return tx(db,async c=>{const target=await one<any>(c,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await c.query("UPDATE terms SET status='closed' WHERE organisation_id=$1 AND academic_year_id=$2 AND status='active' AND id<>$3",[a.core.organisation_id,target.academic_year_id,id]);return one(c,"UPDATE terms SET status='active' WHERE id=$1 RETURNING *",[id])});
@@ -3551,7 +3694,7 @@ app.get('/api/report-cards/:studentId',async request=>{
 
   const school=await one<any>(db,`SELECT school_name,short_name,motto,phone,email,address,currency,logo_url,logo_image_data,
       promotion_threshold_percent FROM school_profiles WHERE organisation_id=$1`,[a.core.organisation_id]);
-  const chosenDecision=comments?.promotion_decision??promotion.suggestedDecision??null;
+  const chosenDecision=promotion.applicable?(comments?.promotion_decision??promotion.suggestedDecision??null):null;
   return{
     school,
     student:{...student,...(current||{})},
@@ -3563,7 +3706,7 @@ app.get('/api/report-cards/:studentId',async request=>{
     promotion:{
       ...promotion,
       decision:chosenDecision,
-      basis:comments?.promotion_basis??(chosenDecision?'threshold':null),
+      basis:comments?.promotion_basis??(chosenDecision?'academic_year_average':null),
       releasedAt:comments?.released_at??null
     },
     attendance,
@@ -4308,10 +4451,11 @@ app.delete('/api/academic-years/:id',async(request,reply)=>{
   return reply.code(204).send();
 });
 
+
 app.patch('/api/terms/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const b=z.object({
-    name:z.string().min(2).max(80).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional(),
+    startDate:z.string().date().optional(),endDate:z.string().date().optional(),
     nextTermBegins:z.string().date().nullable().optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
@@ -4319,17 +4463,14 @@ app.patch('/api/terms/:id',async request=>{
   const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?String(current.next_term_begins).slice(0,10):null);
   if(end<=start)throw fail(400,'Term end date must be after start date');
   if(next&&next<=end)throw fail(400,'Next term begins must be after the current term ends');
-  const row=await one<any>(db,`UPDATE terms SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date),
+  const row=await one<any>(db,`UPDATE terms SET name=$1,start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date),
     next_term_begins=CASE WHEN $4 THEN $5::date ELSE next_term_begins END WHERE id=$6 AND organisation_id=$7 RETURNING *`,
-    [b.name??null,b.startDate??null,b.endDate??null,Object.hasOwn(b,'nextTermBegins'),b.nextTermBegins??null,id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'term.updated','term',id);return row;
+    [fixedTermName(Number(current.term_no)),b.startDate??null,b.endDate??null,Object.hasOwn(b,'nextTermBegins'),b.nextTermBegins??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'term.updated','term',id,{fixedTerm:true});return row;
 });
 app.delete('/api/terms/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const t=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  if(t.status==='active')throw fail(409,'An active term cannot be deleted');
-  await db.query('DELETE FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  await audit(a.core.organisation_id,a.core.id,'term.deleted','term',id,{name:t.name});return reply.code(204).send();
+  const a=await authorize(request,db,config,'academic.delete');void request;void reply;void a;
+  throw fail(409,'Academic terms are fixed and cannot be deleted. Edit the dates instead.');
 });
 
 app.patch('/api/grade-levels/:id',async request=>{
@@ -5027,8 +5168,8 @@ app.put('/api/report-comments/:studentId',async request=>{
 
   const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
   const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
-  const chosen=promotion.suggestedDecision;
-  const basis=chosen?'threshold':null;
+  const chosen=promotion.applicable?promotion.suggestedDecision:null;
+  const basis=chosen?'academic_year_average':null;
 
   const row=await one<any>(db,`INSERT INTO report_comments(
       organisation_id,student_id,term_id,class_teacher_comment,conduct,interest,next_term_begins,
@@ -5077,11 +5218,12 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   }
   const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
   const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
-  const decision=report.promotion_decision??promotion.suggestedDecision;
-  if(!decision)throw fail(409,'Choose the promotion decision before submitting this report');
+  const decision=promotion.applicable?(report.promotion_decision??promotion.suggestedDecision):null;
+  if(promotion.applicable&&!decision)throw fail(409,'Complete all three terms before submitting the Third Term promotion outcome');
 
   const updated=await one<any>(db,`UPDATE report_comments SET workflow_status='submitted',submitted_by_os_user_id=$1::uuid,submitted_at=now(),
-    promotion_decision=$2,promotion_basis=COALESCE(promotion_basis,'threshold'),promotion_threshold_percent=COALESCE(promotion_threshold_percent,$3),
+    promotion_decision=$2,promotion_basis=CASE WHEN $2::text IS NULL THEN NULL ELSE COALESCE(promotion_basis,'academic_year_average') END,
+    promotion_threshold_percent=CASE WHEN $2::text IS NULL THEN NULL ELSE COALESCE(promotion_threshold_percent,$3) END,
     return_note=NULL,released_at=NULL,released_by_os_user_id=NULL,updated_at=now()
     WHERE id=$4::uuid RETURNING *`,[a.core.id,decision,promotion.threshold,report.id]);
 
@@ -5290,6 +5432,7 @@ app.get('/api/teacher/report-pool/readiness',async request=>{
 app.post('/api/teacher/report-pool/remind-missing',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const releaseTerm=await one<any>(db,'SELECT term_no FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can remind teachers about missing grades for this class');
 
@@ -5373,15 +5516,15 @@ app.post('/api/teacher/report-pool/release',async request=>{
   await tx(db,async client=>{
     for(const row of pool.rows){
       if(row.released_at)continue;
-      let decision=row.promotion_decision;
-      if(!decision){
+      let decision=Number(releaseTerm.term_no)===3?row.promotion_decision:null;
+      if(Number(releaseTerm.term_no)===3&&!decision){
         const results=await calculateStudentTermResults(a.core.organisation_id,row.student_id,b.termId);
         const promotion=await reportPromotionInfo(a.core.organisation_id,row.student_id,b.termId,b.classroomId,results);
         decision=promotion.suggestedDecision;
       }
       const updated=await one<any>(client,`UPDATE report_comments
         SET promotion_decision=COALESCE(promotion_decision,$1),
-            promotion_basis=COALESCE(promotion_basis,'threshold'),
+            promotion_basis=CASE WHEN $1::text IS NULL THEN NULL ELSE COALESCE(promotion_basis,'academic_year_average') END,
             released_at=now(),released_by_os_user_id=$2,updated_at=now()
         WHERE organisation_id=$3 AND student_id=$4 AND term_id=$5 AND workflow_status='approved'
         RETURNING *`,[decision,a.core.id,a.core.organisation_id,row.student_id,b.termId]);
@@ -5399,7 +5542,7 @@ app.post('/api/teacher/report-pool/release',async request=>{
       name:((row.guardian_first_name||'')+' '+(row.guardian_last_name||'')).trim(),
       email:row.guardian_email,phone:row.guardian_phone,
       subject:'Report card available - '+row.first_name+' '+row.last_name,
-      body:`${school.school_name} has released the report card for ${row.first_name} ${row.last_name} (${row.admission_no}) to the Parent Portal. Promotion outcome: ${String(row.promotion_decision||'pending').replace('_',' ')}.`,
+      body:`${school.school_name} has released the report card for ${row.first_name} ${row.last_name} (${row.admission_no}) to the Parent Portal.${Number(releaseTerm.term_no)===3?' Promotion outcome: '+String(row.promotion_decision||'pending').replace('_',' ')+'.':''}`,
       relatedType:'report_comment',relatedId:row.report_id
     });
     communicationCount+=results.length;
@@ -5467,12 +5610,12 @@ app.post('/api/report-comments/:studentId/review',async request=>{
     }
     const results=await calculateStudentTermResults(a.core.organisation_id,studentId,b.termId);
     const promotion=await reportPromotionInfo(a.core.organisation_id,studentId,b.termId,current.classroom_id,results);
-    const systemDecision=promotion.suggestedDecision;
-    const finalDecision=b.promotionDecision??systemDecision;
-    if(!finalDecision)throw fail(409,'The system cannot determine a promotion outcome until the report results are complete');
-    if(finalDecision!==systemDecision&&!String(b.promotionOverrideReason||'').trim())throw fail(400,'Give a reason when overriding the system promotion decision');
+    const systemDecision=promotion.applicable?promotion.suggestedDecision:null;
+    const finalDecision=promotion.applicable?(b.promotionDecision??systemDecision):null;
+    if(promotion.applicable&&!finalDecision)throw fail(409,'The cumulative Third Term promotion outcome is not ready until all three terms are complete');
+    if(promotion.applicable&&finalDecision!==systemDecision&&!String(b.promotionOverrideReason||'').trim())throw fail(400,'Give a reason when overriding the system promotion decision');
     report.promotion_decision=finalDecision;
-    report.promotion_basis=finalDecision===systemDecision?'threshold':'reviewer_override';
+    report.promotion_basis=promotion.applicable?(finalDecision===systemDecision?'academic_year_average':'reviewer_override'):null;
   }
 
   const status=b.action==='approve'?'approved':'returned';
@@ -5582,6 +5725,7 @@ app.get('/api/promotions/preview',async request=>{
     FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE c.id=$1 AND c.academic_year_id=$2 AND c.organisation_id=$3`,
     [q.classroomId,q.fromAcademicYearId,a.core.organisation_id]);
+  await ensureRolloverClassStructure(db,a.core.organisation_id,q.fromAcademicYearId,q.toAcademicYearId);
   const nextGrade=await maybeOne<any>(db,`SELECT * FROM grade_levels WHERE organisation_id=$1 AND is_active=true AND level_order>$2
     ORDER BY level_order LIMIT 1`,[a.core.organisation_id,classroom.level_order]);
   const destinations=nextGrade?(await db.query(`SELECT c.id,c.name,c.stream,g.name grade_name,g.code grade_code
@@ -5624,6 +5768,9 @@ app.post('/api/promotions/batch',async request=>{
   }).parse(request.body);
   if(b.fromAcademicYearId===b.toAcademicYearId)throw fail(400,'Choose a different destination academic year');
   return tx(db,async client=>{
+    await ensureFixedAcademicYearTerms(client,a.core.organisation_id,b.fromAcademicYearId);
+    await ensureFixedAcademicYearTerms(client,a.core.organisation_id,b.toAcademicYearId);
+    await ensureRolloverClassStructure(client,a.core.organisation_id,b.fromAcademicYearId,b.toAcademicYearId);
     const batch=await one<any>(client,`INSERT INTO promotion_batches(
       organisation_id,from_academic_year_id,to_academic_year_id,from_classroom_id,processed_by_os_user_id,total_students
     ) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[
@@ -5795,6 +5942,7 @@ async function buildGuardianReleasedReport(g:any,id:string){
     WHERE e.student_id=$1 AND e.academic_year_id=$2 ORDER BY e.enrolled_at DESC LIMIT 1`,[id,term.academic_year_id]);
   Object.assign(student,current||{});
   const subjects=await calculateStudentTermResults(g.organisation_id,id,term.id);
+  const promotion=await reportPromotionInfo(g.organisation_id,id,term.id,current?.classroom_id??null,subjects);
 
   let overallAverage=subjects.length
     ?Math.round((subjects.filter((x:any)=>x.percentage!=null).reduce((sum:number,x:any)=>sum+Number(x.percentage||0),0)/
@@ -5824,6 +5972,7 @@ async function buildGuardianReleasedReport(g:any,id:string){
   return{
     available:true,school,term,student,subjects,comments:approved,
     performance:{overallAverage,classPosition,classSize},
+    promotion:{...promotion,decision:promotion.applicable?(approved.promotion_decision??promotion.suggestedDecision??null):null},
     attendance,
     signatures:{
       teacher:{name:teacherSig?.display_name||label(current?.class_teacher_os_user_id),imageData:teacherSig?.signature_image_data||null},
@@ -5910,13 +6059,16 @@ app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
     doc.y+=cellH+10;
 
     // Performance dashboard.
-    const summary=[
+    const summary:any[]=[
       ['Overall Average',performance.overallAverage==null?'—':performance.overallAverage+'%'],
       ['Class Position',performance.classPosition?(performance.classPosition+' / '+performance.classSize):'—'],
-      ['Attendance',String(attendance.rate||0)+'%'],
-      ['Promotion',String(comments.promotion_decision||'Pending').replace(/_/g,' ')]
+      ['Attendance',String(attendance.rate||0)+'%']
     ];
-    const sumGap=7,sumW=(width-sumGap*3)/4,sumY=doc.y;
+    if(Number(term.term_no)===3){
+      summary.push(['Cumulative Average',report.promotion?.annualAverage==null?'—':report.promotion.annualAverage+'%']);
+      summary.push(['Promotion',String(comments.promotion_decision||report.promotion?.decision||'Pending').replace(/_/g,' ')]);
+    }
+    const sumGap=7,sumW=(width-sumGap*(summary.length-1))/summary.length,sumY=doc.y;
     summary.forEach((item:any[],i:number)=>{
       const x=left+i*(sumW+sumGap);
       doc.roundedRect(x,sumY,sumW,50,7).fillAndStroke(soft,line);
