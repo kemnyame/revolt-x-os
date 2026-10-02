@@ -1876,6 +1876,10 @@ app.post('/api/auth/admin-password-reset',async(request,reply)=>{
 
 
 
+function roleWorkspace(profile:any){
+  return profile?.portal_mode==='teacher'?'/teacher':'/';
+}
+
 async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
     schoolId:z.string().trim().min(1).max(120),
