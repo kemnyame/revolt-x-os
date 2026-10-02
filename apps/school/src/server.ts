@@ -5432,7 +5432,6 @@ app.get('/api/teacher/report-pool/readiness',async request=>{
 app.post('/api/teacher/report-pool/remind-missing',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
-  const releaseTerm=await one<any>(db,'SELECT term_no FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can remind teachers about missing grades for this class');
 
@@ -5495,6 +5494,7 @@ app.post('/api/teacher/report-pool/remind-missing',async request=>{
 app.post('/api/teacher/report-pool/release',async request=>{
   const a=await authorize(request,db,config,'reports.release');
   const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const releaseTerm=await one<any>(db,'SELECT term_no FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can release the final report pool for this class');
 
