@@ -20,7 +20,9 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   assert.match(server,/staff\.signed_in/);
   assert.match(server,/requiresPasswordChange/);
   assert.match(server,/\/api\/auth\/change-password/);
-  assert.match(server,/STAFF_GENERIC_PASSWORD/);
+  assert.match(server,/function randomTemporaryPassword\(\)/);
+  assert.match(server,/const temporaryPassword\s*=\s*randomTemporaryPassword\(\)/);
+  assert.doesNotMatch(server,/password:\s*config\.STAFF_GENERIC_PASSWORD/);
   assert.match(server,/\/api\/staff\/users\/:membershipId\/password-reset/);
 
   assert.match(login,/<select id="schoolId"/);
