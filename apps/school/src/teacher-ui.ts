@@ -52,40 +52,6 @@ async function openTeacherProfile(){
 }
 function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
 async function publicJson(path,opt){opt=opt||{};var baseHeaders=opt.body==null?{}:{'content-type':'application/json'};opt.headers=Object.assign(baseHeaders,opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
-async function showTeacherTestAccess(message){
-  sessionStorage.removeItem('rx_teacher_token');token='';ctx=null;
-  E('app').classList.add('hide');E('loading').classList.remove('hide');
-  E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><div class="badge info">DEMO ACCESS</div><h1>Teaching Staff Access</h1><p class="muted">Unlock the demo environment once, then select a Teacher, Headteacher or Administrator. Individual passwords are not required in Demo Access.</p>'+(message?'<div class="auth-error">'+esc(message)+'</div>':'')+'<div id="testGate"><label>Demo access password</label><input id="testAccessPassword" type="password" autocomplete="current-password" placeholder="Enter demo password"><button id="unlockTestAccess" class="primary" style="width:100%">Unlock Demo Access</button></div><div id="teacherChooser" class="hide"><label>Teacher</label><select id="testTeacherSelect"><option>Loading teachers...</option></select><button id="testTeacherLogin" class="primary" style="width:100%">Open Teacher Workspace</button></div><div id="testTeacherStatus" class="muted" style="margin-top:10px"></div></div>';
-  async function loadTeachers(){
-    try{
-      var teachers=await publicJson('/api/test-access/teachers');
-      E('testGate').classList.add('hide');E('teacherChooser').classList.remove('hide');
-      E('testTeacherSelect').innerHTML=teachers.length?teachers.map(function(t){return'<option value="'+t.id+'">'+esc(t.first_name+' '+t.last_name+' • '+t.role.replace('_',' ')+' • '+(t.job_title||'Teacher'))+'</option>'}).join(''):'<option value="">No teachers configured</option>';
-      E('testTeacherLogin').onclick=async function(){
-        if(!E('testTeacherSelect').value)return;
-        var btn=E('testTeacherLogin');btn.disabled=true;btn.textContent='Opening workspace...';
-        try{
-          var x=await publicJson('/api/test-access/teacher-login',{method:'POST',body:JSON.stringify({osUserId:E('testTeacherSelect').value})});
-          token=x.accessToken;sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token);if(x.redirectTo&&x.redirectTo!==location.pathname){location.replace(x.redirectTo);return}await openWorkspace()
-        }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Open Teacher Workspace'}
-      }
-    }catch(err){
-      if(err.status===401){E('testGate').classList.remove('hide');E('teacherChooser').classList.add('hide');return}
-      E('testTeacherStatus').textContent=err.message
-    }
-  }
-  E('unlockTestAccess').onclick=async function(){
-    var btn=E('unlockTestAccess');btn.disabled=true;btn.textContent='Unlocking...';E('testTeacherStatus').textContent='';
-    try{
-      await publicJson('/api/test-access/unlock',{method:'POST',body:JSON.stringify({password:E('testAccessPassword').value})});
-      await loadTeachers()
-    }catch(err){E('testTeacherStatus').textContent=err.message;btn.disabled=false;btn.textContent='Unlock Demo Access'}
-  };
-  E('testAccessPassword').onkeydown=function(e){if(e.key==='Enter')E('unlockTestAccess').click()};
-  var state=await publicJson('/api/test-access/status').catch(function(){return{enabled:false,unlocked:false}});
-  if(!state.enabled){showTeacherLogin(message);return}
-  if(state.unlocked)await loadTeachers();
-}
 function showTeacherLogin(message){
   var url='/login?next='+encodeURIComponent('/teacher');
   if(message)url+='&message='+encodeURIComponent(message);
@@ -104,7 +70,7 @@ async function openWorkspace(){
   E('myProfile').onclick=openTeacherProfile;
   E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace('/login')};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
-  var first=visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
+  var savedPage=sessionStorage.getItem('rx_teacher_page')||'';var first=visibleNav.find(function(n){return n[0]===savedPage})||visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
 async function startOnboardingAccess(){
   E('loading').classList.remove('hide');E('app').classList.add('hide');
@@ -126,24 +92,30 @@ async function boot(){
     await openWorkspace();
     if(token){sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token)}
   }catch(e){
-    if(e.status===401||e.status===403){
-      try{var testState=await publicJson('/api/test-access/status');if(testState.enabled){await showTeacherTestAccess(e.message);return}}catch(_e){}
-      showTeacherLogin(e.message);return
-    }
+    if(e.status===401||e.status===403){showTeacherLogin(e.message);return}
     E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><h1>Teacher workspace unavailable</h1><p class="muted">'+esc(e.message)+'</p><button id="teacherRetry" class="primary" style="width:100%">Retry</button><button id="teacherSignIn" class="ghost" style="width:100%;margin-top:8px">Return to sign in</button></div>';
     E('teacherRetry').onclick=function(){location.reload()};
     E('teacherSignIn').onclick=function(){location.replace('/login?next='+encodeURIComponent('/teacher'))}
   }
 }
 
-async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
+async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;sessionStorage.setItem('rx_teacher_page',p);document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
 if(p==='dashboard'){
- var d=await raw('/api/teacher/dashboard');
+ var pair=await Promise.all([raw('/api/teacher/dashboard'),raw('/api/teacher/notifications?limit=10').catch(function(){return{alerts:[],unread:0}})]),d=pair[0],noticeState=pair[1],alerts=noticeState.alerts||[];
  var shortcuts=[['classes','My Classes','Your assigned classes and subjects'],['attendance','Take attendance','Open your daily class register'],['homework','Homework','Prepare and manage class work'],['lessonnotes','Lesson Notes','Plan your teaching']].filter(function(x){var n=nav.find(function(n){return n[0]===x[0]});return n&&can(n[3])});
- E('content').innerHTML='<div class="rx-page-head"><div><div class="rx-kicker">Teaching workspace</div><h1>My Dashboard</h1><p>Your classes, your learners and the day ahead.</p></div><div class="rx-date"><span data-school-date></span></div></div><div class="rx-welcome"><div><div class="rx-kicker">Make room for great teaching</div><h2>A little clarity for your school day.</h2><p>Your teaching responsibilities, whether you are a Class Teacher, Subject Teacher or both.</p></div><div class="rx-welcome-emblem" data-school-icon="classes"></div></div><div class="grid rx-metrics">'+[['Teaching classes',d.assignedClasses],['Subject assignments',d.subjectAssignments||0],['Class teacher classes',d.classTeacherClasses||0],['Students in my classes',d.students],['Homework',d.homework],['Assessments',d.assessments]].map(function(x){return'<div class="panel stat"><span class="muted">'+x[0]+'</span><b>'+esc(x[1])+'</b></div>'}).join('')+'</div><div class="rx-lower"><div class="panel"><div class="rx-kicker">Teaching essentials</div><h3>Ready for your next class</h3><div class="rx-shortcuts">'+shortcuts.map(function(x){return'<button class="rx-shortcut" data-dashboard-page="'+x[0]+'"><span data-school-icon="'+x[0]+'"></span><span>'+x[1]+'<small>'+x[2]+'</small></span></button>'}).join('')+'</div></div><div class="rx-term"><div class="panel"><div class="rx-kicker">Attendance today</div><h3>'+esc(d.presentToday)+' present · '+esc(d.absentToday)+' absent</h3><p>Recorded for your classes today.</p></div><div class="panel"><div class="rx-kicker">Current term</div><h3>'+esc(d.term?d.term.name:'No active term')+'</h3><p>Your assigned class-subject combinations appear in Homework, Assessments, Lesson Notes and Timetable.</p></div></div></div>';
- E('content').onclick=function(e){var b=e.target.closest('[data-dashboard-page]');if(b)page(b.dataset.dashboardPage)};
+ var metrics=[['Teaching classes',d.assignedClasses,''],['Subject assignments',d.subjectAssignments||0,''],['Class teacher classes',d.classTeacherClasses||0,''],['Students in my classes',d.students,''],['Homework',d.homework,''],['Assessments',d.assessments,''],['Pending assessment scores',d.pendingAssessments||0,(d.pendingAssessments||0)?'pending':'complete'],['Unread alerts',d.unreadNotifications||0,(d.unreadNotifications||0)?'pending':'complete']];
+ E('content').innerHTML='<div class="rx-page-head"><div><div class="rx-kicker">Teaching workspace</div><h1>My Dashboard</h1><p>Your classes, learners, pending work and approval alerts in one place.</p></div><div class="rx-date"><span data-school-date></span></div></div><div class="rx-welcome"><div><div class="rx-kicker">Make room for great teaching</div><h2>A little clarity for your school day.</h2><p>Pending work is highlighted so you can see what still needs attention.</p></div><div class="rx-welcome-emblem" data-school-icon="classes"></div></div>'+
+ '<div class="grid rx-metrics">'+metrics.map(function(x){return'<div class="panel stat"'+(x[2]==='pending'?' style="border-color:#ad8741"':'')+'><span class="muted">'+(x[2]==='pending'?'● ':'')+x[0]+'</span><b>'+esc(x[1])+'</b>'+(x[2]?'<div style="margin-top:6px">'+badge(x[2])+'</div>':'')+'</div>'}).join('')+'</div>'+
+ '<div class="rx-lower"><div class="panel"><div class="rx-kicker">Teaching essentials</div><h3>Ready for your next class</h3><div class="rx-shortcuts">'+shortcuts.map(function(x){return'<button class="rx-shortcut" data-dashboard-page="'+x[0]+'"><span data-school-icon="'+x[0]+'"></span><span>'+x[1]+'<small>'+x[2]+'</small></span></button>'}).join('')+'</div></div><div class="rx-term"><div class="panel"><div class="rx-kicker">Attendance today</div><h3>'+esc(d.presentToday)+' present · '+esc(d.absentToday)+' absent</h3><p>Recorded for your classes today.</p></div><div class="panel"><div class="rx-kicker">Current term</div><h3>'+esc(d.term?d.term.name:'No active term')+'</h3><p>Your assigned class-subject combinations appear in Homework, Assessments, Lesson Notes and Timetable.</p></div></div></div>'+
+ '<div class="panel" style="margin-top:12px"><div class="section" style="margin-top:0"><div><h3>Notifications & Pending Work</h3><p class="muted">Approval alerts, returned work and missing-score reminders appear here.</p></div>'+(noticeState.unread?'<button id="readAllTeacherAlerts" class="ghost">Mark all read</button>':'')+'</div>'+
+ (alerts.length?alerts.map(function(a){return'<div class="panel" style="margin-top:8px;'+(!a.read_at?'border-color:#ad8741':'')+'"><div class="section" style="margin:0"><div><b>'+(!a.read_at?'● ':'')+esc(a.subject||'School notification')+'</b><p style="white-space:pre-wrap;margin:6px 0">'+esc(a.body||'')+'</p><small class="muted">'+esc(new Date(a.created_at).toLocaleString())+' • '+esc(String(a.event_key||'notification').replace(/[._]/g,' '))+'</small></div>'+(!a.read_at?'<button class="mini" data-read-notice="'+a.id+'">Mark read</button>':'<span>'+badge('read')+'</span>')+'</div></div>'}).join(''):'<p class="muted">No notifications yet.</p>')+'</div>';
+ E('content').onclick=async function(e){
+   var b=e.target.closest('[data-dashboard-page]');if(b)return page(b.dataset.dashboardPage);
+   b=e.target.closest('[data-read-notice]');if(b){await raw('/api/teacher/notifications/'+b.dataset.readNotice+'/read',{method:'POST',body:'{}',silent:true});return page('dashboard')}
+ };
+ var readAll=E('readAllTeacherAlerts');if(readAll)readAll.onclick=async function(){await raw('/api/teacher/notifications/read-all',{method:'POST',body:'{}',silent:true});page('dashboard')}
 }
-else if(p==='classes'){var rows=await raw('/api/teacher/classes');E('content').innerHTML='<h1>My Classes</h1><div class="panel">'+table(rows,[{key:'classroom_name',label:'Class'},{key:'grade_name',label:'Grade'},{key:'subject_name',label:'Subject',render:function(r){return esc(r.subject_name||'Class teacher / all subjects')}},{key:'student_count',label:'Students'}])+'</div>'}
+else if(p==='classes'){var rows=await raw('/api/teacher/classes');E('content').innerHTML='<h1>My Classes</h1><div class="panel">'+table(rows,[{key:'classroom_name',label:'Class'},{key:'grade_name',label:'Grade'},{key:'subject_name',label:'Subject',render:function(r){return esc(r.subject_name||'Class Teacher responsibility (not a subject assignment)')}},{key:'student_count',label:'Students'}])+'</div>'}
 else if(p==='attendance'){var classes=await raw('/api/teacher/classes');var unique=[];classes.forEach(function(x){if(!unique.some(function(y){return y.classroom_id===x.classroom_id}))unique.push(x)});E('content').innerHTML='<h1>Attendance</h1><div class="row"><select id="cls">'+unique.map(function(c){return'<option value="'+c.classroom_id+'">'+esc(c.classroom_name)+'</option>'}).join('')+'</select><input id="date" type="date" value="'+new Date().toISOString().slice(0,10)+'"></div><button id="load" class="primary">Load class</button><div id="att" class="panel" style="margin-top:12px"></div>';E('load').onclick=async function(){var cid=E('cls').value,date=E('date').value,rows=await raw('/api/attendance?classroomId='+cid+'&date='+date);E('att').innerHTML='<div class="progress-wrap"><div class="progress-head"><span>Attendance progress</span><b id="attProgressText">0 / '+rows.length+'</b></div><div class="progress-track"><div id="attProgressFill" class="progress-fill"></div></div></div>'+rows.map(function(r){return'<div class="attendance" data-student="'+r.student_id+'"><div class="student"><b>'+esc(r.first_name+' '+r.last_name)+'</b><div class="muted">'+esc(r.admission_no)+'</div></div>'+['present','absent','late','excused'].map(function(s){return'<button class="mini '+(r.attendance_status===s?'sel':'')+'" data-status="'+s+'">'+s+'</button>'}).join('')+'</div>'}).join('')+'<button id="saveAtt" class="primary" style="margin-top:12px">Save attendance</button>';
 function updateAttendanceProgress(){var all=E('att').querySelectorAll('[data-student]'),done=0;all.forEach(function(r){if(r.querySelector('.sel'))done++});var pct=all.length?Math.round(done/all.length*100):0;E('attProgressText').textContent=done+' / '+all.length+' ('+pct+'%)';E('attProgressFill').style.width=pct+'%';E('saveAtt').textContent='Save attendance ('+done+'/'+all.length+')'}
 updateAttendanceProgress();
@@ -175,7 +147,7 @@ else if(p==='homework'){
  }
 }
 else if(p==='assessments'){
- var rr=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/teacher/classes'),raw('/api/assessments')]);
+ var rr=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/teacher/classes'),raw('/api/assessments?teacherOsUserId='+encodeURIComponent(ctx.core.id))]);
  var years=rr[0],terms=rr[1],classes=rr[2],rows=rr[3],activeTerm=terms.find(function(t){return t.status==='active'})||terms[0];
  var teaching=classes.filter(function(x){return x.subject_id});
  var categories=[];
@@ -259,31 +231,22 @@ else if(p==='leave'){
 }
 else if(p==='timetable'){
  var rr=await Promise.all([raw('/api/terms'),raw('/api/academic-years'),raw('/api/leave/my-relief-schedule').catch(function(){return[]})]),terms=rr[0],years=rr[1],reliefDuties=rr[2];
- var activeTerm=terms.find(function(x){return x.status==='active'})||terms[0],selectedTerm=activeTerm?activeTerm.id:'',viewMode='mine',rows=[];
+ var activeTerm=terms.find(function(x){return x.status==='active'})||terms[0],selectedTerm=activeTerm?activeTerm.id:'',rows=[];
  var days=['','Monday','Tuesday','Wednesday','Thursday','Friday'];
  function currentTerm(){return terms.find(function(x){return x.id===selectedTerm})||activeTerm}
- function teacherCols(){var cols=[{key:'start_time',label:'Start',render:function(r){return esc(String(r.start_time).slice(0,5))}},{key:'end_time',label:'End',render:function(r){return esc(String(r.end_time).slice(0,5))}},{key:'classroom_name',label:'Class'},{key:'subject_name',label:'Subject'}];if(viewMode==='school')cols.push({key:'teacher_name',label:'Teacher'});cols.push({key:'room',label:'Room'});return cols}
- function renderDay(n){var dayRows=rows.filter(function(x){return Number(x.day_of_week)===n});return'<div class="panel teacher-day"><div class="section compact"><h3>'+days[n]+'</h3><span class="badge">'+dayRows.length+' period'+(dayRows.length===1?'':'s')+'</span></div>'+(dayRows.length?table(dayRows,teacherCols()):'<p class="muted">No periods scheduled.</p>')+'</div>'}
- function renderView(){
-   var term=currentTerm(),title=viewMode==='mine'?'My Timetable':'School Timetable';
-   E('teacherTimetableTitle').textContent=title;
-   E('teacherTimetableSub').textContent=(term?term.name:'Current term')+(viewMode==='mine'?' • Only periods assigned to you':' • All scheduled teaching periods');
-   E('myTimetableBtn').className=viewMode==='mine'?'primary':'ghost';
-   E('schoolTimetableBtn').className=viewMode==='school'?'primary':'ghost';
-   E('teacherTimetableGrid').innerHTML=[1,2,3,4,5].map(renderDay).join('')
- }
+ function teacherCols(){return[{key:'start_time',label:'Start',render:function(r){return esc(String(r.start_time).slice(0,5))}},{key:'end_time',label:'End',render:function(r){return esc(String(r.end_time).slice(0,5))}},{key:'classroom_name',label:'Class'},{key:'subject_name',label:'Subject'},{key:'room',label:'Room'}]}
+ function renderDay(n){var dayRows=rows.filter(function(x){return Number(x.day_of_week)===n});return'<div class="panel teacher-day"><div class="section compact"><h3>'+days[n]+'</h3><span class="badge">'+dayRows.length+' period'+(dayRows.length===1?'':'s')+'</span></div>'+(dayRows.length?table(dayRows,teacherCols()):'<p class="muted">No periods assigned to you.</p>')+'</div>'}
  async function loadTimetable(){
    var term=currentTerm(),q=[];
    if(term){q.push('termId='+encodeURIComponent(term.id));q.push('academicYearId='+encodeURIComponent(term.academic_year_id))}
-   rows=await raw((viewMode==='mine'?'/api/teacher/timetable':'/api/timetable')+(q.length?'?'+q.join('&'):''));
-   renderView()
+   rows=await raw('/api/teacher/timetable'+(q.length?'?'+q.join('&'):''));
+   E('teacherTimetableSub').textContent=(term?term.name:'Current term')+' • Only periods assigned to you';
+   E('teacherTimetableGrid').innerHTML=[1,2,3,4,5].map(renderDay).join('')
  }
- E('content').innerHTML='<div class="section"><div><h1 id="teacherTimetableTitle">My Timetable</h1><p id="teacherTimetableSub" class="muted">Your timetable for the active term.</p></div><div class="actions"><button id="printMyTimetable" class="ghost">Print / Save PDF</button></div></div>'+
- '<div class="panel teacher-timetable-controls"><div><label>Term</label><select id="teacherTerm">'+terms.map(function(t){var y=years.find(function(y){return y.id===t.academic_year_id});return'<option value="'+t.id+'"'+(t.id===selectedTerm?' selected':'')+'>'+esc(t.name)+' • '+esc(y?y.name:'')+'</option>'}).join('')+'</select></div><div class="teacher-view-toggle"><button id="myTimetableBtn" class="primary">My timetable</button><button id="schoolTimetableBtn" class="ghost">View school timetable</button></div></div>'+
+ E('content').innerHTML='<div class="section"><div><h1>My Timetable</h1><p id="teacherTimetableSub" class="muted">Only periods assigned to you are shown.</p></div><div class="actions"><button id="printMyTimetable" class="ghost">Print / Save PDF</button></div></div>'+
+ '<div class="panel teacher-timetable-controls"><div><label>Term</label><select id="teacherTerm">'+terms.map(function(t){var y=years.find(function(y){return y.id===t.academic_year_id});return'<option value="'+t.id+'"'+(t.id===selectedTerm?' selected':'')+'>'+esc(t.name)+' • '+esc(y?y.name:'')+'</option>'}).join('')+'</select></div><div class="muted">Personal teaching schedule</div></div>'+
  (reliefDuties.length?'<div class="panel" style="margin-bottom:12px;border-color:#2c6d5c"><h3>Temporary Relief Duties</h3><p class="muted">These are additional periods you are taking over for approved staff leave.</p>'+table(reliefDuties,[{key:"coverage_date",label:"Date"},{key:"start_time",label:"Start",render:function(r){return esc(String(r.start_time||"").slice(0,5))}},{key:"end_time",label:"End",render:function(r){return esc(String(r.end_time||"").slice(0,5))}},{key:"classroom_name",label:"Class"},{key:"subject_name",label:"Subject"}])+'</div>':'')+'<div id="teacherTimetableGrid" class="teacher-timetable-grid"></div>';
  E('teacherTerm').onchange=function(){selectedTerm=this.value;loadTimetable()};
- E('myTimetableBtn').onclick=function(){viewMode='mine';loadTimetable()};
- E('schoolTimetableBtn').onclick=function(){viewMode='school';loadTimetable()};
  E('printMyTimetable').onclick=function(){window.print()};
  await loadTimetable()
 }
@@ -298,8 +261,9 @@ else if(p==='signature'){
 else if(p==='reports'){
  var canReview=can('reports.approve');
  var rr=await Promise.all([raw('/api/teacher/students'),raw('/api/terms'),raw('/api/teacher/report-worklist').catch(function(){return[]}),canReview?raw('/api/report-review-queue').catch(function(){return[]}):Promise.resolve([])]);
- var students=rr[0],terms=rr[1],worklist=rr[2],queue=rr[3],reportStudents=students.filter(function(s){return s.is_class_teacher});
- var classMap={};reportStudents.forEach(function(s){if(s.classroom_id)classMap[s.classroom_id]=s.classroom_name});
+ var students=rr[0],terms=rr[1],worklist=rr[2],queue=rr[3],reportStudents=worklist.map(function(w){return{id:w.student_id,first_name:w.first_name,last_name:w.last_name,classroom_id:w.classroom_id,classroom_name:w.classroom_name,workflow_status:w.workflow_status,term_id:w.term_id}});
+ var classTeacherStudents=students.filter(function(s){return s.is_class_teacher});
+ var classMap={};classTeacherStudents.forEach(function(s){if(s.classroom_id)classMap[s.classroom_id]=s.classroom_name});
  var classIds=Object.keys(classMap);
  function reportScores(r){return table(r.subjects,[
    {key:'subject_name',label:'Subject',render:function(x){return'<b>'+esc(x.subject_name)+'</b>'}},
@@ -311,7 +275,7 @@ else if(p==='reports'){
  E('content').innerHTML='<div class="section"><div><h1>Report Cards</h1><p class="muted">The system checks every subject before submission. Once you send a completed report, it leaves your work queue and moves to the Headteacher/Reviewer.</p></div>'+(returnedCount?'<span class="badge returned">🔔 '+returnedCount+' returned report'+(returnedCount===1?'':'s')+'</span>':'')+'</div>'+
  (worklist.filter(function(x){return x.workflow_status==='returned'}).length?'<div class="panel" style="border-color:#a96d33"><h3>● Returned for correction</h3>'+table(worklist.filter(function(x){return x.workflow_status==='returned'}),[{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},{key:"classroom_name",label:"Class"},{key:"term_name",label:"Term"},{key:"return_note",label:"Correction required"},{key:"workflow_status",label:"Status",render:function(r){return badge(r.workflow_status)}}],function(r){return '<button class="mini primary" data-open-returned="'+r.student_id+'" data-term="'+r.term_id+'">View & Edit</button>'})+'</div>':'')+
  (canReview?'<div class="panel"><h3>Reports awaiting approval</h3><p class="muted">Approval does not release the report. The Class Teacher releases the complete approved class pool afterward.</p>'+table(queue.filter(function(x){return x.workflow_status==='submitted'}),[{key:"first_name",label:"Student",render:function(r){return esc(r.first_name+" "+r.last_name)}},{key:"classroom_name",label:"Class"},{key:"term_name",label:"Term"},{key:"workflow_status",label:"Status",render:function(r){return badge(r.workflow_status)}}],function(r){return '<button class="mini" data-review-report="'+r.student_id+'" data-term="'+r.term_id+'">Review</button>'})+'</div>':'')+
- '<div class="panel" style="margin-top:12px"><h3>Complete Individual Report</h3>'+(!reportStudents.length?'<div class="notice">Only the assigned Class Teacher completes and submits report cards. Subject Teachers enter marks under Assessments & Scores.</div>':'')+'<div class="row"><select id="student">'+reportStudents.map(function(s){return'<option value="'+s.id+'">'+esc(s.first_name+' '+s.last_name+' • '+s.classroom_name)+'</option>'}).join('')+'</select><select id="term">'+terms.map(function(t){return'<option value="'+t.id+'"'+(t.status==='active'?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div><button id="loadReport" class="primary">Load report</button></div><div id="report"></div>'+
+ '<div class="panel" style="margin-top:12px"><div class="section" style="margin-top:0"><div><h3>Remaining Individual Reports</h3><p class="muted">Only reports still requiring your work appear here. Once submitted to the Headteacher/Reviewer, the student leaves this queue automatically.</p></div><span>'+badge(reportStudents.length?'pending':'complete')+'</span></div>'+(!classTeacherStudents.length?'<div class="notice">Only the assigned Class Teacher completes and submits report cards. Subject Teachers enter marks under Assessments & Scores.</div>':!reportStudents.length?'<div class="notice"><b>All current reports have been submitted.</b> Returned reports will reappear here if corrections are required.</div>':'')+(reportStudents.length?'<div class="row"><select id="student">'+reportStudents.map(function(s){return'<option value="'+s.id+'" data-term="'+esc(s.term_id||'')+'">'+esc(s.first_name+' '+s.last_name+' • '+s.classroom_name+' • '+String(s.workflow_status||'not started').replace('_',' '))+'</option>'}).join('')+'</select><select id="term">'+terms.map(function(t){return'<option value="'+t.id+'"'+(t.status==='active'?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select></div><button id="loadReport" class="primary">Load report</button>':'')+'</div><div id="report"></div>'+
  '<div class="panel" style="margin-top:12px"><div class="section"><div><h3>Class Report Pool</h3><p class="muted">After every student report is approved, review the full class pool with Student ID, guardian email, promotion outcome and assessment readiness, then release all reports to the Parent Portal and guardian email.</p></div></div><div class="row"><select id="poolClass">'+classIds.map(function(id){return'<option value="'+id+'">'+esc(classMap[id])+'</option>'}).join('')+'</select><select id="poolTerm">'+terms.map(function(t){return'<option value="'+t.id+'"'+(t.status==='active'?' selected':'')+'>'+esc(t.name)+'</option>'}).join('')+'</select><button id="loadReportPool" class="ghost">Load Pool</button></div><div id="reportPoolOut" style="margin-top:12px"></div></div>';
 
  async function loadReport(sid,tid){
@@ -330,7 +294,7 @@ else if(p==='reports'){
      '<div class="actions">'+((status==='draft'||status==='returned')?'<button id="saveComments" class="ghost">Save draft</button>'+(ready.complete?'<button id="submitReport" class="primary">Save & Send to Headteacher</button>':'<button class="primary" disabled>Missing Grades - Cannot Submit</button>'):'')+(status==='submitted'?'<span class="badge">Awaiting review</span>':'')+(status==='approved'?(cm.released_at?'<span class="badge">Released to parents</span>':'<span class="badge">Approved • Waiting in class pool</span>'):'')+'</div>'+
      (cm.headteacher_comment?'<div class="panel" style="margin-top:12px"><h3>Headteacher / Reviewer Remark</h3><p>'+esc(cm.headteacher_comment)+'</p></div>':'')+'</div>';
    var save=E('saveComments');if(save)save.onclick=async function(){await raw('/api/report-comments/'+sid,{method:'PUT',body:JSON.stringify({termId:tid,classTeacherComment:E('teacherComment').value||null,conduct:E('conduct').value||null,interest:E('interest').value||null})});toast('Report draft saved');loadReport(sid,tid)};
-   var submit=E('submitReport');if(submit)submit.onclick=async function(){if(!E('teacherComment').value.trim())return toast('Enter the class teacher remark first',true);await raw('/api/report-comments/'+sid,{method:'PUT',body:JSON.stringify({termId:tid,classTeacherComment:E('teacherComment').value,conduct:E('conduct').value||null,interest:E('interest').value||null})});await raw('/api/report-comments/'+sid+'/submit',{method:'POST',body:JSON.stringify({termId:tid})});toast('Report submitted for review');loadReport(sid,tid)}
+   var submit=E('submitReport');if(submit)submit.onclick=async function(){if(!E('teacherComment').value.trim())return toast('Enter the class teacher remark first',true);await raw('/api/report-comments/'+sid,{method:'PUT',body:JSON.stringify({termId:tid,classTeacherComment:E('teacherComment').value,conduct:E('conduct').value||null,interest:E('interest').value||null})});await raw('/api/report-comments/'+sid+'/submit',{method:'POST',body:JSON.stringify({termId:tid})});toast('Report submitted for review and removed from your remaining-work queue');page('reports')}
  }
  async function loadPool(){
    var cid=E('poolClass').value,tid=E('poolTerm').value;if(!cid)return E('reportPoolOut').innerHTML='<div class="notice">No Class Teacher class is assigned.</div>';
@@ -351,7 +315,7 @@ else if(p==='reports'){
    var remind=E('remindMissingTeachers');if(remind)remind.onclick=async function(){if(!confirm('Send a missing-grade reminder to the assigned subject teachers?'))return;remind.disabled=true;remind.textContent='Sending reminders...';try{var x=await raw('/api/teacher/report-pool/remind-missing',{method:'POST',body:JSON.stringify({classroomId:cid,termId:tid})});var sent=(x.results||[]).filter(function(r){return r.status==='sent'||r.status==='queued'}).length;toast('Reminders processed for '+sent+' teacher assignment(s)');loadPool()}catch(err){remind.disabled=false;remind.textContent='Remind Teachers';toast(err.message,true)}};
    var release=E('releaseClassReports');if(release&&!release.disabled)release.onclick=async function(){if(!confirm('Release ALL approved reports in this class to Parent Portals and send guardian email notifications?'))return;release.disabled=true;release.textContent='Releasing...';try{var x=await raw('/api/teacher/report-pool/release',{method:'POST',body:JSON.stringify({classroomId:cid,termId:tid})});toast(x.released+' report(s) released • '+x.missingGuardianEmail+' missing guardian email');loadPool()}catch(err){release.disabled=false;release.textContent='Release All to Parent Portal & Email';toast(err.message,true)}}
  }
- E('loadReport').onclick=function(){if(!E('student').value)return toast('No Class Teacher student is available for report completion',true);loadReport(E('student').value,E('term').value)};
+ var loadReportButton=E('loadReport');if(loadReportButton)loadReportButton.onclick=function(){if(!E('student').value)return toast('No remaining Class Teacher report is available',true);var selected=E('student').selectedOptions[0],tid=(selected&&selected.dataset.term)||E('term').value;loadReport(E('student').value,tid)};
  E('loadReportPool').onclick=loadPool;
  E('content').onclick=async function(e){
    var returnedSid=e.target.dataset.openReturned;if(returnedSid){return loadReport(returnedSid,e.target.dataset.term)}
