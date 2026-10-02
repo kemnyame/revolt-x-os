@@ -2234,9 +2234,34 @@ app.get('/api/school/profile',async request=>{
 });
 app.patch('/api/school/profile',async request=>{
   const a=await authorize(request,db,config,'school.manage');
-  const b=z.object({schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),phone:z.string().max(60).nullable().optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),logoImageData:z.string().max(1500000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const b=z.object({
+    schoolName:z.string().min(2).max(240).optional(),shortName:z.string().max(80).nullable().optional(),motto:z.string().max(240).nullable().optional(),
+    phone:z.string().max(60).nullable().optional(),email:z.preprocess(v=>typeof v==='string'?(v.trim()||null):v,z.string().email().nullable().optional()),
+    address:z.string().max(2000).nullable().optional(),logoImageData:z.string().max(1500000).nullable().optional(),
+    emailAccentColor:z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
+    emailHeaderText:z.string().trim().max(160).nullable().optional(),
+    emailFooterText:z.string().trim().max(500).nullable().optional()
+  }).refine(v=>Object.keys(v).length>0).parse(request.body);
   if(b.logoImageData&& !/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(b.logoImageData))throw fail(400,'School logo must be a PNG, JPG or WebP image');
-  const row=await one<any>(db,`UPDATE school_profiles SET school_name=COALESCE($1,school_name),short_name=CASE WHEN $2 THEN $3 ELSE short_name END,motto=CASE WHEN $4 THEN $5 ELSE motto END,phone=CASE WHEN $6 THEN $7 ELSE phone END,email=CASE WHEN $8 THEN $9 ELSE email END,address=CASE WHEN $10 THEN $11 ELSE address END,logo_image_data=CASE WHEN $12 THEN $13 ELSE logo_image_data END,updated_at=now() WHERE organisation_id=$14 RETURNING *`,[b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,Object.hasOwn(b,'logoImageData'),b.logoImageData??null,a.core.organisation_id]);
+  const row=await one<any>(db,`UPDATE school_profiles SET
+    school_name=COALESCE($1,school_name),
+    short_name=CASE WHEN $2 THEN $3 ELSE short_name END,
+    motto=CASE WHEN $4 THEN $5 ELSE motto END,
+    phone=CASE WHEN $6 THEN $7 ELSE phone END,
+    email=CASE WHEN $8 THEN $9 ELSE email END,
+    address=CASE WHEN $10 THEN $11 ELSE address END,
+    logo_image_data=CASE WHEN $12 THEN $13 ELSE logo_image_data END,
+    email_accent_color=COALESCE($14,email_accent_color),
+    email_header_text=CASE WHEN $15 THEN $16 ELSE email_header_text END,
+    email_footer_text=CASE WHEN $17 THEN $18 ELSE email_footer_text END,
+    updated_at=now()
+    WHERE organisation_id=$19 RETURNING *`,[
+      b.schoolName??null,Object.hasOwn(b,'shortName'),b.shortName??null,Object.hasOwn(b,'motto'),b.motto??null,
+      Object.hasOwn(b,'phone'),b.phone??null,Object.hasOwn(b,'email'),b.email??null,Object.hasOwn(b,'address'),b.address??null,
+      Object.hasOwn(b,'logoImageData'),b.logoImageData??null,b.emailAccentColor??null,
+      Object.hasOwn(b,'emailHeaderText'),b.emailHeaderText??null,Object.hasOwn(b,'emailFooterText'),b.emailFooterText??null,
+      a.core.organisation_id
+    ]);
   await audit(a.core.organisation_id,a.core.id,'school.profile.updated','school_profile',a.core.organisation_id);
   return row;
 });
@@ -5121,13 +5146,17 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
   const reportStudent=await one<any>(db,'SELECT first_name,last_name FROM students WHERE id=$1',[studentId]);
   for(const reviewerId of [...new Set(reviewerIds)]){
     const reviewer=coreUsers.find((u:any)=>u.id===reviewerId);
+    const subject='Report card awaiting review';
+    const body=`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. All required Class Assessment and Exam grades are present. Open the approval queue in Revolt-X School.`;
+    await notifyStaff({
+      organisationId:a.core.organisation_id,recipientOsUserId:reviewerId,eventKey:'reports.submitted',
+      subject,body,relatedType:'report_comment',relatedId:report.id,actorOsUserId:a.core.id
+    });
     if(reviewer?.email){
       await notifyContact({
         organisationId:a.core.organisation_id,actorOsUserId:a.core.id,eventKey:'reports.submitted',
         name:(reviewer.first_name+' '+reviewer.last_name).trim(),email:reviewer.email,phone:null,
-        subject:'Report card awaiting review',
-        body:`A report card has been submitted for review. Student: ${reportStudent.first_name} ${reportStudent.last_name}. All required Class Assessment and Exam grades are present. Open the approval queue in Revolt-X School.`,
-        relatedType:'report_comment',relatedId:report.id
+        subject,body,relatedType:'report_comment',relatedId:report.id
       });
     }
   }
@@ -5140,31 +5169,32 @@ app.get('/api/teacher/report-worklist',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   await ensureTeachingRole(a);
   const q=z.object({termId:z.string().uuid().optional()}).parse(request.query);
-  return (await db.query(`SELECT rc.*,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,
-      t.name term_name,y.name academic_year
-    FROM report_comments rc
-    JOIN students s ON s.id=rc.student_id
-    JOIN terms t ON t.id=rc.term_id
-    JOIN academic_years y ON y.id=t.academic_year_id
-    JOIN enrolments e ON e.student_id=s.id AND e.academic_year_id=t.academic_year_id
+  const term=q.termId
+    ?await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id])
+    :await activeTerm(a.core.organisation_id);
+  if(!term)return[];
+  return (await db.query(`SELECT rc.id report_id,s.id student_id,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,
+      t.id term_id,t.name term_name,y.name academic_year,COALESCE(rc.workflow_status,'not_started') workflow_status,
+      rc.return_note,rc.updated_at,rc.submitted_at
+    FROM enrolments e
+    JOIN students s ON s.id=e.student_id
     JOIN classrooms c ON c.id=e.classroom_id
-    WHERE rc.organisation_id=$1
-      AND (
-        COALESCE(
-          (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
-           WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
-             AND ta.term_id=rc.term_id ORDER BY ta.created_at DESC LIMIT 1),
-          (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
-           WHERE ta.organisation_id=rc.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
-             AND ta.term_id IS NULL ORDER BY ta.created_at DESC LIMIT 1),
-          c.class_teacher_os_user_id
-        )=$2
-        OR (rc.workflow_status='returned' AND rc.submitted_by_os_user_id=$2)
-      )
-      AND rc.workflow_status IN ('draft','returned')
-      AND ($3::uuid IS NULL OR rc.term_id=$3)
-    ORDER BY CASE rc.workflow_status WHEN 'returned' THEN 0 ELSE 1 END,rc.updated_at DESC`,
-    [a.core.organisation_id,a.core.id,q.termId??null])).rows;
+    JOIN terms t ON t.id=$3 AND t.academic_year_id=e.academic_year_id
+    JOIN academic_years y ON y.id=e.academic_year_id
+    LEFT JOIN report_comments rc ON rc.organisation_id=e.organisation_id AND rc.student_id=s.id AND rc.term_id=t.id
+    WHERE e.organisation_id=$1 AND e.status='active' AND s.status='active'
+      AND COALESCE(
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=e.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id=t.id ORDER BY ta.created_at DESC LIMIT 1),
+        (SELECT ta.teacher_os_user_id FROM teacher_assignments ta
+         WHERE ta.organisation_id=e.organisation_id AND ta.classroom_id=c.id AND ta.subject_id IS NULL AND ta.is_active=true
+           AND ta.term_id IS NULL ORDER BY ta.created_at DESC LIMIT 1),
+        c.class_teacher_os_user_id
+      )=$2
+      AND COALESCE(rc.workflow_status,'not_started') IN ('not_started','draft','returned')
+    ORDER BY CASE COALESCE(rc.workflow_status,'not_started') WHEN 'returned' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+      c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id,term.id])).rows;
 });
 
 async function classReportPool(organisationId:string,classroomId:string,termId:string){
@@ -5332,28 +5362,31 @@ app.post('/api/teacher/report-pool/remind-missing',async request=>{
     }
 
     for(const teacher of subject.teachers){
-      if(!teacher.email){
-        results.push({subjectId:subject.subjectId,subjectName:subject.subjectName,teacherId:teacher.id,teacherName:teacher.name,status:'missing_email'});
-        continue;
-      }
-      const delivery=await deliverCommunication({
-        organisationId:a.core.organisation_id,
-        actorOsUserId:a.core.id,
-        channel:'email',
-        recipientName:teacher.name,
-        recipientAddress:teacher.email,
-        subject:'Missing assessment grades - '+readiness.classroom.name+' / '+subject.subjectName,
-        body:bodyText,
-        templateKey:'assessment.missing_scores',
-        relatedType:'classroom',
-        relatedId:b.classroomId
+      await notifyStaff({
+        organisationId:a.core.organisation_id,recipientOsUserId:teacher.id,eventKey:'assessment.scores_missing',
+        subject:'Pending assessment scores - '+readiness.classroom.name+' / '+subject.subjectName,
+        body:bodyText,relatedType:'assessment_readiness',relatedId:b.classroomId+':'+b.termId+':'+subject.subjectId,
+        actorOsUserId:a.core.id
       });
+      let deliveryStatus='dashboard_notification';
+      if(teacher.email){
+        const delivery=await deliverCommunication({
+          organisationId:a.core.organisation_id,
+          actorOsUserId:a.core.id,
+          channel:'email',
+          recipientName:teacher.name,
+          recipientAddress:teacher.email,
+          subject:'Missing assessment grades - '+readiness.classroom.name+' / '+subject.subjectName,
+          body:bodyText,
+          templateKey:'assessment.missing_scores',
+          relatedType:'classroom',
+          relatedId:b.classroomId
+        });
+        deliveryStatus=delivery.status;
+      }
       results.push({
-        subjectId:subject.subjectId,
-        subjectName:subject.subjectName,
-        teacherId:teacher.id,
-        teacherName:teacher.name,
-        status:delivery.status
+        subjectId:subject.subjectId,subjectName:subject.subjectName,teacherId:teacher.id,teacherName:teacher.name,
+        status:deliveryStatus,notification:true,emailConfigured:Boolean(teacher.email)
       });
     }
   }
@@ -5508,6 +5541,17 @@ app.post('/api/report-comments/:studentId/review',async request=>{
       WHERE id=$4::uuid RETURNING *`,[term.next_term_begins??null,b.returnNote??null,a.core.id,report.id]);
 
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1',[studentId]);
+  if(classTeacherId){
+    await notifyStaff({
+      organisationId:a.core.organisation_id,recipientOsUserId:classTeacherId,
+      eventKey:status==='approved'?'reports.approved':'reports.returned',
+      subject:status==='approved'?'Report card approved':'Report card returned for correction',
+      body:status==='approved'
+        ?'The report card for '+student.first_name+' '+student.last_name+' has been approved and is ready for the class release pool.'
+        :'The report card for '+student.first_name+' '+student.last_name+' has been returned for correction. Reviewer note: '+(b.returnNote||''),
+      relatedType:'report_comment',relatedId:report.id,actorOsUserId:a.core.id
+    });
+  }
   if(status==='returned'&&classTeacherId){
     const coreUsers=await fetchCoreUsers(a.core.organisation_id);
     const teacher=coreUsers.find((u:any)=>u.id===classTeacherId);
@@ -6051,21 +6095,47 @@ app.get('/api/teacher/dashboard',async request=>{
     FROM assignments`,[a.core.organisation_id,a.core.id,term?.id??null]);
   const row=scope.rows[0]||{};
   const classIds=(row.classroom_ids||[]).filter(Boolean);
-  if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,presentToday:0,absentToday:0,term};
+  const notices=await one<any>(db,`SELECT count(*)::int total,count(*) FILTER(WHERE read_at IS NULL)::int unread
+    FROM staff_notifications WHERE organisation_id=$1 AND recipient_os_user_id=$2`,[a.core.organisation_id,a.core.id]);
+  if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,pendingAssessments:0,presentToday:0,absentToday:0,unreadNotifications:Number(notices.unread||0),term};
   const q=await db.query(`SELECT
     (SELECT count(DISTINCT e.student_id)::int FROM enrolments e WHERE e.classroom_id=ANY($1::uuid[]) AND e.status='active') students,
     (SELECT count(*)::int FROM homework_assignments h WHERE h.teacher_os_user_id=$3 AND h.status<>'closed') homework,
     (SELECT count(*)::int FROM assessments ass WHERE ass.teacher_os_user_id=$3 AND ($2::uuid IS NULL OR ass.term_id=$2)) assessments,
+    (SELECT count(*)::int FROM assessments ass
+      WHERE ass.teacher_os_user_id=$3 AND ($2::uuid IS NULL OR ass.term_id=$2)
+        AND (SELECT count(*) FROM assessment_scores sc WHERE sc.assessment_id=ass.id)
+          < (SELECT count(*) FROM enrolments e WHERE e.classroom_id=ass.classroom_id AND e.status='active')) pending_assessments,
     (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='present') present_today,
     (SELECT count(*)::int FROM attendance_records ar WHERE ar.classroom_id=ANY($1::uuid[]) AND ar.attendance_date=current_date AND ar.status='absent') absent_today`,
     [classIds,term?.id??null,a.core.id]);
   return{
-    assignedClasses:Number(row.assigned_classes||0),
-    subjectAssignments:Number(row.subject_assignments||0),
+    assignedClasses:Number(row.assigned_classes||0),subjectAssignments:Number(row.subject_assignments||0),
     classTeacherClasses:Number(row.class_teacher_classes||0),
     students:q.rows[0]?.students??0,homework:q.rows[0]?.homework??0,assessments:q.rows[0]?.assessments??0,
-    presentToday:q.rows[0]?.present_today??0,absentToday:q.rows[0]?.absent_today??0,term
+    pendingAssessments:q.rows[0]?.pending_assessments??0,presentToday:q.rows[0]?.present_today??0,
+    absentToday:q.rows[0]?.absent_today??0,unreadNotifications:Number(notices.unread||0),term
   };
+});
+
+app.get('/api/teacher/notifications',async request=>{
+  const a=await authorize(request,db,config);
+  await ensureTeachingRole(a);
+  const q=z.object({limit:z.coerce.number().int().min(1).max(100).default(40),unread:z.coerce.boolean().optional()}).parse(request.query);
+  const rows=(await db.query(`SELECT * FROM staff_notifications
+    WHERE organisation_id=$1 AND recipient_os_user_id=$2 AND ($3::boolean IS NULL OR ($3=true AND read_at IS NULL))
+    ORDER BY created_at DESC LIMIT $4`,[a.core.organisation_id,a.core.id,q.unread??null,q.limit])).rows;
+  return{alerts:rows,unread:rows.filter((x:any)=>!x.read_at).length};
+});
+app.post('/api/teacher/notifications/:id/read',async request=>{
+  const a=await authorize(request,db,config);await ensureTeachingRole(a);
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  return one<any>(db,'UPDATE staff_notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND organisation_id=$2 AND recipient_os_user_id=$3 RETURNING *',[id,a.core.organisation_id,a.core.id]);
+});
+app.post('/api/teacher/notifications/read-all',async request=>{
+  const a=await authorize(request,db,config);await ensureTeachingRole(a);
+  const result=await db.query('UPDATE staff_notifications SET read_at=now() WHERE organisation_id=$1 AND recipient_os_user_id=$2 AND read_at IS NULL',[a.core.organisation_id,a.core.id]);
+  return{updated:result.rowCount||0};
 });
 
 function testAccessCookieValue(request:any){
@@ -6912,7 +6982,19 @@ app.post('/api/lesson-notes/:id/submit',async request=>{
   if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only submit your own lesson notes');
   if(!['draft','returned'].includes(current.status))throw fail(409,'Only draft or returned lesson notes can be submitted');
   const row=await one<any>(db,"UPDATE lesson_notes SET status='submitted',submitted_at=now(),updated_at=now() WHERE id=$1 RETURNING *",[id]);
-  await audit(a.core.organisation_id,a.core.id,'lesson_note.submitted','lesson_note',id);
+  const reviewers=(await db.query(`SELECT DISTINCT sm.os_user_id
+    FROM school_memberships sm
+    JOIN school_role_capabilities rc ON rc.organisation_id=sm.organisation_id AND rc.role=sm.role
+      AND rc.capability_key='lesson_notes.review' AND rc.allowed=true
+    WHERE sm.organisation_id=$1 AND sm.status='active' AND sm.os_user_id<>$2`,[a.core.organisation_id,current.teacher_os_user_id])).rows;
+  for(const reviewer of reviewers){
+    await notifyStaff({
+      organisationId:a.core.organisation_id,recipientOsUserId:reviewer.os_user_id,eventKey:'lesson_note.submitted',
+      subject:'Lesson note awaiting approval',body:'A lesson note titled "'+current.title+'" has been submitted for review.',
+      relatedType:'lesson_note',relatedId:id,actorOsUserId:a.core.id
+    });
+  }
+  await audit(a.core.organisation_id,a.core.id,'lesson_note.submitted','lesson_note',id,{reviewers:reviewers.length});
   return row;
 });
 app.post('/api/lesson-notes/:id/review',async request=>{
@@ -6924,6 +7006,14 @@ app.post('/api/lesson-notes/:id/review',async request=>{
   const status=b.action==='approve'?'approved':'returned';
   const row=await one<any>(db,`UPDATE lesson_notes SET status=$1,review_note=$2,reviewed_by_os_user_id=$3,reviewed_at=now(),updated_at=now()
     WHERE id=$4 RETURNING *`,[status,b.note??null,a.core.id,id]);
+  await notifyStaff({
+    organisationId:a.core.organisation_id,recipientOsUserId:current.teacher_os_user_id,
+    eventKey:status==='approved'?'lesson_note.approved':'lesson_note.returned',
+    subject:status==='approved'?'Lesson note approved':'Lesson note returned for correction',
+    body:status==='approved'?'Your lesson note "'+current.title+'" has been approved.'
+      :'Your lesson note "'+current.title+'" was returned. Reviewer note: '+(b.note||''),
+    relatedType:'lesson_note',relatedId:id,actorOsUserId:a.core.id
+  });
   await audit(a.core.organisation_id,a.core.id,'lesson_note.'+status,'lesson_note',id);
   return row;
 });
