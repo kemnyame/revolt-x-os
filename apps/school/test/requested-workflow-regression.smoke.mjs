@@ -97,9 +97,10 @@ test('guardian email is optional in admissions and student onboarding',async()=>
   const admissions=await read('admissions-ui.js');
   const server=await read('server.js');
   assert.match(ui,/Guardian email \(optional/);
-  assert.match(ui,/guardianEmail:v\.guardianEmail\|\|undefined/);
+  assert.match(ui,/guardianEmail:v\.guardianEmail\.trim\(\)\|\|undefined/);
   assert.match(admissions,/Email <span class="muted">\(optional\)<\/span>/);
-  assert.match(server,/guardianEmail:\s*z\.string\(\)\.email\(\)\.optional\(\)/);
+  assert.match(server,/const optionalEmailSchema\s*=\s*z\.preprocess/);
+  assert.match(server,/guardianEmail:optionalEmailSchema/);
 });
 
 test('parent portal supports linked children, alerts, visual timetable and official report PDF',async()=>{
