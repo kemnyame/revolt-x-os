@@ -25,7 +25,7 @@ test('assessment and report flow uses homework-aware 30 percent CA and a raw exa
   assert.match(server,/class_assessment_raw\*0\.30/);
 
   // The final exam can be entered out of 100 and is normalised before contributing 70%.
-  assert.match(server,/systemDefaultMax=100/);
+  assert.match(server,/systemDefaultMax\s*=\s*100/);
   assert.match(server,/exam_raw\*0\.70/);
   assert.doesNotMatch(server,/End-of-Term Exam is fixed at 70 marks/);
   assert.match(teacher,/exam:100/);
