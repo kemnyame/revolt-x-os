@@ -22,10 +22,10 @@
     "typescript": "^5.9.2",
     "@types/node": "^24.5.2",
     "@types/pg": "^8.15.5",
-    "pdfkit": "^0.17.2"
+    "pdfkit": "^0.17.2",
+    "@electric-sql/pglite": "^0.5.8"
   },
   "devDependencies": {
-    "tsx": "^4.20.6",
-    "@electric-sql/pglite": "^0.5.8"
+    "tsx": "^4.20.6"
   }
 }
