@@ -96,7 +96,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
     if(row?.core_context)return row.core_context;
   }
 
-  throw Object.assign(new Error('Your School session has expired because of inactivity or its security time limit. Please sign in again.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
+  throw Object.assign(new Error('School session expired. Please sign in again. The session ended because of inactivity or its configured security time limit.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
 }
 
 const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
