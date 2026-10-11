@@ -47,5 +47,10 @@ src=src.slice(0,start)+replacement+src.slice(end+endMarker.length);
 // patch is removed, so generated commercial routes must use the same non-generic style
 // as the materialized production source.
 src=src.replaceAll('one<any>(', 'one(').replaceAll('maybeOne<any>(', 'maybeOne(');
+// The payroll register export helper may be emitted into a conditional branch in the
+// legacy UI source. Use an async function expression (a valid single statement) instead
+// of a block-scoped async function declaration, then terminate it before binding buttons.
+src=src.replaceAll('async function exportPayroll(format){','var exportPayroll=async function(format){');
+src=src.replaceAll("setTimeout(function(){URL.revokeObjectURL(url)},1000)}if(E('exportPayrollPdf'))", "setTimeout(function(){URL.revokeObjectURL(url)},1000)};if(E('exportPayrollPdf'))");
 await writeFile(file,src);
 console.log('Repaired commercial launch cleanup materializer');
