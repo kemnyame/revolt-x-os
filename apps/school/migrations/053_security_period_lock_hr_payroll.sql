@@ -163,7 +163,6 @@ SELECT sr.organisation_id,sr.key,c.key,
     WHEN sr.key='school_admin' THEN true
     WHEN sr.key IN('headteacher','registrar') AND c.key IN('payroll.view','payroll.manage') THEN true
     WHEN sr.key IN('accountant','bursar') AND c.key IN('payroll.view','payroll.process') THEN true
-    WHEN c.key='payroll.view' THEN true
     ELSE false
   END
 FROM school_roles sr

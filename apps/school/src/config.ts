@@ -15,6 +15,10 @@ const schema = z.object({
   PARENT_LOGIN_BLOCK_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
   COMMUNICATION_RETRY_INTERVAL_MS: z.coerce.number().int().min(15000).max(900000).default(60000),
   COMMUNICATION_RETRY_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
+  // When Core OS cannot be reached, a recently verified active licence remains usable
+  // for this many hours. After the grace window the School becomes read-only until
+  // Core OS can verify the entitlement again.
+  LICENSE_OUTAGE_GRACE_HOURS: z.coerce.number().int().min(1).max(336).default(72),
 
   PUBLIC_BASE_URL: z.preprocess(emptyToUndefined,z.string().url().optional()),
 

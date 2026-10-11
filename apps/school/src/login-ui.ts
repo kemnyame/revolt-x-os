@@ -17,7 +17,7 @@ input:focus,select:focus{border-color:#315466;box-shadow:0 0 0 3px rgba(49,84,10
 button{width:100%;margin-top:22px;border:0;border-radius:12px;background:#315466;color:#fff;font-size:15px;font-weight:800;padding:13px 16px;cursor:pointer}
 button:disabled{opacity:.6;cursor:wait}.status{margin-top:14px;border-radius:10px;padding:11px 12px;font-size:14px}
 .error{background:#fff1f0;color:#a22c22;border:1px solid #ffd2cf}.success{background:#edf8f1;color:#23623d;border:1px solid #ccebd7}
-.help{margin-top:20px;padding:14px;border:1px solid #dbe5eb;border-radius:12px;background:#f7fafb;color:#617583;font-size:13px;line-height:1.55}.switch{margin-top:16px;text-align:center;font-size:13px}.switch a{color:#315466;font-weight:800;text-decoration:none}.switch a:hover{text-decoration:underline}
+.help{margin-top:20px;padding:14px;border:1px solid #dbe5eb;border-radius:12px;background:#f7fafb;color:#617583;font-size:13px;line-height:1.55}.switch{margin-top:16px;text-align:center;font-size:13px}.switch a{color:#315466;font-weight:800;text-decoration:none}.switch a:hover{text-decoration:underline}.password-visibility{display:flex;align-items:center;gap:8px;margin:8px 0 0;color:#526979;font-size:13px;font-weight:700}.password-visibility input{width:auto;margin:0;padding:0}
 @media(max-width:760px){body{padding:0}.shell{grid-template-columns:1fr;border-radius:0;min-height:100vh}.brand{min-height:auto;padding:32px}.brand-card{display:none}.form-side{padding:34px 28px}.brand h1{font-size:30px}}
 `;
 
@@ -27,7 +27,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Revolt-X School • Staff Login</title>
-<style>${sharedStyles}</style>
+<style>${sharedStyles}.req{color:#b42318;font-weight:800}.field-error{font-size:12px;color:#b42318;margin-top:5px}input:invalid:not(:placeholder-shown),select:invalid{border-color:#b42318;box-shadow:0 0 0 3px rgba(180,35,24,.08)}</style>
 </head>
 <body>
 <main class="shell">
@@ -67,6 +67,8 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
 <script>
 (function(){
   function E(id){return document.getElementById(id)}
+  function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
+  enablePasswordVisibility();
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   async function json(url,options){
     var res=await fetch(url,Object.assign({headers:{'content-type':'application/json'}},options||{}));
@@ -75,7 +77,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     return body
   }
   async function loadSchools(){
-    var select=E('schoolId'),requested=new URLSearchParams(location.search).get('school')||'',saved='';
+    var select=E('schoolId'),pathParts=location.pathname.split('/').filter(Boolean),pathSchool=pathParts[0]==='s'?(pathParts[1]||''):'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';
     try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
     try{
       var schools=await json('/api/auth/schools');
@@ -167,6 +169,8 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
 <script>
 (function(){
   function E(id){return document.getElementById(id)}
+  function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
+  enablePasswordVisibility();
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   async function json(url,options){
     var res=await fetch(url,Object.assign({headers:{'content-type':'application/json'}},options||{}));
@@ -175,7 +179,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     return body
   }
   async function loadSchools(){
-    var select=E('schoolId'),requested=new URLSearchParams(location.search).get('school')||'',saved='';
+    var select=E('schoolId'),pathParts=location.pathname.split('/').filter(Boolean),pathSchool=pathParts[0]==='s'?(pathParts[1]||''):'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';
     try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
     try{
       var schools=await json('/api/auth/schools');
@@ -259,6 +263,8 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
 <script>
 (function(){
   function E(id){return document.getElementById(id)}
+  function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
+  enablePasswordVisibility();
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   async function save(){
     var p1=E('newPassword').value,p2=E('confirmPassword').value;
@@ -323,6 +329,8 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
 <script>
 (function(){
   function E(id){return document.getElementById(id)}
+  function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
+  enablePasswordVisibility();
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   var q=new URLSearchParams(location.search),token=q.get('token')||'',school=q.get('school')||'';
   E('backLogin').href='/admin-login'+(school?'?school='+encodeURIComponent(school):'');
