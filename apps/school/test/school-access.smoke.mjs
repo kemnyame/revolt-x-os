@@ -91,6 +91,11 @@ test('first password change retains the actual authorized token despite a stale 
   }
 });
 
+test('invalid or revoked School sessions never fall through to Core authentication',async t=>{
+  t.mock.method(globalThis,'fetch',()=>assert.fail('A School-local token must never be sent to Core'));
+  await assert.rejects(authorize({headers:{authorization:'Bearer rxs_revoked'}},db,config),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
+});
+
 test('concurrent failures are counted atomically and repeated sign-in failures are blocked',async()=>{
   await Promise.all(Array.from({length:10},()=>recordPortalLoginFailure(db,'staff','same',10,15)));
   assert.equal((await db.query('SELECT failures FROM portal_login_throttle')).rows[0].failures,10);

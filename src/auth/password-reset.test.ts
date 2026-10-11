@@ -64,5 +64,6 @@ describe('School password reset security',()=>{
     await revokeLinkedSchoolSessions(db,config,user,'a'.repeat(64));
     expect(mock).toHaveBeenCalledOnce();const [url,init]=mock.mock.calls[0]!;expect(url).toBe('https://school.example.test/api/internal/revoke-user-sessions');expect(JSON.parse(init?.body as string)).toEqual({userId:user,keepSessionHash:'a'.repeat(64)});
     mock.mockResolvedValue(new Response('{}',{status:503}));await expect(revokeLinkedSchoolSessions(db,config,user)).rejects.toMatchObject({statusCode:503});
+    mock.mockResolvedValue(new Response('{}',{status:200}));await expect(revokeLinkedSchoolSessions(db,config,user)).rejects.toMatchObject({statusCode:503});
   });
 });

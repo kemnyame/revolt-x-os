@@ -16,5 +16,7 @@ export async function revokeLinkedSchoolSessions(db: Db, config: Config, userId:
     method: 'POST', headers: { 'content-type': 'application/json', 'x-revolt-service-key': config.SCHOOL_SERVICE_KEY },
     body: JSON.stringify({ userId, keepSessionHash }), signal: AbortSignal.timeout(15000)
   }).catch(() => null);
-  if (!response?.ok) throw new AppError(503, 'SCHOOL_SESSION_REVOCATION_FAILED', 'School security could not finish signing out older sessions. Please try the password change again.');
+  const payload: any = response?.ok ? await response.json().catch(() => null) : null;
+  if (!Number.isInteger(payload?.revoked) || payload.revoked < 0)
+    throw new AppError(503, 'SCHOOL_SESSION_REVOCATION_FAILED', 'School security could not finish signing out older sessions. Please try the password change again.');
 }

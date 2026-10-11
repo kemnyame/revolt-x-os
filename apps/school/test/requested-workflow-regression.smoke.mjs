@@ -34,8 +34,6 @@ test('School-local sessions never fall through to Core OS',async()=>{
   const server=await read('server.js');
   assert.match(auth,/requestSchoolTokens/);
   assert.match(auth,/School session expired\. Please sign in again/);
-  assert.match(auth,/const schoolContext = await fetchSchoolSessionContext/);
-  assert.match(auth,/schoolContext \?\? await fetchCoreContext/);
   assert.match(server,/\/health\/live/);
   assert.match(server,/reachable:\s*res\.status\s*<\s*500/);
 });
