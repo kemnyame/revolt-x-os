@@ -8,7 +8,6 @@ import type { Db } from './db/index.js';
 import { AppError } from './core/errors.js';
 import { verifyAccessToken } from './auth/service.js';
 import { authRoutes } from './auth/routes.js';
-import { previewRoutes } from './auth/preview.js';
 import { organisationRoutes } from './routes/organisation.js';
 import { userRoutes } from './routes/users.js';
 import { operationRoutes } from './routes/operations.js';
@@ -18,10 +17,11 @@ import { commercialRoutes } from './routes/commercial.js';
 import { internalSchoolRoutes } from './routes/internal-school.js';
 import { saasRoutes } from './routes/saas.js';
 import { commercialSupportRoutes } from './routes/commercial-support.js';
+import { commercialLaunchRoutes } from './routes/commercial-launch.js';
 import { assuranceRoutes } from './routes/assurance.js';
 import { osFrontend } from './ui.js';
 import { commercialControlFrontend } from './commercial-control2-ui.js';
-import { osLoginFrontend } from './login-ui.js';
+import { licenseLoginFrontend, osLoginFrontend } from './login-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
   const issue = error.issues[0] as any;
@@ -45,6 +45,7 @@ function friendlyUnexpectedMessage(error: unknown) {
   return 'An unexpected error occurred.';
 }
 
+/** Build the production Core OS HTTP application. Preview/demo authentication is intentionally absent. */
 export async function buildApp({ db, config }: { db: Db; config: Config }) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: true, requestIdHeader: 'x-request-id' });
   await app.register(helmet, { contentSecurityPolicy: false });
@@ -69,17 +70,25 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
     const [s, t] = h.split(' ');
     if (s !== 'Bearer' || !t) throw new AppError(401, 'UNAUTHORIZED', 'Malformed authorization header');
     request.auth = await verifyAccessToken(config, t);
+
+    // Every authenticated production request must still belong to an active membership. The old
+    // Preview exception has been removed so demo/preview tokens cannot bypass membership state.
     const activeSession = await db.query(
-      request.auth.preview
-        ? `SELECT 1 FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()`
-        : `SELECT 1 FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
+      `SELECT 1
+       FROM sessions s
+       JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id
+       WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3
+         AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
       [request.auth.sessionId, request.auth.userId, request.auth.organisationId]
     );
     if (!activeSession.rowCount) throw new AppError(401, 'UNAUTHORIZED', 'Session is no longer active');
   });
 
+  // Main OS users always enter the Core OS home page. Licence administrators have a dedicated
+  // authentication entry point that validates commercial.read before opening Commercial Control.
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
   app.get('/login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osLoginFrontend));
+  app.get('/license-login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(licenseLoginFrontend));
   app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlFrontend));
   app.get('/health/live', async () => ({ status: 'ok' }));
   app.get('/health/ready', async (_request, reply) => {
@@ -92,7 +101,6 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   });
 
   await app.register(authRoutes, { db, config });
-  await app.register(previewRoutes, { db, config });
   await app.register(organisationRoutes, { db });
   await app.register(userRoutes, { db });
   await app.register(operationRoutes, { db });
@@ -101,6 +109,7 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   await app.register(commercialRoutes, { db });
   await app.register(saasRoutes, { db, config });
   await app.register(commercialSupportRoutes, { db, config });
+  await app.register(commercialLaunchRoutes, { db, config });
   await app.register(assuranceRoutes, { db, config });
   await app.register(internalSchoolRoutes, { db, config });
 
