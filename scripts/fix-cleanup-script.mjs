@@ -2,6 +2,17 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const file=new URL('./commercial-launch-cleanup.mjs',import.meta.url);
 let src=await readFile(file,'utf8');
+
+// The HR response keeps payroll_profile on the same source line as staff_id. Make the
+// cleanup replacement start at the field name instead of depending on line indentation.
+src=src.replace(
+  '  "        payroll_profile:profiles.find((x:any)=>x.os_user_id===m.os_user_id)||null,\\n        payroll_components:assignments.filter((x:any)=>x.os_user_id===m.os_user_id)};",',
+  '  "payroll_profile:profiles.find((x:any)=>x.os_user_id===m.os_user_id)||null,\\n        payroll_components:assignments.filter((x:any)=>x.os_user_id===m.os_user_id)};",'
+).replace(
+  '  "        payroll_profile:profiles.find((x:any)=>x.os_user_id===m.os_user_id)||null,\\n        payroll_grade:(()=>{const p=profiles.find((x:any)=>x.os_user_id===m.os_user_id);return p?.grade_id?grades.find((g:any)=>g.id===p.grade_id)||null:null})(),\\n        payroll_components:assignments.filter((x:any)=>x.os_user_id===m.os_user_id)};",',
+  '  "payroll_profile:profiles.find((x:any)=>x.os_user_id===m.os_user_id)||null,\\n        payroll_grade:(()=>{const p=profiles.find((x:any)=>x.os_user_id===m.os_user_id);return p?.grade_id?grades.find((g:any)=>g.id===p.grade_id)||null:null})(),\\n        payroll_components:assignments.filter((x:any)=>x.os_user_id===m.os_user_id)};",'
+);
+
 const start=src.indexOf('const exportRoute = `');
 const endMarker="payroll = insertBefore(payroll, \"  app.get('/api/payroll/me',async(request:any)=>{\", exportRoute, 'payroll export route');";
 const end=src.indexOf(endMarker,start);
@@ -32,4 +43,4 @@ payroll = insertBefore(payroll, "  app.get('/api/payroll/me',async(request:any)=
 
 src=src.slice(0,start)+replacement+src.slice(end+endMarker.length);
 await writeFile(file,src);
-console.log('Fixed cleanup script export materializer syntax');
+console.log('Repaired commercial launch cleanup materializer');
