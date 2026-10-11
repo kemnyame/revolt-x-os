@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
 import { maybeOne, tx } from './db.js';
-import { providerStatus, sendMessage, validateBrevoConnection, type MessageChannel } from './providers.js';
+import { DeliveryError, normalizeMessagePhone, providerStatus, sendMessage, type MessageChannel } from './providers.js';
 
 export function throttleFingerprint(value:string){
   return createHash('sha256').update(String(value||'').trim().toLowerCase()).digest('hex');
@@ -17,10 +17,7 @@ export function communicationBackoffMinutes(attempt:number){
 }
 
 export function normalizeDeliveryPhone(phone:string){
-  const p=String(phone||'').trim().replace(/[\s()-]/g,'');
-  if(p.startsWith('+'))return p;
-  if(/^0\d{9}$/.test(p))return '+233'+p.slice(1);
-  return p;
+  return normalizeMessagePhone(phone);
 }
 
 export async function assertPortalLoginAllowed(
@@ -110,93 +107,57 @@ export async function retryCommunicationOutbox(
   `,[Math.max(1,Math.min(100,limit)),organisationId??null])).rows;
 
   const result={scanned:candidates.length,attempted:0,sent:0,failed:0,pendingConfiguration:0};
-  const providers=providerStatus(config);
-  let emailProviderError:string|null=null;
-  const resendFallbackReady=Boolean(config.EMAIL_PROVIDER==='auto'&&config.RESEND_API_KEY&&config.RESEND_FROM_EMAIL);
-  if(providers.email.provider==='brevo'&&providers.email.configured&&!resendFallbackReady){
-    try{
-      const verification=await validateBrevoConnection(config);
-      if(!verification.authenticated||!verification.senderReady){
-        emailProviderError='Brevo authentication or sender verification is not ready';
-      }
-    }catch(error:any){
-      emailProviderError=String(error?.message||error);
-    }
-  }
-
   for(const candidate of candidates){
-    const channel=candidate.channel as MessageChannel;
-    if(channel==='email'&&emailProviderError){
-      result.pendingConfiguration++;
-      await db.query(`
-        UPDATE communication_outbox
-        SET status='pending_configuration',
-            next_attempt_at=now()+interval '15 minutes',
-            last_error=$1
-        WHERE id=$2 AND status IN('queued','failed','pending_configuration')
-      `,['Email provider unavailable: '+emailProviderError,candidate.id]);
-      continue;
-    }
-    if(!channelConfigured(config,channel)){
-      result.pendingConfiguration++;
-      await db.query(`
-        UPDATE communication_outbox
-        SET status='pending_configuration',
-            next_attempt_at=now()+interval '15 minutes',
-            last_error='Provider is not configured'
-        WHERE id=$1 AND status IN('queued','failed','pending_configuration')
-      `,[candidate.id]);
-      continue;
-    }
-
-    const claimed=await maybeOne<any>(db,`
-      UPDATE communication_outbox
-      SET status='sending',
-          attempt_count=attempt_count+1,
-          last_attempt_at=now(),
-          next_attempt_at=NULL
-      WHERE id=$1
-        AND status IN('queued','failed','pending_configuration')
-        AND attempt_count<max_attempts
-      RETURNING *
-    `,[candidate.id]);
-
-    if(!claimed)continue;
+    const delivery=await dispatchCommunicationOutbox(db,config,candidate.id,organisationId);
+    if(!delivery.attempted)continue;
     result.attempted++;
-
-    try{
-      const sent=await sendMessage(config,{
-        channel,
-        to:channel==='email'?claimed.recipient_address:normalizeDeliveryPhone(claimed.recipient_address),
-        subject:claimed.subject??undefined,
-        recipientName:claimed.recipient_name??undefined,
-        body:claimed.body
-      });
-      await db.query(`
-        UPDATE communication_outbox
-        SET status='sent',
-            provider=$1,
-            provider_message_id=$2,
-            sent_at=now(),
-            last_error=NULL,
-            next_attempt_at=NULL
-        WHERE id=$3
-      `,[sent.provider,sent.messageId,claimed.id]);
-      result.sent++;
-    }catch(error:any){
-      const attempt=Number(claimed.attempt_count||1);
-      const exhausted=attempt>=Number(claimed.max_attempts||5);
-      const delay=communicationBackoffMinutes(attempt);
-      await db.query(`
-        UPDATE communication_outbox
-        SET status='failed',
-            last_error=$1,
-            next_attempt_at=CASE WHEN $2 THEN NULL ELSE now()+make_interval(mins=>$3) END
-        WHERE id=$4
-      `,[String(error?.message||error).slice(0,4000),exhausted,delay,claimed.id]);
-      result.failed++;
-    }
+    if(delivery.row?.status==='sent')result.sent++;
+    else if(delivery.row?.status==='pending_configuration')result.pendingConfiguration++;
+    else if(delivery.row?.status==='failed')result.failed++;
   }
 
   return result;
+}
+
+// All immediate, automatic and manual sends share this atomic claim. A second
+// worker or a double click cannot dispatch a row already being processed.
+export async function dispatchCommunicationOutbox(db:SchoolDb,config:SchoolConfig,id:string,organisationId?:string,force=false){
+  const claimed=await maybeOne<any>(db,`
+    UPDATE communication_outbox
+    SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
+    WHERE id=$1 AND ($2::uuid IS NULL OR organisation_id=$2)
+      AND status IN('queued','failed','pending_configuration')
+      AND ($3 OR (attempt_count<max_attempts AND COALESCE(next_attempt_at,created_at)<=now()))
+    RETURNING *
+  `,[id,organisationId??null,force]);
+  if(!claimed)return{attempted:false,row:await maybeOne<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND ($2::uuid IS NULL OR organisation_id=$2)',[id,organisationId??null])};
+  try{
+    const channel=claimed.channel as MessageChannel;
+    if(!channelConfigured(config,channel))throw new DeliveryError(channel==='whatsapp'?providerStatus(config).whatsapp.setupNote:'The '+channel+' provider is not configured.','configuration');
+    const sent=await sendMessage(config,{
+      channel,to:claimed.recipient_address,subject:claimed.subject??undefined,
+      recipientName:claimed.recipient_name??undefined,body:claimed.body,
+      html:claimed.html_body??undefined,messageKey:claimed.id
+    });
+    const row=await maybeOne<any>(db,`
+      UPDATE communication_outbox SET status='sent',provider=$1,provider_message_id=$2,
+        provider_status=$3,sent_at=now(),last_error=NULL,next_attempt_at=NULL
+      WHERE id=$4 AND status='sending' RETURNING *
+    `,[sent.provider,sent.messageId,sent.providerStatus,claimed.id]);
+    return{attempted:true,row};
+  }catch(error:any){
+    const kind=error instanceof DeliveryError?error.kind:'review';
+    const configuration=kind==='configuration';
+    const terminal=kind==='permanent'||kind==='review';
+    const exhausted=Number(claimed.attempt_count)>=Number(claimed.max_attempts);
+    const row=await maybeOne<any>(db,`
+      UPDATE communication_outbox
+      SET status=CASE WHEN $1 THEN 'pending_configuration' ELSE 'failed' END,
+        provider_status=$2,last_error=$3,
+        attempt_count=CASE WHEN $1 THEN GREATEST(0,attempt_count-1) WHEN $4 THEN GREATEST(attempt_count,max_attempts) ELSE attempt_count END,
+        next_attempt_at=CASE WHEN $1 THEN now()+interval '15 minutes' WHEN $4 OR $5 THEN NULL ELSE now()+make_interval(mins=>$6) END
+      WHERE id=$7 AND status='sending' RETURNING *
+    `,[configuration,configuration?'needs_setup':kind==='review'?'unknown':terminal?'rejected':'retry_pending',String(error?.message||error).slice(0,4000),terminal,exhausted,communicationBackoffMinutes(Number(claimed.attempt_count)),claimed.id]);
+    return{attempted:true,row};
+  }
 }

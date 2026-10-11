@@ -25,6 +25,7 @@
     "pdfkit": "^0.17.2"
   },
   "devDependencies": {
-    "tsx": "^4.20.6"
+    "tsx": "^4.20.6",
+    "@electric-sql/pglite": "^0.5.8"
   }
 }

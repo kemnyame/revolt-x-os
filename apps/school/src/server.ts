@@ -17,12 +17,13 @@ import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
-import { initializePaystack, providerStatus, sendMessage, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
+import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, providerStatus, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
 import {
   assertPortalLoginAllowed,
   clearPortalLoginThrottle,
+  dispatchCommunicationOutbox,
   recordPortalLoginFailure,
   retryCommunicationOutbox,
   throttleFingerprint
@@ -43,6 +44,11 @@ new Script(schoolAppScript,{filename:'school-app.js'});
 const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
 app.log.info({
   emailProvider:config.EMAIL_PROVIDER,
+  emailDeliveryMode:providerStatus(config).email.mode,
+  whatsappProvider:providerStatus(config).whatsapp.provider,
+  whatsappCredentialsPresent:providerStatus(config).whatsapp.credentialsConfigured,
+  whatsappTemplatePresent:providerStatus(config).whatsapp.productionTemplateReady,
+  whatsappConfigured:providerStatus(config).whatsapp.configured,
   brevoApiKeyPresent:Boolean(config.BREVO_API_KEY),
   brevoFromEmailPresent:Boolean(config.BREVO_FROM_EMAIL),
   brevoFromNamePresent:Boolean(config.BREVO_FROM_NAME),
@@ -51,7 +57,7 @@ app.log.info({
   paystackConfigured:Boolean(config.PAYSTACK_SECRET_KEY),
   paystackCurrency:config.PAYSTACK_CURRENCY
 },'Provider startup status');
-if(config.BREVO_API_KEY){void validateBrevoConnection(config).then(result=>app.log.info({provider:'brevo',authenticated:result.authenticated,senderReady:result.senderReady,senderSource:result.senderSource},'Brevo connection verified')).catch(error=>app.log.warn({provider:'brevo',error:String(error?.message||error)},'Brevo connection verification failed'));}
+if(config.BREVO_API_KEY&&config.EMAIL_PROVIDER!=='resend'){void validateBrevoConnection(config).then(result=>app.log.info({provider:'brevo',authenticated:result.authenticated,senderReady:result.senderReady,senderSource:result.senderSource},'Brevo connection verified')).catch(error=>app.log.warn({provider:'brevo',error:String(error?.message||error)},'Brevo connection verification failed'));}
 await app.register(helmet,{contentSecurityPolicy:false});
 await app.register(cors,{origin:config.CORS_ORIGINS==='*'?true:config.CORS_ORIGINS.split(',').map(x=>x.trim()),credentials:true});
 
@@ -738,10 +744,7 @@ async function fetchCoreUsers(organisationId:string){
 }
 
 function normalizePhone(phone:string){
-  const p=String(phone||'').trim().replace(/[\s()-]/g,'');
-  if(p.startsWith('+'))return p;
-  if(/^0\d{9}$/.test(p))return '+233'+p.slice(1);
-  return p;
+  return normalizeMessagePhone(phone);
 }
 
 function randomTemporaryPassword(){
@@ -820,35 +823,15 @@ async function deliverCommunication(input:{
   relatedType?:string|null|undefined;
   relatedId?:string|null|undefined;
 }){
-  const status=providerStatus(config);
-  const configured=input.channel==='email'?status.email.configured:input.channel==='sms'?status.sms.configured:status.whatsapp.configured;
-  let row=await one<any>(db,`INSERT INTO communication_outbox(
-      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id,next_attempt_at
-    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12 THEN now() ELSE now()+interval '15 minutes' END) RETURNING *`,[
+  const htmlBody=input.channel==='email'?await brandedSchoolEmailHtml(input.organisationId,input.recipientName,input.subject,input.body):null;
+  const row=await one<any>(db,`INSERT INTO communication_outbox(
+      organisation_id,channel,recipient_name,recipient_address,subject,body,template_key,related_type,related_id,status,created_by_os_user_id,next_attempt_at,html_body
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,now(),$11) RETURNING *`,[
       input.organisationId,input.channel,input.recipientName??null,input.recipientAddress,input.subject??null,input.body,
-      input.templateKey??null,input.relatedType??null,input.relatedId??null,configured?'queued':'pending_configuration',input.actorOsUserId??null,configured
+      input.templateKey??null,input.relatedType??null,input.relatedId??null,input.actorOsUserId??null,htmlBody
     ]);
-  if(!configured)return row;
-  try{
-    row=await one<any>(db,`UPDATE communication_outbox
-      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
-      WHERE id=$1 RETURNING *`,[row.id]);
-    const sent=await sendMessage(config,{
-      channel:input.channel,
-      to:input.channel==='email'?input.recipientAddress:normalizePhone(input.recipientAddress),
-      subject:input.subject,
-      recipientName:input.recipientName,
-      body:input.body,
-      html:input.channel==='email'?await brandedSchoolEmailHtml(input.organisationId,input.recipientName,input.subject,input.body):undefined
-    });
-    return await one<any>(db,`UPDATE communication_outbox
-      SET status='sent',provider=$1,provider_message_id=$2,sent_at=now(),last_error=NULL,next_attempt_at=NULL
-      WHERE id=$3 RETURNING *`,[sent.provider,sent.messageId,row.id]);
-  }catch(error:any){
-    return await one<any>(db,`UPDATE communication_outbox
-      SET status='failed',last_error=$1,next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '1 minute' END
-      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),row.id]);
-  }
+  const delivery=await dispatchCommunicationOutbox(db,config,row.id,input.organisationId,true);
+  return delivery.row||row;
 }
 
 async function notifyContact(input:{
@@ -7311,6 +7294,10 @@ app.get('/api/communications/status',async request=>{
   },{total:0,queued:0,pending_configuration:0,sending:0,sent:0,failed:0,byChannel:{email:0,sms:0,whatsapp:0}});
   return{providers:providerStatus(config),rules,queue,summary};
 });
+app.get('/api/communications/provider-check',async request=>{
+  await authorize(request,db,config,'communications.manage');
+  return checkMessagingConnections(config);
+});
 app.put('/api/communications/rules',async request=>{
   const a=await authorize(request,db,config,'communications.manage');
   const b=z.object({rules:z.array(z.object({
@@ -7334,31 +7321,11 @@ app.post('/api/communications/outbox/:id/retry',async request=>{
   const a=await authorize(request,db,config,'communications.send');
   const {id}=z.object({id:z.string().uuid()}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  if(current.status==='sent')return current;
-  await db.query("UPDATE communication_outbox SET status='queued',last_error=NULL,next_attempt_at=now() WHERE id=$1",[id]);
-  try{
-    await db.query(`UPDATE communication_outbox
-      SET status='sending',attempt_count=attempt_count+1,last_attempt_at=now(),next_attempt_at=NULL
-      WHERE id=$1`,[id]);
-    const sent=await sendMessage(config,{
-      channel:current.channel,
-      to:current.channel==='email'?current.recipient_address:normalizePhone(current.recipient_address),
-      subject:current.subject,
-      recipientName:current.recipient_name,
-      body:current.body
-    });
-    const row=await one<any>(db,`UPDATE communication_outbox SET status='sent',provider=$1,provider_message_id=$2,
-      sent_at=now(),last_error=NULL,next_attempt_at=NULL WHERE id=$3 RETURNING *`,
-      [sent.provider,sent.messageId,id]);
-    await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'sent'});
-    return row;
-  }catch(error:any){
-    const row=await one<any>(db,`UPDATE communication_outbox SET status='failed',last_error=$1,
-      next_attempt_at=CASE WHEN attempt_count>=max_attempts THEN NULL ELSE now()+interval '5 minutes' END
-      WHERE id=$2 RETURNING *`,[String(error?.message||error).slice(0,4000),id]);
-    await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:'failed'});
-    return row;
-  }
+  if(current.status==='sent'||current.status==='sending')return current;
+  const delivery=await dispatchCommunicationOutbox(db,config,id,a.core.organisation_id,true);
+  const row=delivery.row||current;
+  await audit(a.core.organisation_id,a.core.id,'communication.retried','communication_outbox',id,{result:row.status});
+  return row;
 });
 
 app.post('/api/communications/retry-pending',async request=>{
@@ -7386,8 +7353,13 @@ app.post('/api/communications/send',async(request,reply)=>{
     subject:z.string().max(300).optional(),
     body:z.string().min(1).max(5000)
   }).parse(request.body);
+  if(b.channels.includes('email')&&!b.email)throw fail(400,'Email address is required for email delivery');
+  if(b.channels.some(channel=>channel!=='email')){
+    if(!b.phone)throw fail(400,'Phone number is required for SMS or WhatsApp delivery');
+    try{normalizeMessagePhone(b.phone)}catch(error:any){throw fail(400,error.message)}
+  }
   const results:any[]=[];
-  for(const channel of b.channels){
+  for(const channel of new Set(b.channels)){
     const address=channel==='email'?b.email:b.phone;
     if(!address)throw fail(400,channel==='email'?'Email address is required':'Phone number is required');
     results.push(await deliverCommunication({
