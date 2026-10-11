@@ -10,6 +10,7 @@ import {saasRoutes} from './saas.js';
 import {internalSchoolRoutes} from './internal-school.js';
 import {registerCommercialSchoolReporting} from './school-reporting.js';
 import {schoolAccessStatus,csvReport} from './commercial-reporting.js';
+import {bootstrapSchoolStaffPasswords} from '../auth/school-password-policy.js';
 
 const pg=new PGlite(),provider='11111111-1111-4111-8111-111111111111',actor='22222222-2222-4222-8222-222222222222',other='33333333-3333-4333-8333-333333333333';
 const client={query:async(sql:string,params?:unknown[])=>{const r=await pg.query(sql,params);return{rows:r.rows as any[],rowCount:r.rows.length||r.affectedRows||0}},release(){}};
@@ -73,6 +74,8 @@ describe('paid school setup and primary administrator access',()=>{
     expect(result.administrator).toMatchObject({email:'alpha@example.test',existingUser:false,mustChangePassword:true});expect(result.administrator.temporaryPassword).toMatch(/^SchAdm!A1[0-9a-f]{32}$/);
     const user=(await client.query('SELECT * FROM users WHERE id=$1',[result.administrator.id])).rows[0];expect(await bcrypt.compare(result.administrator.temporaryPassword,user.password_hash)).toBe(true);expect(user.must_change_password).toBe(true);
     expect(result.adminLoginUrl).toBe('https://school.example.test/s/alpha/admin-login');
+    expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(0);
+    expect(await bcrypt.compare(result.administrator.temporaryPassword,(await client.query('SELECT password_hash FROM users WHERE id=$1',[user.id])).rows[0].password_hash)).toBe(true);
     const history=await send('GET','/v1/commercial-control/schools/'+result.organisation.id);expect(history.json().invoices[0].invoice_no).toBe(invoice.invoice_no);expect(history.json().payments).toHaveLength(1);
     expect((await create(invoice)).statusCode).toBe(409);expect((await client.query("SELECT count(*) count FROM organisations WHERE slug='alpha'")).rows[0].count).toBe(1);
     const audit=await client.query('SELECT after_state::text state FROM audit_logs');expect(audit.rows.some(x=>x.state?.includes(result.administrator.temporaryPassword))).toBe(false);
@@ -91,6 +94,20 @@ describe('paid school setup and primary administrator access',()=>{
     await client.query("INSERT INTO users(email,password_hash,first_name,last_name,status) VALUES('alpha@example.test','existing-hash','Existing','Admin','disabled')");
     expect((await send('POST','/v1/commercial-control/school-orders',{school:school(),amount:100})).statusCode).toBe(409);
     await client.query("UPDATE users SET status='active' WHERE email='alpha@example.test'");const {result}=await paidSchool();expect(result.administrator.existingUser).toBe(true);expect(result.administrator.temporaryPassword).toBeNull();expect((await client.query("SELECT password_hash FROM users WHERE email='alpha@example.test'")).rows[0].password_hash).toBe('existing-hash');
+    expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(0);
+    expect((await client.query("SELECT password_hash FROM users WHERE email='alpha@example.test'")).rows[0].password_hash).toBe('existing-hash');
+  });
+  it('legacy staff initialization runs once and never restores disabled users, suspended memberships or changed passwords',async()=>{
+    const {result}=await paidSchool();
+    for(const [email,status,membership,mustChange] of [['legacy','invited','invited',true],['disabled','disabled','active',true],['suspended','active','suspended',true],['changed','active','active',false]] as const){
+      const u=(await client.query('INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[email+'@example.test','deliberate-password-hash',email,'Staff',status,mustChange])).rows[0];
+      await client.query('INSERT INTO organisation_memberships(organisation_id,user_id,status,employee_number) VALUES($1,$2,$3,$4)',[result.organisation.id,u.id,membership,email]);
+    }
+    expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(1);expect(await bootstrapSchoolStaffPasswords(db,'DifferentDefaultPass123')).toBe(0);
+    const users=(await client.query("SELECT u.*,m.status membership_status FROM users u JOIN organisation_memberships m ON m.user_id=u.id WHERE u.email IN('legacy@example.test','disabled@example.test','suspended@example.test','changed@example.test')")).rows;
+    const legacy=users.find(x=>x.email==='legacy@example.test');expect(legacy.status).toBe('active');expect(await bcrypt.compare('LegacyDefaultPass123',legacy.password_hash)).toBe(true);
+    for(const email of ['disabled','suspended','changed'])expect(users.find(x=>x.email===email+'@example.test').password_hash).toBe('deliberate-password-hash');
+    expect(users.find(x=>x.email==='disabled@example.test').status).toBe('disabled');expect(users.find(x=>x.email==='suspended@example.test').membership_status).toBe('suspended');
   });
 });
 

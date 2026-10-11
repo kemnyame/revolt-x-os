@@ -358,14 +358,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         temporaryAdminPassword = 'SchAdm!A1' + randomBytes(16).toString('hex');
         admin = await one<any>(
           c,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',true) RETURNING id,email,first_name,last_name,status",
+          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',true,now()) RETURNING id,email,first_name,last_name,status",
           [b.adminEmail, await bcrypt.hash(temporaryAdminPassword, 12), b.adminFirstName, b.adminLastName]
         );
         newAdministrator = true;
       } else {
         if (admin.status !== 'active') throw conflict('The administrator email belongs to an inactive OS user');
         await c.query(
-          'UPDATE users SET first_name=$1,last_name=$2,updated_at=now() WHERE id=$3',
+          'UPDATE users SET first_name=$1,last_name=$2,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now() WHERE id=$3',
           [b.adminFirstName, b.adminLastName, admin.id]
         );
       }
@@ -594,14 +594,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         existingUser = true;
         if (user.status !== 'active') throw conflict('The new administrator email belongs to an inactive Core OS user');
         await q.query(
-          'UPDATE users SET first_name=$1,last_name=$2,password_hash=$3,must_change_password=false,updated_at=now() WHERE id=$4',
+          'UPDATE users SET first_name=$1,last_name=$2,password_hash=$3,must_change_password=false,school_password_bootstrapped_at=now(),updated_at=now() WHERE id=$4',
           [b.firstName,b.lastName,passwordHash,user.id]
         );
         await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[user.id]);
         await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
       } else {
         user = await one<any>(q,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',false) RETURNING id,email,first_name,last_name,status",
+          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',false,now()) RETURNING id,email,first_name,last_name,status",
           [b.email,passwordHash,b.firstName,b.lastName]
         );
       }
