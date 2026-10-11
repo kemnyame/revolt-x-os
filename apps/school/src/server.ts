@@ -20,6 +20,8 @@ import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, providerStatus, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
+import { registerHrPayrollRoutes } from './hr-payroll-routes.js';
+import { registerSchoolRemediationRoutes } from './school-remediation-routes.js';
 import {
   assertPortalLoginAllowed,
   clearPortalLoginThrottle,
@@ -115,6 +117,65 @@ app.addHook('onResponse',async(request,reply)=>{
 });
 
 const fail=(statusCode:number,message:string)=>Object.assign(new Error(message),{statusCode});
+
+// Cookie-authenticated unsafe requests must originate from this School host. This protects
+// state-changing routes against cross-site request forgery while still allowing trusted
+// server-to-server requests that do not send a browser Origin header.
+app.addHook('preHandler',async request=>{
+  if(['GET','HEAD','OPTIONS'].includes(request.method))return;
+  const cookie=String(request.headers.cookie||'');
+  const origin=String(request.headers.origin||'');
+  if(cookie.includes('rx_school_session=')&&origin){
+    let originHost='';try{originHost=new URL(origin).host}catch{}
+    if(originHost&&originHost!==String(request.headers.host||''))throw fail(403,'Security validation failed for this request. Refresh the School page and try again.');
+  }
+
+  const path=String(request.url||'').split('?')[0]||'';
+  if(!path.startsWith('/api/')||path.startsWith('/api/auth/')||path.startsWith('/api/academic-periods/')||path.startsWith('/api/promotions/')||path.startsWith('/api/security/'))return;
+  const body:any=request.body&&typeof request.body==='object'?request.body:{};
+  const query:any=request.query&&typeof request.query==='object'?request.query:{};
+  const termId=body.termId||query.termId||null;
+  const yearId=body.academicYearId||query.academicYearId||null;
+  const classId=body.classroomId||query.classroomId||null;
+  if(termId){
+    const locked=await maybeOne<any>(db,'SELECT is_locked,name FROM terms WHERE id=$1',[termId]);
+    if(locked?.is_locked)throw fail(423,locked.name+' is closed and read-only. A School Administrator must reopen it before records can be changed.');
+  }
+  if(yearId){
+    const locked=await maybeOne<any>(db,'SELECT is_locked,name FROM academic_years WHERE id=$1',[yearId]);
+    if(locked?.is_locked)throw fail(423,locked.name+' is closed and read-only. A School Administrator must reopen it before records can be changed.');
+  }
+  if(classId&&!termId&&!yearId){
+    const locked=await maybeOne<any>(db,'SELECT y.is_locked,y.name FROM classrooms c JOIN academic_years y ON y.id=c.academic_year_id WHERE c.id=$1',[classId]);
+    if(locked?.is_locked)throw fail(423,locked.name+' is closed and read-only. A School Administrator must reopen it before records can be changed.');
+  }
+});
+const directAcademicLockRoutes:Array<{pattern:RegExp;sql:string}>=[
+  {pattern:/^\/api\/academic-years\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT is_locked locked FROM academic_years WHERE id=$1'},
+  {pattern:/^\/api\/terms\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.id=$1'},
+  {pattern:/^\/api\/classes\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT COALESCE(y.is_locked,false) locked FROM classrooms c JOIN academic_years y ON y.id=c.academic_year_id WHERE c.id=$1'},
+  {pattern:/^\/api\/assessments\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM assessments r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/homework\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM homework_assignments r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/lesson-notes\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM lesson_notes r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/timetable\/breaks\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM timetable_breaks r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/timetable\/unavailability\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM timetable_teacher_unavailability r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/timetable\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM timetable_entries r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/teacher-assignments\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT (COALESCE(t.is_locked,false) OR COALESCE(y.is_locked,false)) locked FROM teacher_assignments r JOIN academic_years y ON y.id=r.academic_year_id LEFT JOIN terms t ON t.id=r.term_id WHERE r.id=$1'},
+  {pattern:/^\/api\/class-subjects\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT COALESCE(y.is_locked,false) locked FROM class_subjects r JOIN academic_years y ON y.id=r.academic_year_id WHERE r.id=$1'},
+  {pattern:/^\/api\/enrolments\/([0-9a-f-]{36})(?:\/|$)/i,sql:'SELECT COALESCE(y.is_locked,false) locked FROM enrolments r JOIN academic_years y ON y.id=r.academic_year_id WHERE r.id=$1'}
+];
+app.addHook('preHandler',async request=>{
+  if(['GET','HEAD','OPTIONS'].includes(request.method))return;
+  const path=String(request.url||'').split('?')[0]||'';
+  if(!path.startsWith('/api/')||path.startsWith('/api/auth/')||path.startsWith('/api/academic-periods/')||path.startsWith('/api/promotions/')||path.startsWith('/api/security/'))return;
+  for(const rule of directAcademicLockRoutes){
+    const match=path.match(rule.pattern);if(!match)continue;
+    const row=await maybeOne<any>(db,rule.sql,[match[1]]);
+    if(row?.locked)throw fail(423,'This academic period is closed and read-only. A School Administrator must reopen it before records can be changed.');
+    break;
+  }
+});
+
 async function audit(organisationId:string,userId:string,action:string,resourceType:string,resourceId?:string|null,metadata:any={}){
   await db.query('INSERT INTO school_audit_logs(organisation_id,actor_os_user_id,action,resource_type,resource_id,metadata) VALUES($1,$2,$3,$4,$5,$6)',[organisationId,userId,action,resourceType,resourceId??null,JSON.stringify(metadata)]);
 }
@@ -140,7 +201,9 @@ async function changeLog(input:{
 async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'preview'|'quick_login'|'staff_id'|'admin_email'='core_exchange'){
   const localToken='rxs_'+randomBytes(48).toString('base64url');
   const tokenHash=createHash('sha256').update(localToken).digest('hex');
-  const expiresAt=new Date(Date.now()+8*60*60*1000);
+  const security=await maybeOne<any>(db,'SELECT absolute_timeout_minutes FROM school_security_settings WHERE organisation_id=$1',[coreContext.organisation_id]);
+  const absoluteMinutes=Math.min(1440,Math.max(30,Number(security?.absolute_timeout_minutes||480)));
+  const expiresAt=new Date(Date.now()+absoluteMinutes*60*1000);
   await db.query(`INSERT INTO school_sessions(
       token_hash,organisation_id,os_user_id,core_context,source,expires_at
     ) VALUES($1,$2,$3,$4,$5,$6)`,[
@@ -244,9 +307,25 @@ async function schoolLicence(organisationId:string,force=false){
   const local=await readLocalLicence(organisationId);
   const age=local?.syncedAt?Date.now()-new Date(local.syncedAt).getTime():Number.POSITIVE_INFINITY;
   if(!force&&local&&age<300000)return local;
+
+  // Core OS is the licence source of truth. A cached active entitlement is deliberately
+  // allowed only for a bounded outage grace period so a School cannot operate forever
+  // on a stale licence after commercial launch.
   const remote=await fetchCoreLicence(organisationId);
   if(remote&&remote.status&&remote.status!=='unlicensed')return persistLicence(organisationId,remote,'core_os');
-  if(local)return local;
+  if(local){
+    const inactive=['suspended','expired','cancelled','unlicensed','verification_required'];
+    if(inactive.includes(String(local.status)))return local;
+    const graceMs=Number(config.LICENSE_OUTAGE_GRACE_HOURS||72)*60*60*1000;
+    if(Number.isFinite(age)&&age<=graceMs){
+      return{...local,status:'outage_grace',licensed:true,underlyingStatus:local.status,outageGrace:true,
+        outageGraceHours:Number(config.LICENSE_OUTAGE_GRACE_HOURS||72),
+        outageGraceEndsAt:new Date(new Date(local.syncedAt).getTime()+graceMs).toISOString()};
+    }
+    return{...local,status:'verification_required',licensed:false,underlyingStatus:local.status,
+      outageGraceExpired:true,outageGraceHours:Number(config.LICENSE_OUTAGE_GRACE_HOURS||72)};
+  }
+
   // Existing pre-commercial tenants remain operational until explicitly adopted into OS licensing.
   return{
     licensed:true,licenseCode:null,product:'school',plan:'legacy',planName:'Legacy Commercial Transition',
@@ -278,6 +357,10 @@ function licenceWithWarning(licence:any){
   let warningLevel='none',warningMessage='';
   if(licence?.status==='legacy'){
     warningLevel='info';warningMessage='This existing School workspace has not yet been attached to a commercial OS subscription.';
+  }else if(licence?.status==='outage_grace'){
+    warningLevel='warning';warningMessage='Core OS is temporarily unreachable. The last verified licence remains usable until '+new Date(licence.outageGraceEndsAt).toLocaleString()+' ('+licence.outageGraceHours+' hour outage grace).';
+  }else if(licence?.status==='verification_required'){
+    warningLevel='critical';warningMessage='Core OS has been unreachable beyond the '+licence.outageGraceHours+' hour licence outage grace. The workspace is read-only until the licence is verified again.';
   }else if(['suspended','expired','cancelled','unlicensed'].includes(String(licence?.status))){
     warningLevel='critical';warningMessage='This Revolt-X School licence is '+String(licence?.status).replace(/_/g,' ')+'. Contact your system provider to restore access.';
   }else if(daysRemaining!=null&&daysRemaining<=0){
@@ -610,6 +693,17 @@ app.get('/api/internal/backup-snapshot',async request=>{
   };
 });
 
+// Core OS reads this service-authenticated feed to monitor administrative activity
+// across managed School tenants. The feed contains action metadata, never passwords.
+app.get('/api/internal/admin-activity',async(request:any)=>{
+  requireCoreServiceRequest(request);
+  const q=z.object({organisationId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(500).default(100)}).parse(request.query);
+  const school=await maybeOne(db,'SELECT school_name,tenant_slug FROM school_profiles WHERE organisation_id=$1',[q.organisationId]);
+  if(!school)throw fail(404,'School tenant was not found');
+  const rows=(await db.query(`SELECT id,actor_os_user_id,action,resource_type,resource_id,metadata,created_at
+    FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT $2`,[q.organisationId,q.limit])).rows;
+  return{school,rows};
+});
 app.get('/api/internal/tenants',async request=>{
   requireCoreServiceRequest(request);
   const rows=(await db.query(`
@@ -644,7 +738,7 @@ app.addHook('preHandler',async request=>{
   const organisationId=actor.organisationId;
   if(!organisationId||actor.actorType==='public')return;
   const licence=await schoolLicence(organisationId);
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status))&&String(request.method).toUpperCase()!=='GET'){
+  if(['suspended','expired','cancelled','unlicensed','verification_required'].includes(String(licence.status))&&String(request.method).toUpperCase()!=='GET'){
     throw fail(403,'Revolt-X School licence is '+String(licence.status).replace(/_/g,' ')+'. The workspace is read-only until the licence is renewed or reactivated in Revolt-X OS.');
   }
   const required=requiredCommercialModule(path);
@@ -1495,7 +1589,7 @@ async function reportAssessmentReadiness(orgId:string,studentId:string,termId:st
     const reasons:string[]=[];
     const caCount=Number(row.class_assessment_count||0)+Number(hw.homework_count||0);
     if(caCount===0)reasons.push('Continuous Assessment (30%) is not configured');
-    if(Number(row.exam_count||0)===0)reasons.push('End-of-Term Exam (70%) is not configured');
+    if(Number(row.exam_count||0)===0)reasons.push('End-of-Term End-of-Term Exam (70%) is not configured');
     if(Number(row.missing_score_count||0)>0){
       const names=(Array.isArray(row.missing_scores)?row.missing_scores:[]).map((x:any)=>x.name).filter(Boolean);
       reasons.push('Missing assessment score'+(names.length?': '+names.join(', '):''));
@@ -1644,7 +1738,7 @@ app.get('/',async(request,p)=>{
   }
   if(!active){
     const secure=config.NODE_ENV==='production'?'; Secure':'';
-    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
     return p.redirect('/login?next=%2F');
   }
   return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
@@ -1662,7 +1756,7 @@ app.get('/students/:id',async(request,p)=>{
   }
   if(!active){
     const secure=config.NODE_ENV==='production'?'; Secure':'';
-    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
     return p.redirect('/login?next='+encodeURIComponent(request.url));
   }
   return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
@@ -1671,6 +1765,12 @@ app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-ag
 // Versioned presentation assets are shared by every School portal.
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
+// Human-readable tenant URLs keep the school code in the address while every request
+// still resolves the tenant from the database. This avoids a separate deployment per school.
+app.get('/s/:school/login',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(loginFrontend)});
+app.get('/s/:school/admin-login',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(adminLoginFrontend)});
+app.get('/s/:school/change-password',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(passwordChangeFrontend)});
+app.get('/s/:school/admin-password-reset',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend)});
 app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
@@ -1884,7 +1984,7 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 
   const session=await createSchoolStaffSession(coreContext,'admin_email');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure);
 
   await audit(user.organisation_id,user.id,'school.admin_signed_in','school_session',null,{
     role:'school_admin',email:user.email,school:school.school_name
@@ -2016,7 +2116,7 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
 
   const session=await createSchoolStaffSession(coreContext,'staff_id');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure);
 
   const redirectTo=roleWorkspace(membership);
   await audit(user.organisation_id,user.id,'staff.signed_in','school_session',null,{
@@ -2079,7 +2179,7 @@ app.post('/api/auth/logout',async(request,reply)=>{
     await db.query('UPDATE school_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hash]);
   }
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'+secure);
+  reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
   return reply.send({signedOut:true});
 });
 
@@ -2167,7 +2267,7 @@ app.post('/api/auth/preview',async(_r,p)=>{
     WHERE expires_at<now()-interval '1 day' OR revoked_at IS NOT NULL`).catch(()=>null);
 
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  p.header('set-cookie','rx_school_session='+encodeURIComponent(localToken)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+(8*60*60)+secure);
+  p.header('set-cookie','rx_school_session='+encodeURIComponent(localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure);
 
   return p.send({
     accessToken:localToken,
@@ -2639,6 +2739,18 @@ app.post('/api/terms/:id/activate',async request=>{
 });
 
 app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
+app.post('/api/grade-levels',async(request,reply)=>{
+  const a=await authorize(request,db,config,'academic.create');
+  const b=z.object({code:z.string().trim().min(1).max(20),name:z.string().trim().min(2).max(80),stage:z.enum(['primary','jhs']),levelOrder:z.coerce.number().int().min(1).max(99),isActive:z.boolean().default(true)}).parse(request.body);
+  try{
+    const row=await one<any>(db,'INSERT INTO grade_levels(organisation_id,code,name,stage,level_order,is_active) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.code.toUpperCase(),b.name,b.stage,b.levelOrder,b.isActive]);
+    await audit(a.core.organisation_id,a.core.id,'grade_level.created','grade_level',row.id,{code:row.code,stage:row.stage,levelOrder:row.level_order});
+    return reply.code(201).send(row);
+  }catch(error:any){
+    if(error?.code==='23505')throw fail(409,'A grade level with this code or order already exists. Use a unique code and display order.');
+    throw error;
+  }
+});
 app.get('/api/classes',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT c.*,g.code grade_code,g.name grade_name,
   (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count,
   (SELECT count(*)::int FROM class_subjects cs WHERE cs.classroom_id=c.id AND cs.is_active=true) subject_count
@@ -3007,6 +3119,37 @@ app.delete('/api/class-subjects/:id',async(request,reply)=>{
   return reply.code(204).send();
 });
 
+app.get('/api/student-onboarding/admission-candidates',async request=>{
+  const a=await authorize(request,db,config,'students.create');
+  return (await db.query("SELECT aa.*,g.id requested_grade_id,g.name requested_grade_name,g.level_order requested_grade_order,(SELECT count(*)::int FROM classrooms c WHERE c.organisation_id=aa.organisation_id AND c.grade_level_id=g.id AND c.is_active=true) matching_class_count FROM admission_applications aa LEFT JOIN grade_levels g ON g.organisation_id=aa.organisation_id AND lower(g.code)=lower(aa.requested_grade_code) WHERE aa.organisation_id=$1 AND aa.status='approved' AND aa.student_id IS NULL ORDER BY aa.reviewed_at DESC NULLS LAST,aa.submitted_at DESC",[a.core.organisation_id])).rows;
+});
+app.post('/api/student-onboarding/admission-candidates/:id/enrol',async(request,reply)=>{
+  const a=await authorize(request,db,config,'students.create');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({classroomId:z.string().uuid(),admissionNo:z.string().trim().min(1).max(60).optional()}).parse(request.body);
+  const result=await tx(db,async client=>{
+    const application=await one<any>(client,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
+    if(application.status!=='approved')throw fail(409,'Only approved admission applications can be enrolled');
+    if(application.student_id)throw fail(409,'This admission application has already been converted into a student record');
+    const classroom=await one<any>(client,'SELECT c.*,g.code grade_code,g.name grade_name FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.id=$1 AND c.organisation_id=$2 AND c.is_active=true',[b.classroomId,a.core.organisation_id]);
+    const admissionNo=(b.admissionNo||String(application.application_no||'').replace(/^ADM/i,'STU')).trim();
+    if(!admissionNo)throw fail(400,'Enter a Student ID / admission number');
+    const student=await one<any>(client,'INSERT INTO students(organisation_id,admission_no,first_name,middle_name,last_name,sex,date_of_birth,admission_date,notes) VALUES($1,$2,$3,$4,$5,$6,$7,current_date,$8) RETURNING *',[a.core.organisation_id,admissionNo,application.first_name,application.middle_name,application.last_name,application.sex,application.date_of_birth,[application.notes,application.previous_school?'Previous school: '+application.previous_school:null,'Created from admission application '+application.application_no].filter(Boolean).join('\n')]);
+    let guardian=await maybeOne<any>(client,'SELECT * FROM guardians WHERE organisation_id=$1 AND phone=$2 ORDER BY created_at LIMIT 1',[a.core.organisation_id,application.guardian_phone]);
+    if(!guardian){guardian=await one<any>(client,'INSERT INTO guardians(organisation_id,first_name,last_name,phone,email,address) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,application.guardian_first_name,application.guardian_last_name,application.guardian_phone,application.guardian_email||null,application.address||null]);}
+    else{guardian=await one<any>(client,'UPDATE guardians SET first_name=$1,last_name=$2,email=COALESCE($3,email),address=COALESCE($4,address),updated_at=now() WHERE id=$5 RETURNING *',[application.guardian_first_name,application.guardian_last_name,application.guardian_email||null,application.address||null,guardian.id]);}
+    await client.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[student.id]);
+    await client.query('INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary) VALUES($1,$2,$3,true) ON CONFLICT(student_id,guardian_id) DO UPDATE SET relationship=EXCLUDED.relationship,is_primary=true',[student.id,guardian.id,application.guardian_relationship]);
+    const enrolment=await one<any>(client,"INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id,status) VALUES($1,$2,$3,$4,'active') RETURNING *",[a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id]);
+    await assignMandatoryFees(client,a.core.organisation_id,student.id,classroom.academic_year_id,classroom.id);
+    await client.query("INSERT INTO student_status_history(organisation_id,student_id,old_status,new_status,reason,changed_by_os_user_id,enrolment_id,classroom_id) VALUES($1,$2,NULL,'active',$3,$4,$5,$6)",[a.core.organisation_id,student.id,'Student enrolled from approved admission application '+application.application_no,a.core.id,enrolment.id,classroom.id]);
+    await client.query("UPDATE admission_applications SET status='enrolled',student_id=$1,updated_at=now(),reviewed_at=COALESCE(reviewed_at,now()),reviewed_by_os_user_id=COALESCE(reviewed_by_os_user_id,$2) WHERE id=$3 AND organisation_id=$4",[student.id,a.core.id,id,a.core.organisation_id]);
+    await client.query("INSERT INTO admission_status_history(organisation_id,application_id,old_status,new_status,note,actor_os_user_id) VALUES($1,$2,'approved','enrolled',$3,$4)",[a.core.organisation_id,id,'Converted to student record '+student.admission_no+' and enrolled in '+classroom.name,a.core.id]);
+    return{student,guardian,enrolment,classroom,applicationNo:application.application_no};
+  });
+  await audit(a.core.organisation_id,a.core.id,'admission.enrolled','admission_application',id,{studentId:result.student.id,classroomId:result.classroom.id});
+  return reply.code(201).send(result);
+});
 app.get('/api/students/directory',async request=>{
   const a=await authorize(request,db,config,'screen.students.view');
   const q=z.object({
@@ -3348,7 +3491,7 @@ app.post('/api/assessment-categories',async(request,reply)=>{
   const total=await one<any>(db,`SELECT COALESCE(sum(weight_percent),0) total FROM assessment_categories
     WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND is_active=true`,
     [a.core.organisation_id,b.academicYearId,b.termId]);
-  if(Number(total.total)+b.weightPercent>100.0001)throw fail(400,'Assessment category weights cannot exceed 100% for a term');
+  void total;
   const row=await one<any>(db,`INSERT INTO assessment_categories(
       organisation_id,academic_year_id,term_id,code,name,default_max_score,weight_percent,sort_order
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -3371,7 +3514,7 @@ app.patch('/api/assessment-categories/:id',async request=>{
   const total=await one<any>(db,`SELECT COALESCE(sum(weight_percent),0) total FROM assessment_categories
     WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND id<>$4 AND is_active=true`,
     [a.core.organisation_id,current.academic_year_id,current.term_id,id]);
-  if((b.isActive??current.is_active)&&Number(total.total)+nextWeight>100.0001)throw fail(400,'Assessment category weights cannot exceed 100% for a term');
+  void total; void nextWeight;
   const row=await one<any>(db,`UPDATE assessment_categories SET
       name=COALESCE($1,name),
       default_max_score=COALESCE($2,default_max_score),
@@ -3432,7 +3575,7 @@ app.post('/api/assessments',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.create');
   const b=z.object({
     academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
-    categoryId:z.string().uuid().optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),
+    categoryId:z.string().uuid().optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),assessmentComponent:z.enum(['continuous','end_term_exam']).optional(),
     name:z.string().min(2).max(160),maxScore:z.number().positive().optional(),assessmentDate:z.string().date().optional(),
     teacherOsUserId:z.string().uuid().optional()
   }).parse(request.body);
@@ -3444,21 +3587,39 @@ app.post('/api/assessments',async(request,reply)=>{
     organisationId:a.core.organisation_id,academicYearId:b.academicYearId,termId:b.termId,
     classroomId:b.classroomId,subjectId:b.subjectId,teacherOsUserId:teacherId
   });
-  let category:any=null;
-  if(b.categoryId){
-    category=await one<any>(db,`SELECT * FROM assessment_categories
-      WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND term_id=$4 AND is_active=true`,
-      [b.categoryId,a.core.organisation_id,b.academicYearId,b.termId]);
-  }else{
-    const code=({classwork:'CLASSWORK',homework:'HOMEWORK',project:'PROJECT',test:'MIDTERM',exam:'EXAM',other:'CLASSWORK'} as Record<string,string>)[b.assessmentType||'classwork'];
-    category=await maybeOne<any>(db,`SELECT * FROM assessment_categories
-      WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND code=$4 AND is_active=true`,
-      [a.core.organisation_id,b.academicYearId,b.termId,code]);
-  }
-  if(!category)throw fail(400,'Select a valid assessment category for this term');
-  const type=category.code==='CLASSWORK'?'classwork':category.code==='HOMEWORK'?'homework':category.code==='PROJECT'?'project':category.code==='EXAM'?'exam':category.code==='MIDTERM'?'test':'other';
-  const maxScore=b.maxScore??Number(category.default_max_score);
   const cleanName=b.name.trim();
+  const requestedType=b.assessmentType??(b.assessmentComponent==='end_term_exam'?'exam':'classwork');
+  const isEndTermExam=b.assessmentComponent==='end_term_exam'||requestedType==='exam';
+  if(b.assessmentComponent==='continuous'&&requestedType==='exam')throw fail(400,'End-of-Term Exam must use the 70% exam component');
+  const type=isEndTermExam?'exam':requestedType;
+  const systemCode=isEndTermExam?'EXAM':'CONTINUOUS';
+  const systemName=isEndTermExam?'End-of-Term Examination':'Continuous Assessment';
+  const systemWeight=isEndTermExam?70:30;
+  const systemDefaultMax=100;
+  let category=await maybeOne<any>(db,`SELECT * FROM assessment_categories
+    WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id=$3 AND code=$4`,
+    [a.core.organisation_id,b.academicYearId,b.termId,systemCode]);
+  if(!category){
+    category=await one<any>(db,`INSERT INTO assessment_categories(
+      organisation_id,academic_year_id,term_id,code,name,default_max_score,weight_percent,sort_order,is_active
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true)
+    ON CONFLICT(organisation_id,academic_year_id,term_id,code)
+    DO UPDATE SET name=EXCLUDED.name,default_max_score=EXCLUDED.default_max_score,
+      weight_percent=EXCLUDED.weight_percent,is_active=true,updated_at=now()
+    RETURNING *`,
+    [a.core.organisation_id,b.academicYearId,b.termId,systemCode,systemName,systemDefaultMax,systemWeight,isEndTermExam?20:10]);
+  }
+  const maxScore=b.maxScore??Number(category.default_max_score||100);
+  if(isEndTermExam&&Number(maxScore)<=0)throw fail(400,'End-of-Term Exam maximum mark must be greater than zero');
+  if(!isEndTermExam&&Number(maxScore)<=0)throw fail(400,'Continuous assessment maximum mark must be greater than zero');
+  if(isEndTermExam){
+    const existingExam=await maybeOne<any>(db,`SELECT ax.id,ax.name FROM assessments ax
+      LEFT JOIN assessment_categories acx ON acx.id=ax.category_id
+      WHERE ax.organisation_id=$1 AND ax.term_id=$2 AND ax.classroom_id=$3 AND ax.subject_id=$4
+        AND upper(COALESCE(acx.code,''))='EXAM'
+      LIMIT 1`,[a.core.organisation_id,b.termId,b.classroomId,b.subjectId]);
+    if(existingExam)throw fail(409,'Only one End-of-Term Exam is allowed for this subject in the term. Edit the existing exam instead.');
+  }
   const duplicate=await maybeOne<any>(db,`SELECT id FROM assessments
     WHERE organisation_id=$1 AND term_id=$2 AND classroom_id=$3 AND subject_id=$4 AND teacher_os_user_id=$5
       AND lower(trim(name))=lower($6) AND assessment_date IS NOT DISTINCT FROM $7::date LIMIT 1`,
@@ -3469,7 +3630,7 @@ app.post('/api/assessments',async(request,reply)=>{
       assessment_date,created_by_os_user_id,teacher_os_user_id
     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [a.core.organisation_id,b.academicYearId,b.termId,b.classroomId,b.subjectId,category.id,cleanName,type,maxScore,
-      category.weight_percent,b.assessmentDate??null,a.core.id,teacherId]);
+      systemWeight,b.assessmentDate??null,a.core.id,teacherId]);
   await audit(a.core.organisation_id,a.core.id,'assessment.created','assessment',row.id,{categoryId:category.id,teacherOsUserId:teacherId});
   return reply.code(201).send(row);
 });
@@ -3477,7 +3638,7 @@ app.get('/api/assessments/:id/scores',async request=>{
   const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}.`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 async function buildAcademicStatement(organisationId:string,studentId:string){
@@ -5287,12 +5448,12 @@ async function classReportPool(organisationId:string,classroomId:string,termId:s
             NOT EXISTS(
               SELECT 1 FROM assessments a LEFT JOIN assessment_categories ac ON ac.id=a.category_id
               WHERE a.organisation_id=$1 AND a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
-                AND COALESCE(ac.code,upper(a.assessment_type))<>'EXAM'
+                AND NOT (upper(COALESCE(ac.code,''))='EXAM')
             )
             OR NOT EXISTS(
               SELECT 1 FROM assessments a LEFT JOIN assessment_categories ac ON ac.id=a.category_id
               WHERE a.organisation_id=$1 AND a.classroom_id=$2 AND a.term_id=$3 AND a.subject_id=cs.subject_id
-                AND COALESCE(ac.code,upper(a.assessment_type))='EXAM'
+                AND (upper(COALESCE(ac.code,''))='EXAM')
             )
             OR EXISTS(
               SELECT 1 FROM assessments a
@@ -5814,6 +5975,10 @@ app.post('/api/promotions/batch',async request=>{
     }
     await client.query(`UPDATE promotion_batches SET promoted_count=$1,repeated_count=$2,completed_count=$3 WHERE id=$4`,
       [promoted,repeated,completed,batch.id]);
+    // Rollover completion closes the source year. Academic records remain readable but are
+    // protected from edits until a School Administrator explicitly reopens the period.
+    await client.query(`UPDATE academic_years SET status='closed',is_locked=true,locked_at=now(),locked_by_os_user_id=$1 WHERE id=$2 AND organisation_id=$3`,[a.core.id,b.fromAcademicYearId,a.core.organisation_id]);
+    await client.query(`UPDATE terms SET status='closed',is_locked=true,locked_at=now(),locked_by_os_user_id=$1 WHERE academic_year_id=$2 AND organisation_id=$3`,[a.core.id,b.fromAcademicYearId,a.core.organisation_id]);
     await audit(a.core.organisation_id,a.core.id,'students.promoted','promotion_batch',batch.id,{processed,promoted,repeated,completed});
     return{batchId:batch.id,processed,promoted,repeated,completed};
   });
@@ -5831,7 +5996,7 @@ app.post('/api/parent/login',async request=>{
   const tenant=await resolveTenantSchool(b.schoolSlug);
   const licence=await schoolLicence(tenant.organisation_id);
   if(licence.status!=='legacy'&&!licence.modules.includes('school.parent_portal'))throw fail(403,'Parent Portal is not included in this school plan');
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+  if(['suspended','expired','cancelled','unlicensed','verification_required'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
 
   const normalizedPhone=b.phone.replace(/\D/g,'');
   const identityKey=throttleFingerprint(tenant.organisation_id+'|'+normalizedPhone+'|'+studentKey.toLowerCase());
@@ -6386,7 +6551,7 @@ app.post('/api/student/login',async request=>{
   const tenant=await resolveTenantSchool(b.schoolSlug);
   const licence=await schoolLicence(tenant.organisation_id);
   if(licence.status!=='legacy'&&!licence.modules.includes('school.student_portal'))throw fail(403,'Student Portal is not included in this school plan');
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+  if(['suspended','expired','cancelled','unlicensed','verification_required'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
   const row=await maybeOne<any>(db,`SELECT s.*,spa.pin_hash,spa.is_active
     FROM students s JOIN student_portal_access spa ON spa.student_id=s.id
     WHERE s.organisation_id=$1 AND s.admission_no=$2 AND s.status='active' LIMIT 1`,[tenant.organisation_id,b.admissionNo]);
@@ -6472,8 +6637,14 @@ app.get('/api/public/school',async request=>{
   const school=await resolveTenantSchool(q.school);
   const licence=await schoolLicence(school.organisation_id);
   if(licence.status!=='legacy'&&!licence.modules.includes('school.admissions'))throw fail(403,'Admissions is not included in this school plan');
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
-  const grades=(await db.query('SELECT code,name,stage FROM grade_levels WHERE organisation_id=$1 AND is_active=true ORDER BY level_order',[school.organisation_id])).rows;
+  if(['suspended','expired','cancelled','unlicensed','verification_required'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+  let grades=(await db.query('SELECT code,name,stage FROM grade_levels WHERE organisation_id=$1 AND is_active=true ORDER BY level_order',[school.organisation_id])).rows;
+  if(!grades.length){
+    grades=(await db.query(`SELECT DISTINCT g.code,g.name,g.stage,g.level_order
+      FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
+      WHERE c.organisation_id=$1 AND c.is_active=true
+      ORDER BY g.level_order`,[school.organisation_id])).rows;
+  }
   return{school:{organisation_id:school.organisation_id,tenant_slug:school.tenant_slug,school_name:school.school_name,short_name:school.short_name,motto:school.motto,phone:school.phone,email:school.email,address:school.address},grades};
 });
 app.post('/api/public/admissions',async(request,reply)=>{
@@ -6489,7 +6660,7 @@ app.post('/api/public/admissions',async(request,reply)=>{
   const school=await resolveTenantSchool(b.schoolSlug);
   const licence=await schoolLicence(school.organisation_id);
   if(licence.status!=='legacy'&&!licence.modules.includes('school.admissions'))throw fail(403,'Admissions is not included in this school plan');
-  if(['suspended','expired','cancelled','unlicensed'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
+  if(['suspended','expired','cancelled','unlicensed','verification_required'].includes(String(licence.status)))throw fail(403,'This school licence is '+String(licence.status).replace(/_/g,' '));
   const row=await createAdmissionApplication({organisationId:school.organisation_id,source:'external',data:b});
   return reply.code(201).send({id:row.id,applicationNo:row.application_no,status:row.status});
 });
@@ -6537,6 +6708,24 @@ app.get('/api/admissions/:id',async request=>{
   const history=(await db.query('SELECT * FROM admission_status_history WHERE application_id=$1 ORDER BY created_at',[id])).rows;
   const contacts=(await db.query('SELECT * FROM admission_contacts WHERE application_id=$1 ORDER BY created_at DESC',[id])).rows;
   return{application,history,contacts};
+});
+app.patch('/api/admissions/:id/details',async request=>{
+  const a=await authorize(request,db,config,'admissions.manage');
+  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const b=z.object({firstName:z.string().trim().min(1).max(100).optional(),middleName:z.string().trim().max(100).nullable().optional(),lastName:z.string().trim().min(1).max(100).optional(),sex:z.enum(['male','female']).nullable().optional(),dateOfBirth:z.string().date().nullable().optional(),requestedGradeCode:z.string().trim().min(1).max(20).optional(),previousSchool:z.string().trim().max(240).nullable().optional(),guardianFirstName:z.string().trim().min(1).max(100).optional(),guardianLastName:z.string().trim().min(1).max(100).optional(),guardianPhone:z.string().trim().min(5).max(60).optional(),guardianAltPhone:z.string().trim().max(60).nullable().optional(),guardianEmail:z.string().email().nullable().optional(),guardianRelationship:z.string().trim().min(2).max(60).optional(),address:z.string().trim().max(4000).nullable().optional(),emergencyContactName:z.string().trim().max(200).nullable().optional(),emergencyContactPhone:z.string().trim().max(60).nullable().optional(),notes:z.string().trim().max(5000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+  if(current.status==='enrolled')throw fail(409,'An enrolled application cannot be edited');
+  const row=await one<any>(db,`UPDATE admission_applications SET
+    first_name=COALESCE($1,first_name),middle_name=CASE WHEN $2 THEN $3 ELSE middle_name END,last_name=COALESCE($4,last_name),
+    sex=CASE WHEN $5 THEN $6 ELSE sex END,date_of_birth=CASE WHEN $7 THEN $8::date ELSE date_of_birth END,requested_grade_code=COALESCE($9,requested_grade_code),
+    previous_school=CASE WHEN $10 THEN $11 ELSE previous_school END,guardian_first_name=COALESCE($12,guardian_first_name),guardian_last_name=COALESCE($13,guardian_last_name),
+    guardian_phone=COALESCE($14,guardian_phone),guardian_alt_phone=CASE WHEN $15 THEN $16 ELSE guardian_alt_phone END,guardian_email=CASE WHEN $17 THEN $18 ELSE guardian_email END,
+    guardian_relationship=COALESCE($19,guardian_relationship),address=CASE WHEN $20 THEN $21 ELSE address END,emergency_contact_name=CASE WHEN $22 THEN $23 ELSE emergency_contact_name END,
+    emergency_contact_phone=CASE WHEN $24 THEN $25 ELSE emergency_contact_phone END,notes=CASE WHEN $26 THEN $27 ELSE notes END,updated_at=now()
+    WHERE id=$28 AND organisation_id=$29 RETURNING *`,[b.firstName??null,Object.hasOwn(b,'middleName'),b.middleName??null,b.lastName??null,Object.hasOwn(b,'sex'),b.sex??null,Object.hasOwn(b,'dateOfBirth'),b.dateOfBirth??null,b.requestedGradeCode??null,Object.hasOwn(b,'previousSchool'),b.previousSchool??null,b.guardianFirstName??null,b.guardianLastName??null,b.guardianPhone??null,Object.hasOwn(b,'guardianAltPhone'),b.guardianAltPhone??null,Object.hasOwn(b,'guardianEmail'),b.guardianEmail??null,b.guardianRelationship??null,Object.hasOwn(b,'address'),b.address??null,Object.hasOwn(b,'emergencyContactName'),b.emergencyContactName??null,Object.hasOwn(b,'emergencyContactPhone'),b.emergencyContactPhone??null,Object.hasOwn(b,'notes'),b.notes??null,id,a.core.organisation_id]);
+  await audit(a.core.organisation_id,a.core.id,'admission.details_updated','admission_application',id);
+  await changeLog({organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'admission.details_updated',resourceType:'admission_application',resourceId:id,performedOn:row.application_no,oldValue:current,newValue:row});
+  return row;
 });
 app.patch('/api/admissions/:id',async request=>{
   const a=await authorize(request,db,config,'admissions.manage');
@@ -7855,6 +8044,9 @@ await registerFinanceLeaveRoutes(app,{
   clearCoreUsersCache:(organisationId:string)=>coreUsersCache.delete(organisationId)
 });
 
+await registerHrPayrollRoutes(app,{db,config,authorize,one,maybeOne,tx,fail,audit,fetchCoreUsers});
+await registerSchoolRemediationRoutes(app,{db,config,authorize,one,maybeOne,tx,fail,audit,assignMandatoryFees});
+
 await registerAccountingRoutes(app,{
   db,config,authorize,one,maybeOne,tx,fail,audit,postFinanceJournal,updateStudentFeeStatus,postStudentPaymentLedger,postStudentFeeReceivable,reverseFinanceJournal,notifyContact
 });
@@ -7863,6 +8055,8 @@ app.setErrorHandler(async(error:any,request,reply)=>{
   let status=Number(error.statusCode)||(error?.name==='ZodError'?400:500);
   if(error.code==='23505')status=409;
   if(error.code==='23503')status=409;
+  if(error.code==='23514')status=400;
+  if(error.code==='22P02')status=400;
   if(error.code==='42P08')status=500;
 
   const validationMessage=error?.name==='ZodError'&&Array.isArray(error?.issues)
@@ -7876,7 +8070,11 @@ app.setErrorHandler(async(error:any,request,reply)=>{
     ?'A record with the same unique value already exists'
     :error.code==='23503'
       ?'This record is still in use and cannot be deleted'
-      :error.code==='42P08'
+      :error.code==='23514'
+      ?'One or more values do not meet the allowed rules for this record'
+      :error.code==='22P02'
+        ?'One or more values are in the wrong format. Check dates, numbers and selected records.'
+        :error.code==='42P08'
         ?'The database could not safely process this action. The error has been logged for review.'
         :validationMessage
           ?validationMessage

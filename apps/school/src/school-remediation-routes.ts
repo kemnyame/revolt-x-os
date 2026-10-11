@@ -17,12 +17,12 @@ export async function registerSchoolRemediationRoutes(app:any,deps:any){
     if(b.outcome!=='completed'&&!b.toClassroomId)throw fail(400,'Choose the destination class for a promoted or repeated student');
 
     const result=await tx(db,async(client:any)=>{
-      const current=await maybeOne<any>(client,`SELECT e.*,c.name classroom_name
+      const current=await maybeOne(client,`SELECT e.*,c.name classroom_name
         FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
         WHERE e.organisation_id=$1 AND e.student_id=$2 AND e.academic_year_id=$3 AND e.status='active'`,[a.core.organisation_id,b.studentId,b.fromAcademicYearId]);
       if(!current)throw fail(404,'The student does not have an active enrolment in the selected source academic year');
       if(b.toClassroomId){
-        const dest=await maybeOne<any>(client,'SELECT id FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND is_active=true',[b.toClassroomId,a.core.organisation_id,b.toAcademicYearId]);
+        const dest=await maybeOne(client,'SELECT id FROM classrooms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3 AND is_active=true',[b.toClassroomId,a.core.organisation_id,b.toAcademicYearId]);
         if(!dest)throw fail(400,'The selected destination class does not belong to the destination academic year');
       }
 
@@ -36,7 +36,7 @@ export async function registerSchoolRemediationRoutes(app:any,deps:any){
         await client.query("UPDATE students SET status='active',updated_at=now() WHERE id=$1 AND organisation_id=$2",[b.studentId,a.core.organisation_id]);
         await assignMandatoryFees(client,a.core.organisation_id,b.studentId,b.toAcademicYearId,b.toClassroomId);
       }
-      const promotion=await one<any>(client,`INSERT INTO student_promotions(
+      const promotion=await one(client,`INSERT INTO student_promotions(
         organisation_id,student_id,from_academic_year_id,to_academic_year_id,from_classroom_id,to_classroom_id,outcome,
         processed_by_os_user_id,academic_average,terms_count,promotion_basis
       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL,NULL,'manual_override')

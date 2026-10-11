@@ -423,10 +423,10 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     });
 
     const entitlement = await getEntitlements(db, a.organisationId, created.organisation.id);
-    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(created.organisation.slug);
-    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(created.organisation.slug);
+    const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/login';
+    const adminLoginUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/admin-login';
     const setupUrl = created.setupToken
-      ? schoolApplicationBase(config) + '/admin-password-reset?school=' + encodeURIComponent(created.organisation.slug) + '&token=' + encodeURIComponent(created.setupToken) + '&mode=setup'
+      ? schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/admin-password-reset?token=' + encodeURIComponent(created.setupToken) + '&mode=setup'
       : null;
 
     let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
@@ -544,8 +544,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [id,customer.primary_contact_email]
       );
     }
-    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug);
-    const adminLoginUrl = schoolApplicationBase(config) + '/admin-login?school=' + encodeURIComponent(customer.slug);
+    const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(customer.slug) + '/login';
+    const adminLoginUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(customer.slug) + '/admin-login';
     return {
       customer,
       license,
@@ -688,7 +688,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       schoolSync={ok:false,pending:true,message:String(error?.message||error)};
     }
 
-    const adminLoginUrl=schoolApplicationBase(config)+'/admin-login?school='+encodeURIComponent(customer.slug);
+    const adminLoginUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(customer.slug)+'/admin-login';
     await audit(db,{
       organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
       action:'commercial.school_admin.changed',resourceType:'organisation',resourceId:id,
@@ -766,8 +766,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
     });
 
-    const adminLoginUrl=schoolApplicationBase(config)+'/admin-login?school='+encodeURIComponent(org.slug);
-    const resetUrl=schoolApplicationBase(config)+'/admin-password-reset?school='+encodeURIComponent(org.slug)+'&token='+encodeURIComponent(resetToken);
+    const adminLoginUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(org.slug)+'/admin-login';
+    const resetUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(org.slug)+'/admin-password-reset?token='+encodeURIComponent(resetToken);
     await audit(db,{
       organisationId:a.organisationId,
       actorUserId:a.userId,
@@ -817,7 +817,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       if (!response.ok) throw new Error(payload?.error?.message || 'School provisioning failed');
       await db.query("UPDATE saas_provisioning_jobs SET status='completed',details=$1,error=NULL,completed_at=now(),updated_at=now() WHERE id=$2", [JSON.stringify(payload ?? {}), job.id]);
       await db.query('UPDATE saas_subscriptions SET provisioned_at=COALESCE(provisioned_at,now()),last_synced_at=now(),updated_at=now() WHERE id=$1', [entitlement.subscriptionId]);
-      return { ok: true, provisioning: payload, accessUrl: schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(customer.slug) };
+      return { ok: true, provisioning: payload, accessUrl: schoolApplicationBase(config) + '/s/' + encodeURIComponent(customer.slug) + '/login' };
     } catch (error: any) {
       await db.query("UPDATE saas_provisioning_jobs SET status='failed',error=$1,updated_at=now() WHERE id=$2", [String(error?.message || error), job.id]);
       return { ok: false, message: String(error?.message || error) };

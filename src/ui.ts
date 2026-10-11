@@ -86,8 +86,9 @@ async function boot(){
  try{
    token=sessionStorage.getItem('rx_access')||'';refresh=sessionStorage.getItem('rx_refresh')||'';
    if(!token){location.replace('/login');return}
-   data.org=await raw('/v1/organisation');E('org').textContent=data.org.name;
-   E('nav').innerHTML=pages.map(function(p){if(p[0]==='group')return '<div class="group">'+esc(p[1])+'</div>';return '<button data-p="'+p[0]+'" data-icon="'+esc(p[2])+'" class="'+(p[0]==='dashboard'?'active':'')+'">'+esc(p[1])+'</button>'}).join('');
+   data.context=await raw('/v1/auth/context');data.org=await raw('/v1/organisation');E('org').textContent=data.org.name;
+   var visiblePages=pages.filter(function(p){return p[0]!=='commercial-control'||(data.context.permissions||[]).indexOf('commercial.read')>=0});
+   E('nav').innerHTML=visiblePages.map(function(p){if(p[0]==='group')return '<div class="group">'+esc(p[1])+'</div>';return '<button data-p="'+p[0]+'" data-icon="'+esc(p[2])+'" class="'+(p[0]==='dashboard'?'active':'')+'">'+esc(p[1])+'</button>'}).join('');
    E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
    E('refreshPage').onclick=function(){page(currentPage)};E('signOut').onclick=async function(){try{await raw('/v1/auth/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_access');sessionStorage.removeItem('rx_refresh');location.replace('/login')};
    E('loading').classList.add('hide');E('os').classList.remove('hide');await page('dashboard');
