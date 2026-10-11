@@ -52,7 +52,7 @@ function cookieValue(cookieHeader:string|undefined,name:string){
   if(!cookieHeader)return'';
   for(const part of cookieHeader.split(';')){
     const p=part.trim(),eq=p.indexOf('=');
-    if(eq>0&&p.slice(0,eq)===name)return decodeURIComponent(p.slice(eq+1));
+    if(eq>0&&p.slice(0,eq)===name){try{return decodeURIComponent(p.slice(eq+1))}catch{return''}}
   }
   return'';
 }
@@ -69,7 +69,7 @@ function requestSchoolTokens(request:FastifyRequest){
 }
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
-async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
+async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<{core:CoreContext;token:string}|null>{
   const tokens=requestSchoolTokens(request);
   if(!tokens.length)return null;
 
@@ -93,7 +93,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
          RETURNING core_context`,
       [schoolSessionHash(token)]
     );
-    if(row?.core_context)return row.core_context;
+    if(row?.core_context)return{core:row.core_context,token};
   }
 
   throw Object.assign(new Error('School session expired. Please sign in again. The session ended because of inactivity or its configured security time limit.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
@@ -151,8 +151,8 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string,options?:{allowPasswordChange?:boolean}){
   // Established School sessions are fully local and must not require Core availability.
-  const schoolContext=await fetchSchoolSessionContext(request,db);
-  const core=schoolContext??await fetchCoreContext(request,config);
+  const schoolSession=await fetchSchoolSessionContext(request,db);
+  const core=schoolSession?.core??await fetchCoreContext(request,config);
   if(core.must_change_password&&!options?.allowPasswordChange){
     throw Object.assign(new Error('Password change required before opening the School workspace'),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
   }
@@ -167,14 +167,22 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
       db,
       `INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
        VALUES($1,$2,'school_admin','active')
-       ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET status='active'
+       ON CONFLICT(organisation_id,os_user_id) DO NOTHING
        RETURNING role,status`,
       [core.organisation_id,core.id]
     );
+    if(!membership)membership=await maybeOne<{role:SchoolRole;status:string}>(db,
+      'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
+      [core.organisation_id,core.id]);
   }
 
   if(!membership || membership.status!=='active'){
     throw Object.assign(new Error('School module access is not active for this user'),{statusCode:403});
+  }
+
+  if(membership.role!=='school_admin'){
+    const role=await schoolRoleProfile(db,core.organisation_id,membership.role);
+    if(!role?.is_active)throw Object.assign(new Error('Your School role is disabled. Ask your administrator to restore it.'),{statusCode:403});
   }
 
   if(capability && membership.role!=='school_admin'){
@@ -190,5 +198,6 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
     }
   }
 
-  return {core,role:membership.role};
+  return {core,role:membership.role,schoolToken:schoolSession?.token};
 }
+
