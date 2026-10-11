@@ -20,7 +20,7 @@ import { commercialSupportRoutes } from './routes/commercial-support.js';
 import { commercialLaunchRoutes } from './routes/commercial-launch.js';
 import { assuranceRoutes } from './routes/assurance.js';
 import { osFrontend } from './ui.js';
-import { commercialControlFrontend } from './commercial-control2-ui.js';
+import { commercialControlEnhancedFrontend } from './commercial-control-enhanced-ui.js';
 import { licenseLoginFrontend, osLoginFrontend } from './login-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
@@ -89,7 +89,7 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
   app.get('/login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osLoginFrontend));
   app.get('/license-login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(licenseLoginFrontend));
-  app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlFrontend));
+  app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlEnhancedFrontend));
   app.get('/health/live', async () => ({ status: 'ok' }));
   app.get('/health/ready', async (_request, reply) => {
     try {
