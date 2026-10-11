@@ -2,6 +2,15 @@ import { z } from 'zod';
 
 const emptyToUndefined=(v:unknown)=>typeof v==='string'&&v.trim()===''?undefined:v;
 
+/**
+ * Revolt-X School runtime configuration.
+ *
+ * Commercial note: licence information is intentionally cached for resilience, but the cache is
+ * not an unlimited offline licence. LICENSE_CACHE_TTL_SECONDS controls how frequently School asks
+ * Core OS for a fresh entitlement. LICENSE_OUTAGE_GRACE_HOURS controls the maximum time a valid
+ * cached entitlement may be trusted when Core OS cannot be reached. After that grace window the
+ * application fails closed until Core OS confirms the licence again.
+ */
 const schema = z.object({
   NODE_ENV: z.enum(['development','test','production']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -11,6 +20,12 @@ const schema = z.object({
   CORE_SERVICE_KEY: z.preprocess(emptyToUndefined,z.string().min(32).optional()),
   CORS_ORIGINS: z.string().default('*'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
+
+  // Licence cache policy. Defaults are deliberately conservative for commercial launch:
+  // refresh every five minutes; tolerate a Core OS outage for at most 72 hours.
+  LICENSE_CACHE_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(300),
+  LICENSE_OUTAGE_GRACE_HOURS: z.coerce.number().int().min(1).max(168).default(72),
+
   PARENT_LOGIN_FAILURE_LIMIT: z.coerce.number().int().min(3).max(20).default(5),
   PARENT_LOGIN_BLOCK_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
   COMMUNICATION_RETRY_INTERVAL_MS: z.coerce.number().int().min(15000).max(900000).default(60000),

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "node scripts/patch-grade-levels.mjs && node scripts/patch-academic-manager-inline-subjects.mjs && node scripts/patch-admission-grade-flow.mjs && node scripts/patch-assessment-score-readiness.mjs && node scripts/patch-exercise-exam-flow-minimal.mjs && node scripts/retire-reserved-module-placeholders-20261011.mjs && node scripts/patch-full-remediation-20261011.mjs && node scripts/finalize-full-remediation-20261011.mjs && node scripts/patch-remediation-compile-fix.mjs && node scripts/patch-final-audit-20261011.mjs && tsc -p tsconfig.json && node scripts/validate-frontends.mjs && node --test test/*.smoke.mjs",
+    "build": "node scripts/patch-grade-levels.mjs && node scripts/patch-academic-manager-inline-subjects.mjs && node scripts/patch-admission-grade-flow.mjs && node scripts/patch-assessment-score-readiness.mjs && node scripts/patch-exercise-exam-flow-minimal.mjs && node scripts/retire-reserved-module-placeholders-20261011.mjs && node scripts/patch-full-remediation-20261011.mjs && node scripts/finalize-full-remediation-20261011.mjs && node scripts/patch-final-audit-20261011.mjs && node scripts/commercial-launch-cleanup-v2.mjs && tsc -p tsconfig.json && node scripts/validate-frontends.mjs && node --test test/*.smoke.mjs",
     "start": "node dist/server.js",
     "test": "npm run build"
   },

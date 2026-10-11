@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
-const booleanFromEnv = z.enum(['true', 'false']).default('false').transform(value => value === 'true');
-
+/**
+ * Core OS configuration.
+ *
+ * Commercial deployments expose only authenticated production entry points. The
+ * ENABLE_PREVIEW_ACCESS property remains as a compatibility tombstone for one older internal
+ * route, but it is forced to false regardless of environment input. There is no production
+ * switch that can re-enable Preview/Demo access.
+ */
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -12,13 +18,13 @@ const schema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
-  ENABLE_PREVIEW_ACCESS: booleanFromEnv,
   AI_GATEWAY_URL: z.string().url().optional().or(z.literal('')),
   AI_GATEWAY_TOKEN: z.string().optional(),
   SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
   SCHOOL_APP_URL: z.string().url().optional().or(z.literal('')),
   SCHOOL_DEFAULT_STAFF_PASSWORD: z.string().min(12).default('Welcome@2026!'),
-  OWNER_PASSWORD_RESET: z.string().optional()
+  OWNER_PASSWORD_RESET: z.string().optional(),
+  ENABLE_PREVIEW_ACCESS: z.preprocess(()=>false,z.boolean()).default(false)
 });
 
 export type Config = z.infer<typeof schema>;
