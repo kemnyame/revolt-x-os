@@ -28,6 +28,8 @@ beforeAll(async()=>{
 },60000);
 beforeEach(async()=>{
   await pg.exec('TRUNCATE organisations,users CASCADE;');
+  // Cascading truncation also clears global roles; restore the production owner role.
+  await pg.exec("INSERT INTO roles(organisation_id,key,name,is_system) VALUES(NULL,'owner','Organisation Owner',true);");
   await client.query("INSERT INTO organisations(id,name,slug) VALUES($1,'OEM','oem'),($2,'Other OEM','other-oem')",[provider,other]);
   await client.query("INSERT INTO users(id,email,password_hash,first_name,last_name) VALUES($1,'oem@example.test','test-hash','OEM','Operator')",[actor]);
   fetchMock=vi.spyOn(globalThis,'fetch').mockImplementation(async()=>json({provisioned:true,revoked:3}));
