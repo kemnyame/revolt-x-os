@@ -34,7 +34,10 @@ jobs:
           npm run build
 
       - name: Materialize commercial launch cleanup
-        run: node scripts/commercial-launch-cleanup.mjs
+        run: |
+          node scripts/fix-cleanup-script.mjs
+          rm scripts/fix-cleanup-script.mjs
+          node scripts/commercial-launch-cleanup.mjs
 
       - name: Validate Core OS
         run: |
