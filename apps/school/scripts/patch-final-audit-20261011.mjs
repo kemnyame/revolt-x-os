@@ -20,27 +20,34 @@ ui=replaceRequired(
 );
 
 if(!ui.includes('data-pay-component-override')){
-  const anchor="E('saveEmolument').onclick=async function(){var base=Number(E('hrBasic').value);";
-  const injection=`components.filter(function(c){return c.is_active}).forEach(function(c){
+  const saveHandlerAnchor="E('saveEmolument').onclick=";
+  const saveHandlerIndex=ui.indexOf(saveHandlerAnchor);
+  if(saveHandlerIndex<0)throw new Error('Final remediation patch could not find staff payroll save handler');
+  const overrideUi=`components.filter(function(c){return c.is_active}).forEach(function(c){
      var checkbox=E('hrComponents').querySelector('[data-pay-component="'+c.id+'"]');if(!checkbox)return;
      var label=checkbox.closest('label'),assignedComponent=assigned.find(function(x){return x.component_id===c.id}),input=document.createElement('input');
-     input.type='number';input.min='0';input.step='0.01';input.dataset.payComponentOverride=c.id;
+     input.type='number';input.min='0';input.step='0.01';input.setAttribute('data-pay-component-override',c.id);
      input.placeholder=c.code==='PAYE'?'Automatic PAYE for Sep-Dec 2026':(c.calculation_type==='percent_basic'?String(c.rate_percent||0)+'%':String(c.default_value||0));
      input.value=assignedComponent?(c.calculation_type==='percent_basic'?(assignedComponent.rate_override??''):(assignedComponent.value_override??'')):'';
      input.title=c.calculation_type==='percent_basic'?'Optional staff-specific percentage override':'Optional staff-specific amount override';
      input.style.marginLeft='auto';input.style.maxWidth='150px';label.appendChild(input)
-   });
-   ${anchor}`;
-  ui=replaceRequired(ui,anchor,injection,'staff payroll override inputs');
+   });`;
+  ui=ui.slice(0,saveHandlerIndex)+overrideUi+ui.slice(saveHandlerIndex);
 
-  const oldSave="var cs=[];E('hrComponents').querySelectorAll('[data-pay-component]:checked').forEach(function(x){cs.push({componentId:x.dataset.payComponent,isActive:true})});";
-  const newSave="var cs=[];E('hrComponents').querySelectorAll('[data-pay-component]:checked').forEach(function(x){var component=components.find(function(c){return c.id===x.dataset.payComponent}),override=E('hrComponents').querySelector('[data-pay-component-override=\"'+x.dataset.payComponent+'\"]'),rawOverride=override?override.value.trim():'',item={componentId:x.dataset.payComponent,isActive:true};if(rawOverride!==''){var numericOverride=Number(rawOverride);if(!Number.isFinite(numericOverride)||numericOverride<0)throw Error('Enter a valid non-negative payroll override');if(component&&component.calculation_type==='percent_basic')item.rateOverride=numericOverride;else item.valueOverride=numericOverride}cs.push(item)});";
-  ui=replaceRequired(ui,oldSave,newSave,'staff payroll override save logic');
+  const componentLoopStart="var cs=[];E('hrComponents').querySelectorAll('[data-pay-component]:checked').forEach(function(x){";
+  const componentLoopIndex=ui.indexOf(componentLoopStart,saveHandlerIndex);
+  const saveApiAnchor="await raw('/api/hr/staff/'+id+'/components'";
+  const saveApiIndex=componentLoopIndex>=0?ui.indexOf(saveApiAnchor,componentLoopIndex):-1;
+  if(componentLoopIndex<0||saveApiIndex<0)throw new Error('Final remediation patch could not find staff payroll component save loop');
+  const newSaveLoop="var cs=[];E('hrComponents').querySelectorAll('[data-pay-component]:checked').forEach(function(x){var component=components.find(function(c){return c.id===x.dataset.payComponent}),override=E('hrComponents').querySelector('[data-pay-component-override=\"'+x.dataset.payComponent+'\"]'),rawOverride=override?override.value.trim():'',item={componentId:x.dataset.payComponent,isActive:true};if(rawOverride!==''){var numericOverride=Number(rawOverride);if(!Number.isFinite(numericOverride)||numericOverride<0)throw Error('Enter a valid non-negative payroll override');if(component&&component.calculation_type==='percent_basic')item.rateOverride=numericOverride;else item.valueOverride=numericOverride}cs.push(item)});";
+  ui=ui.slice(0,componentLoopIndex)+newSaveLoop+ui.slice(saveApiIndex);
 }
 
-const oldPayslip="{key:'net_pay',label:'Net Pay',render:function(r){return'<b>'+docMoney(r.net_pay,'GHS')+'</b>'}},{key:'status',render:function(r){return badge(r.status)}}";
-const newPayslip="{key:'net_pay',label:'Net Pay',render:function(r){return'<b>'+docMoney(r.net_pay,'GHS')+'</b>'}},{key:'components',label:'Earnings & deductions',render:function(r){return (r.components||[]).map(function(c){return'<span class=\"badge '+(c.component_type==='earning'?'success':'pending')+'\">'+esc(c.name)+': '+docMoney(c.amount,'GHS')+'</span>'}).join(' ')}},{key:'status',render:function(r){return badge(r.status)}}";
-ui=replaceRequired(ui,oldPayslip,newPayslip,'staff payslip component detail');
+if(!ui.includes("label:'Earnings & deductions'")){
+  const payslipNeedle="{key:'net_pay',label:'Net Pay',render:function(r){return'<b>'+docMoney(r.net_pay,'GHS')+'</b>'}},{key:'status',render:function(r){return badge(r.status)}}";
+  const payslipReplacement="{key:'net_pay',label:'Net Pay',render:function(r){return'<b>'+docMoney(r.net_pay,'GHS')+'</b>'}},{key:'components',label:'Earnings & deductions',render:function(r){return (r.components||[]).map(function(c){return'<span class=\"badge '+(c.component_type==='earning'?'success':'pending')+'\">'+esc(c.name)+': '+docMoney(c.amount,'GHS')+'</span>'}).join(' ')}},{key:'status',render:function(r){return badge(r.status)}}";
+  ui=replaceRequired(ui,payslipNeedle,payslipReplacement,'staff payslip component detail');
+}
 
 await writeFile(uiPath,ui);
 
