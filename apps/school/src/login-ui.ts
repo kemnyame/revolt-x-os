@@ -263,9 +263,9 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
       <label for="confirmPassword">Confirm new password</label>
       <input id="confirmPassword" type="password" autocomplete="new-password">
 
-      <button id="save" type="button">Change password and continue</button>
+      <button id="save" type="button">Save new password</button>
       <div id="status"></div>
-      <div class="help">After the password is changed, your assigned staff workspace will open automatically.</div>
+      <div class="help">School administrators sign in again with the new password. Staff continue to their assigned workspace.</div>
     </div>
   </section>
 </main>
@@ -285,6 +285,10 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
       var r=await fetch('/api/auth/change-password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({newPassword:p1})});
       var j=await r.json().catch(function(){return null});
       if(!r.ok)throw new Error(j&&j.error&&j.error.message?j.error.message:'Could not change password');
+      if(j.requiresSignIn){
+        try{sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');if(j.schoolId)localStorage.setItem('rx_school_id',j.schoolId)}catch(e){}
+        show('Password changed. Sign in with your new password.','success');location.replace(j.redirectTo||'/admin-login');return
+      }
       show('Password changed. Opening your workspace...','success');
       location.replace(j.redirectTo||'/')
     }catch(err){show(err.message||'Could not change password');b.disabled=false;b.textContent=old}
