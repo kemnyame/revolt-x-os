@@ -80,6 +80,17 @@ test('established sessions lose access immediately when the assigned role is dis
   await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:403});
 });
 
+test('first password change retains the actual authorized token despite a stale cookie or header',async()=>{
+  const token='rxs_current',hash=createHash('sha256').update(token).digest('hex'),core={id:user,organisation_id:org,permissions:[],must_change_password:true};
+  await db.query("INSERT INTO school_roles(organisation_id,key,is_active) VALUES($1,'teacher',true)",[org]);
+  await db.query("INSERT INTO school_memberships VALUES($1,$2,'teacher','active',now())",[org,user]);
+  await db.query("INSERT INTO school_sessions(token_hash,os_user_id,organisation_id,core_context,expires_at) VALUES($1,$2,$3,$4,now()+interval '1 hour')",[hash,user,org,JSON.stringify(core)]);
+  for(const headers of [{cookie:'rx_school_session='+token,authorization:'Bearer rxs_stale'},{cookie:'rx_school_session=%E0%A4%A',authorization:'Bearer '+token}]) {
+    const auth=await authorize({headers},db,config,undefined,{allowPasswordChange:true});assert.equal(auth.schoolToken,token);
+    assert.equal(await revokeSchoolUserSessions(db,user,createHash('sha256').update(auth.schoolToken).digest('hex')),0);
+  }
+});
+
 test('concurrent failures are counted atomically and repeated sign-in failures are blocked',async()=>{
   await Promise.all(Array.from({length:10},()=>recordPortalLoginFailure(db,'staff','same',10,15)));
   assert.equal((await db.query('SELECT failures FROM portal_login_throttle')).rows[0].failures,10);

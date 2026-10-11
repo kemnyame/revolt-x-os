@@ -69,7 +69,7 @@ function requestSchoolTokens(request:FastifyRequest){
 }
 function schoolSessionHash(token:string){return createHash('sha256').update(token).digest('hex')}
 
-async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<CoreContext|null>{
+async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Promise<{core:CoreContext;token:string}|null>{
   const tokens=requestSchoolTokens(request);
   if(!tokens.length)return null;
 
@@ -93,7 +93,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
          RETURNING core_context`,
       [schoolSessionHash(token)]
     );
-    if(row?.core_context)return row.core_context;
+    if(row?.core_context)return{core:row.core_context,token};
   }
 
   throw Object.assign(new Error('School session expired. Please sign in again. The session ended because of inactivity or its configured security time limit.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
@@ -151,8 +151,8 @@ async function fetchCoreContext(request:FastifyRequest,config:SchoolConfig):Prom
 
 export async function authorize(request:FastifyRequest,db:SchoolDb,config:SchoolConfig,capability?:string,options?:{allowPasswordChange?:boolean}){
   // Established School sessions are fully local and must not require Core availability.
-  const schoolContext=await fetchSchoolSessionContext(request,db);
-  const core=schoolContext??await fetchCoreContext(request,config);
+  const schoolSession=await fetchSchoolSessionContext(request,db);
+  const core=schoolSession?.core??await fetchCoreContext(request,config);
   if(core.must_change_password&&!options?.allowPasswordChange){
     throw Object.assign(new Error('Password change required before opening the School workspace'),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
   }
@@ -198,6 +198,6 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
     }
   }
 
-  return {core,role:membership.role};
+  return {core,role:membership.role,schoolToken:schoolSession?.token};
 }
 

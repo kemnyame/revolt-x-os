@@ -2089,6 +2089,7 @@ app.post('/api/auth/staff-id-login',async(request,reply)=>withSchoolAuthThrottle
 
 app.post('/api/auth/change-password',async(request,reply)=>{
   const a=await authorize(request,db,config,undefined,{allowPasswordChange:true});
+  const token=a.schoolToken||'';
   const b=z.object({
     newPassword:schoolPassword
   }).parse(request.body);
@@ -2099,14 +2100,13 @@ app.post('/api/auth/change-password',async(request,reply)=>{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
     body:JSON.stringify({schoolId:a.core.organisation_slug,userId:a.core.id,newPassword:b.newPassword,
-      keepSessionHash:requestSessionToken(request)?createHash('sha256').update(requestSessionToken(request)).digest('hex'):undefined}),
+      keepSessionHash:token?createHash('sha256').update(token).digest('hex'):undefined}),
     signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
   if(!changed)throw fail(503,'Core Revolt-X OS could not update the password');
   const payload=await changed.json().catch(()=>null) as any;
   if(!changed.ok)throw fail(changed.status,payload?.error?.message||'Could not update password');
 
-  const token=requestSessionToken(request);
   if(token&&token.startsWith('rxs_')){
     const hash=createHash('sha256').update(token).digest('hex');
     await revokeSchoolUserSessions(db,a.core.id,hash);
@@ -8008,7 +8008,7 @@ app.setErrorHandler(async(error:any,request,reply)=>{
   if(error.code==='42P08')status=500;
 
   const validationMessage=error?.name==='ZodError'&&Array.isArray(error?.issues)
-    ?String(request.url).split('?')[0].startsWith('/api/auth/')?schoolAuthValidationMessage(error.issues):error.issues.slice(0,6).map((issue:any)=>{
+    ?String(request.url).startsWith('/api/auth/')?schoolAuthValidationMessage(error.issues):error.issues.slice(0,6).map((issue:any)=>{
       const field=Array.isArray(issue.path)&&issue.path.length?issue.path.join('.'):'input';
       return field+': '+String(issue.message||'Invalid value');
     }).join('; ')
