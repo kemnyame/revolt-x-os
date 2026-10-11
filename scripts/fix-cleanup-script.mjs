@@ -38,7 +38,7 @@ const replacement=String.raw`const exportRoute = [
 "    doc.moveDown().fontSize(11).text('Totals: Gross '+Number(run.gross_total).toFixed(2)+' | Deductions '+Number(run.deductions_total).toFixed(2)+' | Net '+Number(run.net_total).toFixed(2));doc.end();",
 "    const pdf=await done;return reply.header('content-disposition','attachment; filename=\"payroll-'+period+'.pdf\"').type('application/pdf').send(pdf);",
 "  });"
-].join('\\n');
+].join('\n');
 payroll = insertBefore(payroll, "  app.get('/api/payroll/me',async(request:any)=>{", exportRoute, 'payroll export route');`;
 
 src=src.slice(0,start)+replacement+src.slice(end+endMarker.length);
