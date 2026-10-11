@@ -52,7 +52,7 @@ function cookieValue(cookieHeader:string|undefined,name:string){
   if(!cookieHeader)return'';
   for(const part of cookieHeader.split(';')){
     const p=part.trim(),eq=p.indexOf('=');
-    if(eq>0&&p.slice(0,eq)===name)return decodeURIComponent(p.slice(eq+1));
+    if(eq>0&&p.slice(0,eq)===name){try{return decodeURIComponent(p.slice(eq+1))}catch{return''}}
   }
   return'';
 }
@@ -167,14 +167,22 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
       db,
       `INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
        VALUES($1,$2,'school_admin','active')
-       ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET status='active'
+       ON CONFLICT(organisation_id,os_user_id) DO NOTHING
        RETURNING role,status`,
       [core.organisation_id,core.id]
     );
+    if(!membership)membership=await maybeOne<{role:SchoolRole;status:string}>(db,
+      'SELECT role,status FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',
+      [core.organisation_id,core.id]);
   }
 
   if(!membership || membership.status!=='active'){
     throw Object.assign(new Error('School module access is not active for this user'),{statusCode:403});
+  }
+
+  if(membership.role!=='school_admin'){
+    const role=await schoolRoleProfile(db,core.organisation_id,membership.role);
+    if(!role?.is_active)throw Object.assign(new Error('Your School role is disabled. Ask your administrator to restore it.'),{statusCode:403});
   }
 
   if(capability && membership.role!=='school_admin'){
@@ -192,3 +200,4 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
 
   return {core,role:membership.role};
 }
+

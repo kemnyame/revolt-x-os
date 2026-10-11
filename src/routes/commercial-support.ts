@@ -304,7 +304,10 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
       await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')", [user.id, tokenHash(setupToken)]);
     });
 
-    const resetUrl = schoolBase(config) + '/s/' + encodeURIComponent(org.slug) + '/admin-password-reset' + '&token=' + encodeURIComponent(setupToken);
+    const resetLink = new URL(schoolBase(config) + '/s/' + encodeURIComponent(org.slug) + '/admin-password-reset');
+    resetLink.searchParams.set('token', setupToken);
+    resetLink.searchParams.set('school', org.slug);
+    const resetUrl = resetLink.toString();
     await audit(db, {
       organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId,
       action: 'commercial.school_admin_password_reset.created', resourceType: 'user', resourceId: user.id,
@@ -442,3 +445,4 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
     };
   });
 }
+

@@ -16,6 +16,7 @@ import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
+import { registerSchoolAccessRoutes, revokeSchoolUserSessions, schoolIdentifier, schoolPassword, schoolAuthValidationMessage, withSchoolAuthThrottle, ensureSchoolLoginMembership } from './school-access.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, providerStatus, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
@@ -68,7 +69,8 @@ function requestSessionToken(request:any){
   const auth=String(request.headers?.authorization||'');
   if(/^Bearer\s+rxs_/i.test(auth))return auth.replace(/^Bearer\s+/i,'').trim();
   const cookie=String(request.headers?.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('rx_school_session='));
-  return cookie?decodeURIComponent(cookie.slice('rx_school_session='.length)):'';
+  if(!cookie)return'';
+  try{return decodeURIComponent(cookie.slice('rx_school_session='.length))}catch{return''}
 }
 async function requestActor(request:any){
   const auth=String(request.headers?.authorization||'');
@@ -1894,8 +1896,7 @@ function inferSchoolRoleFromStaff(user:any){
 }
 
 app.get('/api/auth/schools',async()=>{
-  const local=(await db.query(`SELECT tenant_slug id,school_name name
-    FROM school_profiles
+  const local=(await db.query(`SELECT tenant_slug id,school_name name,organisation_id "organisationId" FROM school_profiles
     ORDER BY lower(school_name),tenant_slug`)).rows as any[];
   if(!config.CORE_SERVICE_KEY)return local;
   const base=config.CORE_OS_URL.replace(/\/$/,'');
@@ -1908,14 +1909,14 @@ app.get('/api/auth/schools',async()=>{
   const merged=new Map<string,any>();
   [...remote,...local].forEach((x:any)=>{
     const id=String(x?.id||'').trim();
-    if(id)merged.set(id,{id,name:String(x?.name||id),licenceStatus:x?.licence_status??x?.licenceStatus??null});
+    if(id)merged.set(id.toLowerCase(),{id,name:String(x?.name||id),organisationId:x?.organisationId??x?.organisation_id??null,licenceStatus:x?.licence_status??x?.licenceStatus??null});
   });
   return [...merged.values()].sort((a,b)=>a.name.localeCompare(b.name));
 });
 
 async function handleSchoolAdminLogin(request:any,reply:any){
   const b=z.object({
-    schoolId:z.string().trim().min(1).max(120),
+    schoolId:schoolIdentifier,
     email:z.string().trim().toLowerCase().email(),
     password:z.string().min(1).max(200)
   }).parse(request.body);
@@ -1946,15 +1947,7 @@ async function handleSchoolAdminLogin(request:any,reply:any){
   }
   if(!school)throw fail(503,'Your School workspace could not be prepared');
 
-  await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
-    VALUES($1,$2,'school_admin','active')
-    ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role='school_admin',status='active',updated_at=now()`,
-    [user.organisation_id,user.id]);
-  const membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
-    FROM school_memberships sm
-    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
-    [user.organisation_id,user.id]);
+  const membership=await ensureSchoolLoginMembership(db,user.organisation_id,user.id,'school_admin',true);
 
   await persistCoreUsers(user.organisation_id,[{
     id:user.id,membership_id:user.membership_id,first_name:user.first_name,last_name:user.last_name,
@@ -2003,35 +1996,8 @@ async function handleSchoolAdminLogin(request:any,reply:any){
   });
 }
 
-app.post('/api/auth/admin-login',handleSchoolAdminLogin);
-
-app.post('/api/auth/admin-password-reset',async(request,reply)=>{
-  const b=z.object({
-    token:z.string().min(32).max(500),
-    newPassword:z.string().min(12).max(200)
-      .regex(/[A-Z]/,'Password must contain an uppercase letter')
-      .regex(/[a-z]/,'Password must contain a lowercase letter')
-      .regex(/[0-9]/,'Password must contain a number'),
-    schoolId:z.string().trim().min(1).max(120).optional()
-  }).parse(request.body);
-
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const changed=await fetch(base+'/v1/auth/password-reset/confirm',{
-    method:'POST',
-    headers:{'content-type':'application/json'},
-    body:JSON.stringify({token:b.token,password:b.newPassword}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-
-  if(!changed)throw fail(503,'Core Revolt-X OS could not complete the password reset');
-  const payload=await changed.json().catch(()=>null) as any;
-  if(!changed.ok)throw fail(changed.status,payload?.error?.message||'Reset link is invalid or has expired');
-
-  const adminLoginUrl='/admin-login'+(b.schoolId?'?school='+encodeURIComponent(b.schoolId):'');
-  return reply.send({reset:true,email:payload?.email??null,adminLoginUrl});
-});
-
-
+app.post('/api/auth/admin-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_admin',request,()=>handleSchoolAdminLogin(request,reply)));
+registerSchoolAccessRoutes(app,{db,config,requireCoreServiceRequest});
 
 function roleWorkspace(profile:any){
   return profile?.portal_mode==='teacher'?'/teacher':'/';
@@ -2039,7 +2005,7 @@ function roleWorkspace(profile:any){
 
 async function handleSchoolStaffIdLogin(request:any,reply:any){
   const b=z.object({
-    schoolId:z.string().trim().min(1).max(120),
+    schoolId:schoolIdentifier,
     staffId:z.string().trim().min(4).max(120),
     password:z.string().min(1).max(200)
   }).parse(request.body);
@@ -2070,24 +2036,7 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
   }
   if(!school)throw fail(503,'Your School workspace could not be prepared');
 
-  let membership=await maybeOne<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
-    FROM school_memberships sm
-    JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-    WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
-    [user.organisation_id,user.id]);
-
-  if(!membership){
-    const role=inferSchoolRoleFromStaff(user);
-    await db.query(`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
-      VALUES($1,$2,$3,'active')
-      ON CONFLICT(organisation_id,os_user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now()`,
-      [user.organisation_id,user.id,role]);
-    membership=await one<any>(db,`SELECT sm.*,sr.name role_name,sr.portal_mode,sr.can_teach,sr.is_active
-      FROM school_memberships sm
-      JOIN school_roles sr ON sr.organisation_id=sm.organisation_id AND sr.key=sm.role
-      WHERE sm.organisation_id=$1 AND sm.os_user_id=$2 AND sm.status='active' AND sr.is_active=true`,
-      [user.organisation_id,user.id]);
-  }
+  const membership=await ensureSchoolLoginMembership(db,user.organisation_id,user.id,inferSchoolRoleFromStaff(user));
 
   await persistCoreUsers(user.organisation_id,[{
     id:user.id,membership_id:user.membership_id,first_name:user.first_name,last_name:user.last_name,
@@ -2136,15 +2085,12 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
   });
 }
 
-app.post('/api/auth/staff-id-login',handleSchoolStaffIdLogin);
+app.post('/api/auth/staff-id-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_staff',request,()=>handleSchoolStaffIdLogin(request,reply)));
 
 app.post('/api/auth/change-password',async(request,reply)=>{
   const a=await authorize(request,db,config,undefined,{allowPasswordChange:true});
   const b=z.object({
-    newPassword:z.string().min(12).max(200)
-      .regex(/[A-Z]/,'Password must contain an uppercase letter')
-      .regex(/[a-z]/,'Password must contain a lowercase letter')
-      .regex(/[0-9]/,'Password must contain a number')
+    newPassword:schoolPassword
   }).parse(request.body);
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
 
@@ -2152,7 +2098,8 @@ app.post('/api/auth/change-password',async(request,reply)=>{
   const changed=await fetch(base+'/v1/internal/school/change-staff-password',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({schoolId:a.core.organisation_slug,userId:a.core.id,newPassword:b.newPassword}),
+    body:JSON.stringify({schoolId:a.core.organisation_slug,userId:a.core.id,newPassword:b.newPassword,
+      keepSessionHash:requestSessionToken(request)?createHash('sha256').update(requestSessionToken(request)).digest('hex'):undefined}),
     signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
   if(!changed)throw fail(503,'Core Revolt-X OS could not update the password');
@@ -2162,6 +2109,7 @@ app.post('/api/auth/change-password',async(request,reply)=>{
   const token=requestSessionToken(request);
   if(token&&token.startsWith('rxs_')){
     const hash=createHash('sha256').update(token).digest('hex');
+    await revokeSchoolUserSessions(db,a.core.id,hash);
     await db.query(`UPDATE school_sessions
       SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
       WHERE token_hash=$1 AND revoked_at IS NULL`,[hash]);
@@ -8060,7 +8008,7 @@ app.setErrorHandler(async(error:any,request,reply)=>{
   if(error.code==='42P08')status=500;
 
   const validationMessage=error?.name==='ZodError'&&Array.isArray(error?.issues)
-    ?error.issues.slice(0,6).map((issue:any)=>{
+    ?String(request.url).split('?')[0].startsWith('/api/auth/')?schoolAuthValidationMessage(error.issues):error.issues.slice(0,6).map((issue:any)=>{
       const field=Array.isArray(issue.path)&&issue.path.length?issue.path.join('.'):'input';
       return field+': '+String(issue.message||'Invalid value');
     }).join('; ')

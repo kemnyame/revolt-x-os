@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
-import { maybeOne, tx } from './db.js';
+import { maybeOne } from './db.js';
 import { DeliveryError, normalizeMessagePhone, providerStatus, sendMessage, type MessageChannel } from './providers.js';
 
 export function throttleFingerprint(value:string){
@@ -42,31 +42,21 @@ export async function recordPortalLoginFailure(
   maxFailures:number,
   blockMinutes:number
 ){
-  await tx(db,async client=>{
-    const current=await maybeOne<any>(
-      client,
-      'SELECT * FROM portal_login_throttle WHERE portal=$1 AND throttle_key=$2 FOR UPDATE',
-      [portal,throttleKey]
-    );
-    const now=Date.now();
-    const windowMs=blockMinutes*60_000;
-    const started=current?.window_started_at?new Date(current.window_started_at).getTime():0;
-    const inWindow=Boolean(current)&&now-started<=windowMs;
-    const failures=inWindow?Number(current.failures||0)+1:1;
-    const windowStarted=inWindow?new Date(started).toISOString():new Date(now).toISOString();
-    const blockedUntil=failures>=maxFailures?new Date(now+windowMs).toISOString():null;
-    await client.query(`
+  // The conflict update increments the stored row under PostgreSQL's row lock.
+  // Concurrent first failures cannot overwrite one another's counters.
+  await db.query(`
       INSERT INTO portal_login_throttle(
         portal,throttle_key,failures,window_started_at,blocked_until,last_failure_at,updated_at
-      ) VALUES($1,$2,$3,$4,$5,now(),now())
+      ) VALUES($1,$2,1,now(),CASE WHEN $3<=1 THEN now()+make_interval(mins=>$4) ELSE NULL END,now(),now())
       ON CONFLICT(portal,throttle_key) DO UPDATE SET
-        failures=EXCLUDED.failures,
-        window_started_at=EXCLUDED.window_started_at,
-        blocked_until=EXCLUDED.blocked_until,
+        failures=CASE WHEN portal_login_throttle.window_started_at<now()-make_interval(mins=>$4) THEN 1 ELSE portal_login_throttle.failures+1 END,
+        window_started_at=CASE WHEN portal_login_throttle.window_started_at<now()-make_interval(mins=>$4) THEN now() ELSE portal_login_throttle.window_started_at END,
+        blocked_until=CASE
+          WHEN (CASE WHEN portal_login_throttle.window_started_at<now()-make_interval(mins=>$4) THEN 1 ELSE portal_login_throttle.failures+1 END)>=$3 THEN now()+make_interval(mins=>$4)
+          ELSE NULL END,
         last_failure_at=now(),
         updated_at=now()
-    `,[portal,throttleKey,failures,windowStarted,blockedUntil]);
-  });
+    `,[portal,throttleKey,maxFailures,blockMinutes]);
 }
 
 export async function clearPortalLoginThrottle(
@@ -161,3 +151,4 @@ export async function dispatchCommunicationOutbox(db:SchoolDb,config:SchoolConfi
     return{attempted:true,row};
   }
 }
+

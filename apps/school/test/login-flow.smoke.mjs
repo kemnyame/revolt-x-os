@@ -42,5 +42,5 @@ test('School Administrator reset link opens a new-password form', () => {
   assert.match(adminPasswordResetFrontend,/New password/);
   assert.match(adminPasswordResetFrontend,/Confirm new password/);
   assert.match(adminPasswordResetFrontend,/\/api\/auth\/admin-password-reset/);
-  assert.match(adminPasswordResetFrontend,/token:token,newPassword:p1,schoolId:school/);
 });
+

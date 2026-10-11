@@ -1,0 +1,63 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend } from '../dist/login-ui.js';
+
+async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond}={}) {
+  const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
+  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){}});return elements.get(id)};
+  const context={document:{getElementById:element,querySelectorAll:()=>[]},URLSearchParams,
+    location:{pathname:path,search,replace:url=>redirects.push(url)},history:{replaceState(){}},
+    localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
+    sessionStorage:{removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
+    setTimeout:fn=>fn(),fetch:async(url,options)=>{
+      calls.push({url,body:options?.body?JSON.parse(options.body):undefined});
+      if(url==='/api/auth/schools')return{ok:true,json:async()=>schools};
+      return respond?respond(url,options):{ok:true,json:async()=>({reset:true,schoolId:'alpha',adminLoginUrl:'/s/alpha/admin-login'})};
+    }};
+  const script=html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];assert.ok(script);
+  vm.runInNewContext(script,context);
+  await new Promise(resolve=>setImmediate(resolve));
+  return{element,calls,redirects,storage,sessions};
+}
+
+for(const [name,html] of [['admin',adminLoginFrontend],['staff',loginFrontend]]) {
+  test(name+' school selection resolves tenant paths, case and legacy organisation IDs',async()=>{
+    for(const options of [{path:'/s/ALPHA/admin-login',search:'?school=other'},{search:'?school=ORG-ALPHA'},{saved:'ALPHA'}]) {
+      const b=await browser(html,options);assert.equal(b.element('schoolId').value,'alpha');assert.equal(b.element('signin').disabled,false);
+    }
+  });
+  test(name+' malformed or unknown links do not select a different saved school',async()=>{
+    for(const options of [{path:'/s/%E0%A4%A/admin-login',saved:'alpha'},{search:'?school=missing',saved:'alpha'},{search:'?school=%25',saved:'alpha'}]) {
+      const b=await browser(html,options);assert.equal(b.element('schoolId').value,'');assert.match(b.element('status').textContent,/unavailable/);
+      await b.element('signin').onclick();assert.equal(b.calls.length,1);assert.match(b.element('status').textContent,/Select your school/);
+    }
+  });
+  test(name+' empty directory prevents sign-in',async()=>{
+    const b=await browser(html,{schools:[]});assert.equal(b.element('signin').disabled,true);assert.match(b.element('status').textContent,/No schools/);
+    await b.element('signin').onclick();assert.equal(b.calls.length,1);
+  });
+}
+
+test('reset without a school omits the optional identifier and clears stale sessions',async()=>{
+  const token='a'.repeat(43),b=await browser(adminPasswordResetFrontend,{path:'/admin-password-reset',search:'?token='+token});
+  b.element('newPassword').value=b.element('confirmPassword').value='NewSecurePass123';
+  await b.element('save').onclick();
+  assert.deepEqual(b.calls[0].body,{token,newPassword:'NewSecurePass123'});
+  assert.equal(b.sessions.size,0);assert.equal(b.storage.get('rx_school_id'),'alpha');assert.deepEqual(b.redirects,['/s/alpha/admin-login']);
+});
+
+test('tenant reset uses the path school and prevents duplicate submissions',async()=>{
+  const b=await browser(adminPasswordResetFrontend,{path:'/s/ALPHA/admin-password-reset',search:'?token='+'b'.repeat(43)+'&school=other'});
+  b.element('newPassword').value=b.element('confirmPassword').value='NewSecurePass123';
+  await Promise.all([b.element('save').onclick(),b.element('save').onclick()]);
+  assert.equal(b.calls.length,1);assert.equal(b.calls[0].body.schoolId,'ALPHA');
+});
+
+test('incomplete reset links cannot submit and rejected resets can be retried',async()=>{
+  const invalid=await browser(adminPasswordResetFrontend,{search:'?token=short'});
+  await invalid.element('save').onclick();assert.equal(invalid.calls.length,0);assert.match(invalid.element('status').textContent,/invalid/);
+  const failed=await browser(adminPasswordResetFrontend,{search:'?token='+'c'.repeat(43),respond:()=>({ok:false,json:async()=>({error:{message:'Reset link has expired'}})})});
+  failed.element('newPassword').value=failed.element('confirmPassword').value='NewSecurePass123';
+  await failed.element('save').onclick();assert.equal(failed.element('save').disabled,false);assert.match(failed.element('status').textContent,/expired/);assert.equal(failed.sessions.size,2);
+});

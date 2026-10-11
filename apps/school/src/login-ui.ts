@@ -1,5 +1,36 @@
 import { applySchoolDesign } from './school-design.js';
 
+const schoolLocationScript=`
+  function schoolFromLocation(){
+    var parts=location.pathname.split('/').filter(Boolean);
+    if(parts[0]==='s'&&parts[1]){try{return decodeURIComponent(parts[1]).trim()}catch(e){return parts[1]}}
+    return(new URLSearchParams(location.search).get('school')||'').trim()
+  }
+`;
+
+const schoolSelectionScript=`
+  ${schoolLocationScript}
+  async function loadSchools(){
+    var select=E('schoolId'),button=E('signin'),requested=schoolFromLocation(),saved='',ready=false;
+    button.disabled=true;select.disabled=true;
+    try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
+    try{
+      var schools=await json('/api/auth/schools');
+      if(!Array.isArray(schools)||!schools.length)throw new Error('No schools are available. Ask your administrator to check school setup.');
+      function escape(value){return String(value).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+      select.innerHTML='<option value="">Select your school</option>'+schools.map(function(s){return '<option value="'+escape(s.id)+'">'+escape(s.name)+'</option>'}).join('');
+      var preferred=(requested||saved).trim().toLowerCase();
+      var match=schools.find(function(s){return String(s.id).toLowerCase()===preferred||String(s.organisationId||'').toLowerCase()===preferred});
+      if(preferred&&match)select.value=match.id;
+      else if(requested)show('The school in this link is unavailable. Select your school to continue.');
+      ready=true;
+    }catch(err){
+      select.innerHTML='<option value="">Schools unavailable</option>';
+      show((err.message||'Could not load schools')+' Reload this page to try again.')
+    }finally{select.disabled=!ready;button.disabled=!ready}
+  }
+`;
+
 const sharedStyles=`
 :root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172334;background:#eef3f7}
 *{box-sizing:border-box}
@@ -76,20 +107,9 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     if(!res.ok){var err=new Error(body&&body.error&&body.error.message?body.error.message:'Request failed');err.status=res.status;throw err}
     return body
   }
-  async function loadSchools(){
-    var select=E('schoolId'),pathParts=location.pathname.split('/').filter(Boolean),pathSchool=pathParts[0]==='s'?(pathParts[1]||''):'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';
-    try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
-    try{
-      var schools=await json('/api/auth/schools');
-      select.innerHTML='<option value="">Select your school</option>'+schools.map(function(s){return '<option value="'+String(s.id).replace(/"/g,'&quot;')+'">'+String(s.name).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})+'</option>'}).join('');
-      var preferred=requested||saved;
-      if(preferred&&schools.some(function(s){return s.id===preferred}))select.value=preferred;
-    }catch(err){
-      select.innerHTML='<option value="">Schools unavailable</option>';
-      show(err.message||'Could not load schools')
-    }
-  }
+  ${schoolSelectionScript}
   async function signIn(){
+    if(E('signin').disabled)return;
     var schoolId=E('schoolId').value,staffId=E('staffId').value.trim(),password=E('password').value;
     if(!schoolId){show('Select your school.');E('schoolId').focus();return}
     if(!staffId){show('Enter your Staff ID.');E('staffId').focus();return}
@@ -178,20 +198,9 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     if(!res.ok){var err=new Error(body&&body.error&&body.error.message?body.error.message:'Request failed');err.status=res.status;throw err}
     return body
   }
-  async function loadSchools(){
-    var select=E('schoolId'),pathParts=location.pathname.split('/').filter(Boolean),pathSchool=pathParts[0]==='s'?(pathParts[1]||''):'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';
-    try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
-    try{
-      var schools=await json('/api/auth/schools');
-      select.innerHTML='<option value="">Select your school</option>'+schools.map(function(s){return '<option value="'+String(s.id).replace(/"/g,'&quot;')+'">'+String(s.name).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})+'</option>'}).join('');
-      var preferred=requested||saved;
-      if(preferred&&schools.some(function(s){return s.id===preferred}))select.value=preferred;
-    }catch(err){
-      select.innerHTML='<option value="">Schools unavailable</option>';
-      show(err.message||'Could not load schools')
-    }
-  }
+  ${schoolSelectionScript}
   async function signIn(){
+    if(E('signin').disabled)return;
     var schoolId=E('schoolId').value,email=E('email').value.trim().toLowerCase(),password=E('password').value;
     if(!schoolId){show('Select your school.');E('schoolId').focus();return}
     if(!email){show('Enter the administrator email.');E('email').focus();return}
@@ -269,6 +278,7 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
   async function save(){
     var p1=E('newPassword').value,p2=E('confirmPassword').value;
     if(p1.length<12){show('Use at least 12 characters.');return}
+    if(p1.length>128){show('Use no more than 128 characters.');return}
     if(p1!==p2){show('The passwords do not match.');return}
     var b=E('save'),old=b.textContent;b.disabled=true;b.textContent='Updating password...';
     try{
@@ -332,20 +342,26 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
   enablePasswordVisibility();
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
-  var q=new URLSearchParams(location.search),token=q.get('token')||'',school=q.get('school')||'';
+  ${schoolLocationScript}
+  var q=new URLSearchParams(location.search),token=q.get('token')||'',school=schoolFromLocation();
   E('backLogin').href='/admin-login'+(school?'?school='+encodeURIComponent(school):'');
-  if(!token)show('This password reset link is incomplete. Generate a new reset link from Revolt-X OS Commercial Control.');
+  if(!/^[A-Za-z0-9_-]{32,500}$/.test(token)){token='';E('save').disabled=true;show('This password reset link is incomplete or invalid. Generate a new reset link from Revolt-X OS Commercial Control.');}
 
   async function save(){
+    if(E('save').disabled)return;
     var p1=E('newPassword').value,p2=E('confirmPassword').value;
     if(!token){show('This password reset link is incomplete. Generate a new reset link.');return}
     if(p1.length<12||!/[A-Z]/.test(p1)||!/[a-z]/.test(p1)||!/[0-9]/.test(p1)){show('Use at least 12 characters with uppercase, lowercase and a number.');return}
+    if(p1.length>128){show('Use no more than 128 characters.');return}
     if(p1!==p2){show('The passwords do not match.');return}
     var b=E('save'),old=b.textContent;b.disabled=true;b.textContent='Saving new password...';
     try{
-      var r=await fetch('/api/auth/admin-password-reset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:token,newPassword:p1,schoolId:school})});
+      var body={token:token,newPassword:p1};if(school)body.schoolId=school;
+      var r=await fetch('/api/auth/admin-password-reset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
       var j=await r.json().catch(function(){return null});
       if(!r.ok)throw new Error(j&&j.error&&j.error.message?j.error.message:'Could not reset password');
+      try{sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');if(j.schoolId)localStorage.setItem('rx_school_id',j.schoolId)}catch(e){}
+      try{history.replaceState(null,'',location.pathname)}catch(e){}
       show('Password changed successfully. Opening School Admin Login...','success');
       setTimeout(function(){location.replace(j.adminLoginUrl||('/admin-login'+(school?'?school='+encodeURIComponent(school):'')))},700)
     }catch(err){show(err.message||'Could not reset password');b.disabled=false;b.textContent=old}
@@ -356,3 +372,4 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
 </script>
 </body>
 </html>`,'login');
+

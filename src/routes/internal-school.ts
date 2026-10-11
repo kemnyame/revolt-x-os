@@ -8,6 +8,7 @@ import { maybeOne, one, transaction } from '../db/index.js';
 import { audit, emitEvent } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
 import { buildPreviewContext } from '../auth/preview.js';
+import { revokeLinkedSchoolSessions } from '../auth/school-sessions.js';
 
 function requireSchoolService(request:FastifyRequest,config:Config){
   if(!config.SCHOOL_SERVICE_KEY)throw new AppError(503,'SERVICE_UNAVAILABLE','School service authentication is not configured');
@@ -31,7 +32,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
   app.get('/v1/internal/school/directory',{config:{rateLimit:{max:600,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     return (await db.query(`SELECT DISTINCT ON (o.id)
-        o.slug id,o.name,
+        o.slug id,o.name,o.id "organisationId",
         COALESCE(s.status,'unlicensed') licence_status
       FROM organisations o
       JOIN saas_customers c ON c.customer_organisation_id=o.id AND c.customer_type='school'
@@ -177,7 +178,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       JOIN organisations o ON o.id=m.organisation_id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
-      WHERE lower(o.slug)=lower($1) AND lower(u.email)=lower($2)
+      WHERE (lower(o.slug)=lower($1) OR o.id::text=$1) AND lower(u.email)=lower($2)
       GROUP BY u.id,m.id,o.id
       LIMIT 1`,[b.schoolId,b.email]);
 
@@ -236,7 +237,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       JOIN organisations o ON o.id=m.organisation_id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
-      WHERE lower(o.slug)=lower($1)
+      WHERE (lower(o.slug)=lower($1) OR o.id::text=$1)
         AND (lower(COALESCE(m.employee_number,''))=lower($2) OR lower(COALESCE(m.login_staff_id,''))=lower($2))
       GROUP BY u.id,m.id,o.id
       LIMIT 1`,[b.schoolId,b.staffId]);
@@ -278,6 +279,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const b=z.object({
       schoolId:z.string().trim().min(1).max(120),
       userId:z.string().uuid(),
+      keepSessionHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),
       newPassword:z.string().min(12).max(200)
         .regex(/[A-Z]/,'Password must contain an uppercase letter')
         .regex(/[a-z]/,'Password must contain a lowercase letter')
@@ -295,8 +297,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       await q.query(`UPDATE users
         SET password_hash=$1,must_change_password=false,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now()
         WHERE id=$2`,[passwordHash,b.userId]);
-      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
-        [b.userId,account.organisation_id]);
+      await revokeLinkedSchoolSessions(q,config,b.userId,b.keepSessionHash);
+      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[b.userId]);
       await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[b.userId]);
       await audit(q,{
         organisationId:account.organisation_id,actorUserId:b.userId,sessionId:null,
