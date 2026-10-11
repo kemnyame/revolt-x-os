@@ -21,7 +21,8 @@ ON CONFLICT(product_id,plan_key) DO UPDATE SET
   sort_order=EXCLUDED.sort_order;
 
 -- These modules make up the non-optional School foundation. `is_core=true` is used by the
--- commercial API to prevent a per-school override from disabling the minimum working product.
+-- commercial API and database triggers to prevent a plan or customer override from disabling
+-- the minimum working product.
 UPDATE saas_product_modules
 SET is_core=true,updated_at=now()
 WHERE module_key IN(
@@ -51,6 +52,42 @@ JOIN saas_products p ON p.id=pl.product_id AND p.product_key='school'
 JOIN saas_product_modules m ON m.product_id=p.id AND m.is_core=true AND m.is_active=true
 WHERE pl.is_active=true
 ON CONFLICT(plan_id,module_id) DO UPDATE SET included=true;
+
+-- Database guard: UI/API bugs must not be able to switch off a baseline module for a single
+-- School subscription. Non-core modules remain fully configurable.
+CREATE OR REPLACE FUNCTION protect_core_subscription_module()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE core_module boolean;
+BEGIN
+  SELECT is_core INTO core_module FROM saas_product_modules WHERE id=NEW.module_id;
+  IF COALESCE(core_module,false) AND NEW.enabled=false THEN
+    RAISE EXCEPTION 'Core School modules cannot be disabled for an individual subscription';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS protect_core_subscription_module_trg ON saas_subscription_modules;
+CREATE TRIGGER protect_core_subscription_module_trg
+BEFORE INSERT OR UPDATE OF enabled,module_id ON saas_subscription_modules
+FOR EACH ROW EXECUTE FUNCTION protect_core_subscription_module();
+
+-- Plan-level guard for the same reason. A baseline module may be present explicitly or inherited,
+-- but if a row exists it cannot say included=false.
+CREATE OR REPLACE FUNCTION protect_core_plan_module()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE core_module boolean;
+BEGIN
+  SELECT is_core INTO core_module FROM saas_product_modules WHERE id=NEW.module_id;
+  IF COALESCE(core_module,false) AND NEW.included=false THEN
+    RAISE EXCEPTION 'Core School modules cannot be excluded from a pricing plan';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS protect_core_plan_module_trg ON saas_plan_modules;
+CREATE TRIGGER protect_core_plan_module_trg
+BEFORE INSERT OR UPDATE OF included,module_id ON saas_plan_modules
+FOR EACH ROW EXECUTE FUNCTION protect_core_plan_module();
 
 -- Dedicated licence administrators can be granted a narrow system role instead of receiving
 -- the broad Core OS administrator role. The same authentication system is used; permissions
