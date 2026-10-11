@@ -1,9 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import {createHash} from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
 import { maybeOne } from './db.js';
 import { assertPortalLoginAllowed, clearPortalLoginThrottle, recordPortalLoginFailure, throttleFingerprint } from './reliability.js';
+import {authorize,schoolRoleProfile,type CoreContext} from './auth.js';
 
 export async function withSchoolAuthThrottle<T>(db: SchoolDb, portal: string, request: any, action: () => Promise<T>) {
   const body = request.body ?? {};
@@ -82,7 +84,33 @@ export async function revokeSchoolUserSessions(db: SchoolDb, userId: string, kee
 export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
   db: SchoolDb; config: SchoolConfig; requireCoreServiceRequest: (request: any) => void;
   fetchCore?: typeof fetch;
+  passwordChangedAudit?: (context:CoreContext,staffId:string|null)=>Promise<void>;
 }) {
+  app.post('/api/auth/change-password',async(request,reply)=>{
+    reply.header('cache-control','no-store');
+    const access=await authorize(request,options.db,options.config,undefined,{allowPasswordChange:true});
+    const body=z.object({newPassword:schoolPassword}).parse(request.body),token=access.schoolToken||'';
+    if(!options.config.CORE_SERVICE_KEY)throw Object.assign(new Error('Core service authentication is not configured'),{statusCode:503});
+    const keepSessionHash=token&&!access.core.dedicated_admin?createHash('sha256').update(token).digest('hex'):undefined;
+    const changed=await(options.fetchCore??fetch)(options.config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/change-staff-password',{
+      method:'POST',headers:{'content-type':'application/json','x-revolt-service-key':options.config.CORE_SERVICE_KEY},
+      body:JSON.stringify({schoolId:access.core.organisation_slug||access.core.organisation_id,userId:access.core.id,newPassword:body.newPassword,keepSessionHash}),signal:AbortSignal.timeout(20000)
+    }).catch(()=>null);
+    const payload:any=await changed?.json().catch(()=>null);
+    if(!changed?.ok||payload?.changed!==true)throw Object.assign(new Error(payload?.error?.message||'Core Revolt-X OS could not update the password. Please try again.'),{statusCode:changed?.status&&changed.status>=400?changed.status:503});
+    await revokeSchoolUserSessions(options.db,access.core.id,keepSessionHash);
+    try{await options.passwordChangedAudit?.(access.core,payload.staffId??access.core.employee_number??null)}
+    catch(error){request.log.error({err:error},'School password changed but its local audit could not be written');}
+    if(access.core.dedicated_admin){
+      const secure=options.config.NODE_ENV==='production'?'; Secure':'';
+      reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
+      return{changed:true,requiresSignIn:true,schoolId:access.core.organisation_slug,redirectTo:'/s/'+encodeURIComponent(access.core.organisation_slug)+'/admin-login'};
+    }
+    if(keepSessionHash)await options.db.query(`UPDATE school_sessions SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
+      WHERE token_hash=$1 AND revoked_at IS NULL`,[keepSessionHash]);
+    const profile=await schoolRoleProfile(options.db,access.core.organisation_id,access.role);
+    return{changed:true,redirectTo:profile?.portal_mode==='teacher'?'/teacher':'/'};
+  });
   app.post('/api/internal/revoke-user-sessions', async request => {
     options.requireCoreServiceRequest(request);
     const body = z.object({ userId: z.string().uuid(), keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional() }).parse(request.body);

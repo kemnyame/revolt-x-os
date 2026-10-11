@@ -20,10 +20,10 @@ const config={NODE_ENV:'test',CORE_OS_URL:'https://core.example.test',CORE_SERVI
 beforeEach(()=>pg.exec('TRUNCATE portal_login_throttle,school_sessions,school_memberships,school_roles,school_security_settings;'));
 after(()=>pg.close());
 const response=(payload,status=200)=>new Response(JSON.stringify(payload),{status,headers:{'content-type':'application/json'}});
-async function appFor(t,fetchCore){
+async function appFor(t,fetchCore,passwordChangedAudit){
   const app=Fastify();t.after(()=>app.close());
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof z.ZodError?400:error.statusCode||500).send({error:{message:error instanceof z.ZodError?schoolAuthValidationMessage(error.issues):error.message}}));
-  registerSchoolAccessRoutes(app,{db,config,fetchCore,requireCoreServiceRequest:request=>{if(request.headers['x-revolt-service-key']!==config.CORE_SERVICE_KEY)throw Object.assign(new Error('Service credential required'),{statusCode:401})}});
+  registerSchoolAccessRoutes(app,{db,config,fetchCore,passwordChangedAudit,requireCoreServiceRequest:request=>{if(request.headers['x-revolt-service-key']!==config.CORE_SERVICE_KEY)throw Object.assign(new Error('Service credential required'),{statusCode:401})}});
   return app;
 }
 
@@ -103,4 +103,38 @@ test('concurrent failures are counted atomically and repeated sign-in failures a
   let calls=0;const request={ip:'192.0.2.1',body:{schoolId:'alpha',staffId:'STF-1'}};
   for(let i=0;i<10;i++)await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,async()=>{calls++;throw Object.assign(new Error('Invalid credentials'),{statusCode:401})}),{statusCode:401});
   await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,async()=>{calls++}),{statusCode:429});assert.equal(calls,10);
+});
+
+async function firstLogin(dedicated_admin=true){
+  const token='rxs_first_login',hash=createHash('sha256').update(token).digest('hex'),core={id:user,organisation_id:org,organisation_slug:'alpha',permissions:[],must_change_password:true,dedicated_admin};
+  await db.query("INSERT INTO school_roles(organisation_id,key,is_active,portal_mode) VALUES($1,'teacher',true,'teacher')",[org]);
+  await db.query("INSERT INTO school_memberships VALUES($1,$2,$3,'active',now())",[org,user,dedicated_admin?'school_admin':'teacher']);
+  await db.query("INSERT INTO school_sessions(token_hash,os_user_id,organisation_id,core_context,expires_at) VALUES($1,$2,$3,$4,now()+interval '1 hour'),('old-session',$2,$3,$4,now()+interval '1 hour')",[hash,user,org,JSON.stringify(core)]);
+  return{token,hash};
+}
+
+test('primary administrator must change the temporary password then sign in again; every old session is revoked',async t=>{
+  const {token}=await firstLogin(),sent=[];let audits=0;
+  const app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({changed:true,staffId:'SCH-ADMIN-001'})},async()=>{audits++});
+  await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
+  const r=await app.inject({method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token},payload:{newPassword:'PersonalSecurePass123'}});
+  assert.equal(r.statusCode,200,r.body);assert.deepEqual(r.json(),{changed:true,requiresSignIn:true,schoolId:'alpha',redirectTo:'/s/alpha/admin-login'});assert.equal(audits,1);assert.equal('keepSessionHash' in sent[0],false);assert.equal(sent[0].schoolId,'alpha');assert.match(r.headers['set-cookie'],/Max-Age=0/);
+  assert.equal((await db.query('SELECT count(*) count FROM school_sessions WHERE revoked_at IS NULL')).rows[0].count,0);
+  await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:401});
+});
+
+test('staff password change preserves the actual current session and routes to the role workspace',async t=>{
+  const {token,hash}=await firstLogin(false),sent=[];
+  const app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({changed:true})});
+  const r=await app.inject({method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token,authorization:'Bearer rxs_stale'},payload:{newPassword:'PersonalSecurePass123'}});
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().redirectTo,'/teacher');assert.equal(sent[0].keepSessionHash,hash);
+  const current=(await db.query('SELECT * FROM school_sessions WHERE revoked_at IS NULL')).rows;assert.equal(current.length,1);assert.equal(current[0].core_context.must_change_password,false);
+});
+
+test('failed password change preserves sessions and a local audit failure cannot hide a committed password change',async t=>{
+  const {token}=await firstLogin();let failCore=true;
+  const app=await appFor(t,async()=>response(failCore?{error:{message:'Core unavailable'}}:{changed:true},failCore?503:200),async()=>{throw new Error('Local audit unavailable')});
+  const input={method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token},payload:{newPassword:'PersonalSecurePass123'}};
+  assert.equal((await app.inject(input)).statusCode,503);assert.equal((await db.query('SELECT count(*) count FROM school_sessions WHERE revoked_at IS NULL')).rows[0].count,2);
+  failCore=false;const r=await app.inject(input);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().requiresSignIn,true);
 });

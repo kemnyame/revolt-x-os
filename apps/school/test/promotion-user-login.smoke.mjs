@@ -8,6 +8,7 @@ async function read(name){
 
 test('year promotion and School plus Staff ID plus password login are wired',async()=>{
   const server=await read('server.js');
+  const access=await read('school-access.js');
   const login=await read('login-ui.js');
   const ui=await read('ui.js');
 
@@ -19,7 +20,7 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   assert.match(server,/authenticate-staff/);
   assert.match(server,/staff\.signed_in/);
   assert.match(server,/requiresPasswordChange/);
-  assert.match(server,/\/api\/auth\/change-password/);
+  assert.match(access,/\/api\/auth\/change-password/);
   assert.match(server,/function randomTemporaryPassword\(\)/);
   assert.match(server,/const temporaryPassword\s*=\s*randomTemporaryPassword\(\)/);
   assert.doesNotMatch(server,/password:\s*config\.STAFF_GENERIC_PASSWORD/);
@@ -37,4 +38,3 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   assert.match(ui,/Staff ID \+ Password/);
   assert.match(ui,/Reset password/);
 });
-

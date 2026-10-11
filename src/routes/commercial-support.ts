@@ -7,6 +7,7 @@ import { maybeOne, one, transaction } from '../db/index.js';
 import { audit } from '../core/audit.js';
 import { AppError, notFound } from '../core/errors.js';
 import { requirePermission } from '../core/http.js';
+import { registerCommercialSchoolReporting } from './school-reporting.js';
 
 function tokenHash(value: string) {
   return createHash('sha256').update(value).digest('hex');
@@ -135,24 +136,7 @@ async function primarySchoolAdmin(db: Db, organisationId: string) {
 
 export async function commercialSupportRoutes(app: FastifyInstance, { db, config }: { db: Db; config: Config }) {
 
-  app.get('/v1/commercial-control/support/admin-activity', async request => {
-    const a = requirePermission(request, 'commercial.read');
-    const q = z.object({ schoolId: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(500).default(150) }).parse(request.query);
-    const schools = q.schoolId
-      ? await safeRows(db, 'SELECT o.id,o.name,o.slug FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2', [a.organisationId,q.schoolId])
-      : await safeRows(db, 'SELECT o.id,o.name,o.slug FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 ORDER BY o.name', [a.organisationId]);
-    const all:any[]=[];
-    for(const school of schools){
-      const response=await fetch(schoolBase(config)+'/api/internal/admin-activity?organisationId='+encodeURIComponent(school.id)+'&limit='+Math.min(q.limit,200),{headers:schoolHeaders(config),signal:AbortSignal.timeout(15000)}).catch(()=>null);
-      if(!response?.ok)continue;
-      const payload=await response.json().catch(()=>null) as any;
-      for(const row of payload?.rows||[])all.push({...row,school_id:school.id,school_name:school.name,school_slug:school.slug});
-    }
-    all.sort((x,y)=>new Date(y.created_at).getTime()-new Date(x.created_at).getTime());
-    const ids=[...new Set(all.map(x=>x.actor_os_user_id).filter(Boolean))];
-    const users=ids.length?await safeRows(db,'SELECT id,email,first_name,last_name FROM users WHERE id=ANY($1::uuid[])',[ids]):[];
-    return all.slice(0,q.limit).map(row=>{const u=users.find((x:any)=>x.id===row.actor_os_user_id);return{...row,actor_name:u?[u.first_name,u.last_name].filter(Boolean).join(' '):null,actor_email:u?.email||null}});
-  });
+  registerCommercialSchoolReporting(app,{db,config});
 
   app.get('/v1/commercial-control/support/database-tables', async request => {
     const a = requirePermission(request, 'commercial.read');

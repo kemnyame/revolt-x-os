@@ -8,6 +8,8 @@ import { maybeOne, one, transaction } from '../db/index.js';
 import { audit } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
 import { requirePermission } from '../core/http.js';
+import { schoolAccessStatus } from './commercial-reporting.js';
+import { registerSchoolOrderRoutes, lockPaidSchoolOrder, claimSchoolOrder, paidInvoiceNumber, newInvoiceNumber, commercialPaymentSchema, recordCommercialPayment } from './school-orders.js';
 
 function requireSchoolService(request: FastifyRequest, config: Config) {
   if (!config.SCHOOL_SERVICE_KEY) throw new AppError(503, 'SERVICE_UNAVAILABLE', 'School service authentication is not configured');
@@ -181,6 +183,7 @@ async function assignSubscription(db: Db, input: {
 }
 
 export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db; config: Config }) {
+  registerSchoolOrderRoutes(app,db);
   app.get('/v1/commercial-control/overview', async request => {
     const a = requirePermission(request, 'commercial.read');
     const row = (await db.query(
@@ -321,29 +324,23 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
   app.get('/v1/commercial-control/schools', async request => {
     const a = requirePermission(request, 'commercial.read');
     return (await db.query(
-      "SELECT o.id,o.name,o.slug,o.status organisation_status,c.customer_type,c.school_type,c.primary_contact_name,c.primary_contact_email,c.primary_contact_phone,c.status customer_status,c.created_at,s.id subscription_id,s.status licence_status,s.billing_frequency,s.currency,s.recurring_amount,s.current_period_end,s.trial_ends_at,s.grace_ends_at,s.limits,pl.name plan_name,pl.plan_key FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id LEFT JOIN LATERAL (SELECT * FROM saas_subscriptions x WHERE x.provider_organisation_id=c.provider_organisation_id AND x.customer_organisation_id=c.customer_organisation_id ORDER BY x.created_at DESC LIMIT 1) s ON true LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id WHERE c.provider_organisation_id=$1 ORDER BY c.created_at DESC,o.name",
+      "SELECT o.id,o.name,o.slug,o.status organisation_status,c.customer_type,c.school_type,c.primary_contact_name,c.primary_contact_email,c.primary_contact_phone,c.status customer_status,c.created_at,s.id subscription_id,s.status licence_status,s.billing_frequency,s.currency,s.recurring_amount,s.current_period_end,s.trial_ends_at,s.grace_ends_at,s.limits,pl.name plan_name,pl.plan_key FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id LEFT JOIN LATERAL (SELECT * FROM saas_subscriptions x WHERE x.provider_organisation_id=c.provider_organisation_id AND x.customer_organisation_id=c.customer_organisation_id ORDER BY x.created_at DESC LIMIT 1) s ON true LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id WHERE c.provider_organisation_id=$1 AND c.customer_type='school' ORDER BY c.created_at DESC,o.name",
       [a.organisationId]
-    )).rows;
+    )).rows.map((row:any)=>({...row,access_status:schoolAccessStatus(row)}));
   });
 
   app.post('/v1/commercial-control/schools', async (request, reply) => {
     const a = requirePermission(request, 'commercial.manage');
-    const b = z.object({
-      name: z.string().trim().min(2).max(200),
-      slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
-      schoolType: z.string().max(80).optional(),
-      adminFirstName: z.string().trim().min(1).max(100),
-      adminLastName: z.string().trim().min(1).max(100),
-      adminEmail: z.string().trim().toLowerCase().email(),
-      contactPhone: z.string().max(50).optional(),
-      address: z.string().max(1000).optional(),
-      planId: z.string().uuid(),
-      billingFrequency: z.enum(['monthly', 'termly', 'annual']).default('monthly'),
-      licenceStatus: z.enum(['trial', 'active']).default('trial')
-    }).parse(request.body);
+    const input = z.object({invoiceNumber:paidInvoiceNumber}).strict().parse(request.body);
+    schoolApplicationBase(config);schoolServiceHeaders(config);
 
     const product = await one<any>(db, "SELECT id FROM saas_products WHERE product_key='school'");
     const created = await transaction(db, async c => {
+      const order=await lockPaidSchoolOrder(c,a.organisationId,input.invoiceNumber);
+      const b={...order.schoolDetails,licenceStatus:'active' as const};
+      const quotedPlan=await maybeOne<any>(c,'SELECT currency FROM saas_pricing_plans WHERE id=$1 AND product_id=$2 AND is_active=true',[b.planId,product.id]);
+      if(!quotedPlan)throw conflict('The invoiced pricing plan is no longer active. Contact the OEM billing administrator.');
+      if(quotedPlan.currency!==order.currency)throw conflict('The pricing plan currency changed after this invoice was issued. Contact the OEM billing administrator.');
       const slug = b.slug || await uniqueSlug(c, b.name);
       if (await maybeOne(c, 'SELECT id FROM organisations WHERE slug=$1', [slug])) throw conflict('School slug is already in use');
 
@@ -354,21 +351,15 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
 
       let admin = await maybeOne<any>(c, 'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1', [b.adminEmail]);
-      let setupToken: string | null = null;
       let temporaryAdminPassword: string | null = null;
       let newAdministrator = false;
 
       if (!admin) {
-        temporaryAdminPassword = 'SchAdm!A1' + randomBytes(8).toString('hex');
+        temporaryAdminPassword = 'SchAdm!A1' + randomBytes(16).toString('hex');
         admin = await one<any>(
           c,
           "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password) VALUES($1,$2,$3,$4,'active',true) RETURNING id,email,first_name,last_name,status",
           [b.adminEmail, await bcrypt.hash(temporaryAdminPassword, 12), b.adminFirstName, b.adminLastName]
-        );
-        setupToken = randomBytes(32).toString('base64url');
-        await c.query(
-          "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '24 hours')",
-          [admin.id, tokenHash(setupToken)]
         );
         newAdministrator = true;
       } else {
@@ -395,7 +386,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
 
       await c.query(
         "INSERT INTO saas_customers(provider_organisation_id,customer_organisation_id,customer_type,school_type,primary_contact_name,primary_contact_email,primary_contact_phone,address,status,created_by) VALUES($1,$2,'school',$3,$4,$5,$6,$7,$8,$9)",
-        [a.organisationId, org.id, b.schoolType ?? null, b.adminFirstName + ' ' + b.adminLastName, b.adminEmail, b.contactPhone ?? null, b.address ?? null, b.licenceStatus === 'trial' ? 'trial' : 'active', a.userId]
+        [a.organisationId, org.id, b.schoolType ?? null, b.adminFirstName + ' ' + b.adminLastName, b.adminEmail, b.contactPhone ?? null, b.address ?? null, 'active', a.userId]
       );
 
       const subscription = await assignSubscription(c, {
@@ -407,6 +398,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         status: b.licenceStatus,
         actorId: a.userId
       });
+      await claimSchoolOrder(c,order,org.id,subscription.id);
 
       const domain = slug + '.school.revolt-x.app';
       await c.query(
@@ -419,15 +411,12 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [a.organisationId, org.id, product.id, JSON.stringify({ organisationId: org.id, slug, subscriptionId: subscription.id }), a.userId]
       );
 
-      return { organisation: org, subscription, domain, jobId: job.id, admin, setupToken, temporaryAdminPassword, newAdministrator };
+      return { organisation: org, subscription, domain, jobId: job.id, admin, temporaryAdminPassword, newAdministrator,schoolDetails:b,invoiceNumber:order.invoice_no };
     });
 
     const entitlement = await getEntitlements(db, a.organisationId, created.organisation.id);
     const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/login';
     const adminLoginUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/admin-login';
-    const setupUrl = created.setupToken
-      ? schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/admin-password-reset?token=' + encodeURIComponent(created.setupToken) + '&mode=setup'
-      : null;
 
     let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
     try {
@@ -438,13 +427,13 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
           organisationId: created.organisation.id,
           tenantSlug: created.organisation.slug,
           schoolName: created.organisation.name,
-          schoolType: b.schoolType ?? null,
+          schoolType: created.schoolDetails.schoolType ?? null,
           adminUserId: created.admin.id,
-          adminEmail: b.adminEmail,
-          adminFirstName: b.adminFirstName,
-          adminLastName: b.adminLastName,
-          phone: b.contactPhone ?? null,
-          address: b.address ?? null,
+          adminEmail: created.schoolDetails.adminEmail,
+          adminFirstName: created.schoolDetails.adminFirstName,
+          adminLastName: created.schoolDetails.adminLastName,
+          phone: created.schoolDetails.contactPhone ?? null,
+          address: created.schoolDetails.address ?? null,
           entitlement
         }),
         signal: AbortSignal.timeout(30000)
@@ -475,12 +464,13 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       domain: created.domain,
       accessUrl,
       adminLoginUrl,
-      setupUrl,
+      setupUrl:null,
+      invoiceNumber:created.invoiceNumber,
       administrator: {
         id: created.admin.id,
         email: created.admin.email,
-        firstName: b.adminFirstName,
-        lastName: b.adminLastName,
+        firstName: created.schoolDetails.adminFirstName,
+        lastName: created.schoolDetails.adminLastName,
         existingUser: !created.newAdministrator,
         temporaryPassword: created.newAdministrator ? created.temporaryAdminPassword : null,
         mustChangePassword: created.newAdministrator
@@ -504,8 +494,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         administrator: {
           id: created.admin.id,
           email: created.admin.email,
-          firstName: b.adminFirstName,
-          lastName: b.adminLastName,
+          firstName: created.schoolDetails.adminFirstName,
+          lastName: created.schoolDetails.adminLastName,
           existingUser: !created.newAdministrator
         },
         provisioning
@@ -519,12 +509,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const customer = await maybeOne<any>(db, 'SELECT c.*,o.name,o.slug,o.status organisation_status,o.settings FROM saas_customers c JOIN organisations o ON o.id=c.customer_organisation_id WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2', [a.organisationId, id]);
     if (!customer) throw notFound('School customer');
-    const [license, domains, invoices, usage, provisioning] = await Promise.all([
+    const [license, domains, invoices, usage, provisioning,payments] = await Promise.all([
       getEntitlements(db, a.organisationId, id),
       db.query('SELECT * FROM saas_customer_domains WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC', [a.organisationId, id]),
-      db.query('SELECT * FROM saas_invoices WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 30', [a.organisationId, id]),
+      db.query('SELECT * FROM saas_invoices WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC', [a.organisationId, id]),
       db.query('SELECT DISTINCT ON(metric_key) metric_key,metric_value,measured_at FROM saas_usage_snapshots WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY metric_key,measured_at DESC', [a.organisationId, id]),
-      db.query('SELECT * FROM saas_provisioning_jobs WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id])
+      db.query('SELECT * FROM saas_provisioning_jobs WHERE provider_organisation_id=$1 AND customer_organisation_id=$2 ORDER BY created_at DESC LIMIT 1', [a.organisationId, id]),
+      db.query(`SELECT p.*,i.invoice_no FROM saas_subscription_payments p LEFT JOIN saas_invoices i ON i.id=p.invoice_id
+        WHERE p.provider_organisation_id=$1 AND p.customer_organisation_id=$2 ORDER BY p.paid_at DESC,p.id`,[a.organisationId,id])
     ]);
     let administrator:any=null;
     const primaryAdminUserId=customer.settings?.primaryAdminUserId;
@@ -556,6 +548,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       },
       domains: domains.rows,
       invoices: invoices.rows,
+      payments:payments.rows,
       usage: usage.rows,
       provisioning: provisioning.rows[0] ?? null,
       accessUrl,
@@ -960,8 +953,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const b = z.object({ dueDays: z.coerce.number().int().min(1).max(180).default(14), notes: z.string().max(1000).optional() }).parse(request.body);
     const sub = await maybeOne<any>(db, 'SELECT s.*,pl.name plan_name FROM saas_subscriptions s LEFT JOIN saas_pricing_plans pl ON pl.id=s.plan_id WHERE s.provider_organisation_id=$1 AND s.customer_organisation_id=$2 ORDER BY s.created_at DESC LIMIT 1', [a.organisationId, id]);
     if (!sub) throw notFound('Subscription');
-    const seq = await db.query('SELECT count(*)::int n FROM saas_invoices WHERE provider_organisation_id=$1', [a.organisationId]);
-    const invoiceNo = 'RX-' + String((seq.rows[0]?.n || 0) + 1).padStart(6, '0');
+    const invoiceNo = newInvoiceNumber();
     const result = await transaction(db, async c => {
       const invoice = await one<any>(c, "INSERT INTO saas_invoices(provider_organisation_id,customer_organisation_id,subscription_id,invoice_no,status,currency,subtotal,total,issued_at,due_at,notes,created_by) VALUES($1,$2,$3,$4,'issued',$5,$6,$6,now(),now()+make_interval(days=>$7),$8,$9) RETURNING *", [a.organisationId, id, sub.id, invoiceNo, sub.currency, sub.recurring_amount, b.dueDays, b.notes ?? null, a.userId]);
       await c.query('INSERT INTO saas_invoice_lines(invoice_id,description,quantity,unit_price,amount) VALUES($1,$2,1,$3,$3)', [invoice.id, (sub.plan_name || 'School') + ' ' + sub.billing_frequency + ' subscription', sub.recurring_amount]);
@@ -974,25 +966,13 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
   app.post('/v1/commercial-control/invoices/:id/payments', async (request, reply) => {
     const a = requirePermission(request, 'commercial.billing');
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const b = z.object({ amount: z.coerce.number().positive(), paymentMethod: z.string().min(2).max(40).default('bank_transfer'), providerReference: z.string().max(160).optional() }).parse(request.body);
-    const result = await transaction(db, async c => {
-      const invoice = await one<any>(c, 'SELECT * FROM saas_invoices WHERE id=$1 AND provider_organisation_id=$2 FOR UPDATE', [id, a.organisationId]);
-      if (invoice.status === 'void') throw conflict('Voided invoice cannot receive payment');
-      const payment = await one<any>(c, 'INSERT INTO saas_subscription_payments(provider_organisation_id,customer_organisation_id,invoice_id,subscription_id,amount,currency,payment_method,provider_reference,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *', [a.organisationId, invoice.customer_organisation_id, id, invoice.subscription_id, b.amount, invoice.currency, b.paymentMethod, b.providerReference ?? null, a.userId]);
-      const newPaid = Number(invoice.amount_paid) + b.amount;
-      const paid = newPaid >= Number(invoice.total) - 0.005;
-      const updated = await one<any>(c, 'UPDATE saas_invoices SET amount_paid=$1,status=$2,paid_at=CASE WHEN $3 THEN now() ELSE paid_at END,updated_at=now() WHERE id=$4 RETURNING *', [newPaid, paid ? 'paid' : 'part_paid', paid, id]);
-      if (paid && invoice.subscription_id) {
-        const sub = await one<any>(c, 'SELECT * FROM saas_subscriptions WHERE id=$1 FOR UPDATE', [invoice.subscription_id]);
-        await c.query("UPDATE saas_subscriptions SET status='active',grace_ends_at=NULL,current_period_start=now(),current_period_end=$1,updated_at=now() WHERE id=$2", [nextPeriodEnd(sub.billing_frequency), sub.id]);
-      }
-      return { invoice: updated, payment };
-    });
-    await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.subscription_payment.recorded', resourceType: 'saas_invoice', resourceId: id, afterState: result });
+    const b = commercialPaymentSchema.parse(request.body);
+    const result = await recordCommercialPayment(db,a.organisationId,a.userId,id,b);
+    if(!result.duplicate)await audit(db, { organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId, action: 'commercial.subscription_payment.recorded', resourceType: 'saas_invoice', resourceId: id, afterState: result });
     const licenseSync = result.invoice.status==='paid'
       ? await pushLicenseSnapshot(db, config, a.organisationId, result.invoice.customer_organisation_id)
       : null;
-    return reply.code(201).send({ ...result, licenseSync });
+    return reply.code(result.duplicate?200:201).send({ ...result, licenseSync });
   });
 
   app.get('/v1/internal/commercial/entitlements', { config: { rateLimit: { max: 1200, timeWindow: '1 minute' } } }, async request => {

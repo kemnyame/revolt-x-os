@@ -16,7 +16,8 @@ import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
-import { registerSchoolAccessRoutes, revokeSchoolUserSessions, schoolIdentifier, schoolPassword, schoolAuthValidationMessage, withSchoolAuthThrottle, ensureSchoolLoginMembership } from './school-access.js';
+import { registerSchoolReportingRoutes } from './school-reporting.js';
+import { registerSchoolAccessRoutes, schoolIdentifier, schoolAuthValidationMessage, withSchoolAuthThrottle, ensureSchoolLoginMembership } from './school-access.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, providerStatus, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
@@ -695,17 +696,7 @@ app.get('/api/internal/backup-snapshot',async request=>{
   };
 });
 
-// Core OS reads this service-authenticated feed to monitor administrative activity
-// across managed School tenants. The feed contains action metadata, never passwords.
-app.get('/api/internal/admin-activity',async(request:any)=>{
-  requireCoreServiceRequest(request);
-  const q=z.object({organisationId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(500).default(100)}).parse(request.query);
-  const school=await maybeOne(db,'SELECT school_name,tenant_slug FROM school_profiles WHERE organisation_id=$1',[q.organisationId]);
-  if(!school)throw fail(404,'School tenant was not found');
-  const rows=(await db.query(`SELECT id,actor_os_user_id,action,resource_type,resource_id,metadata,created_at
-    FROM school_audit_logs WHERE organisation_id=$1 ORDER BY created_at DESC LIMIT $2`,[q.organisationId,q.limit])).rows;
-  return{school,rows};
-});
+registerSchoolReportingRoutes(app,{db,requireCoreServiceRequest});
 app.get('/api/internal/tenants',async request=>{
   requireCoreServiceRequest(request);
   const rows=(await db.query(`
@@ -1997,7 +1988,8 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 }
 
 app.post('/api/auth/admin-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_admin',request,()=>handleSchoolAdminLogin(request,reply)));
-registerSchoolAccessRoutes(app,{db,config,requireCoreServiceRequest});
+registerSchoolAccessRoutes(app,{db,config,requireCoreServiceRequest,
+  passwordChangedAudit:(core,staffId)=>audit(core.organisation_id,core.id,'staff.password_changed','user',core.id,{staffId})});
 
 function roleWorkspace(profile:any){
   return profile?.portal_mode==='teacher'?'/teacher':'/';
@@ -2086,39 +2078,6 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
 }
 
 app.post('/api/auth/staff-id-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_staff',request,()=>handleSchoolStaffIdLogin(request,reply)));
-
-app.post('/api/auth/change-password',async(request,reply)=>{
-  const a=await authorize(request,db,config,undefined,{allowPasswordChange:true});
-  const token=a.schoolToken||'';
-  const b=z.object({
-    newPassword:schoolPassword
-  }).parse(request.body);
-  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
-
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const changed=await fetch(base+'/v1/internal/school/change-staff-password',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({schoolId:a.core.organisation_slug,userId:a.core.id,newPassword:b.newPassword,
-      keepSessionHash:token?createHash('sha256').update(token).digest('hex'):undefined}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-  if(!changed)throw fail(503,'Core Revolt-X OS could not update the password');
-  const payload=await changed.json().catch(()=>null) as any;
-  if(!changed.ok)throw fail(changed.status,payload?.error?.message||'Could not update password');
-
-  if(token&&token.startsWith('rxs_')){
-    const hash=createHash('sha256').update(token).digest('hex');
-    await revokeSchoolUserSessions(db,a.core.id,hash);
-    await db.query(`UPDATE school_sessions
-      SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
-      WHERE token_hash=$1 AND revoked_at IS NULL`,[hash]);
-  }
-
-  const profile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
-  await audit(a.core.organisation_id,a.core.id,'staff.password_changed','user',a.core.id,{staffId:payload?.staffId??a.core.employee_number??null});
-  return reply.send({changed:true,redirectTo:roleWorkspace(profile)});
-});
 
 app.post('/api/auth/logout',async(request,reply)=>{
   const token=requestSessionToken(request);

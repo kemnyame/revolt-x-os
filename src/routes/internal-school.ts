@@ -291,7 +291,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         FROM users u
         JOIN organisation_memberships m ON m.user_id=u.id
         JOIN organisations o ON o.id=m.organisation_id
-        WHERE u.id=$1 AND lower(o.slug)=lower($2) AND m.status='active' AND o.status='active'
+        WHERE u.id=$1 AND (lower(o.slug)=lower($2) OR o.id::text=$2) AND u.status='active' AND m.status='active' AND o.status='active'
         FOR UPDATE OF u,m`,[b.userId,b.schoolId]);
       const passwordHash=await bcrypt.hash(b.newPassword,12);
       await q.query(`UPDATE users

@@ -26,9 +26,10 @@ describe('live commercial control admin access', () => {
     expect(commercialControlFrontend).toContain('password:p');
   });
 
-  it('shows a working setup link after new school creation', () => {
-    expect(commercialControlFrontend).toContain('Admin Password Setup Link');
-    expect(commercialControlFrontend).toContain('copyCreatedSetup');
-    expect(commercialControlFrontend).toContain('Open Password Setup');
+  it('shows temporary administrator credentials after paid-invoice school creation', () => {
+    expect(commercialControlFrontend).toContain('temporaryPassword');
+    expect(commercialControlFrontend).toContain('copyCreated');
+    expect(commercialControlFrontend).toContain('Validate Invoice');
+    expect(commercialControlFrontend).toContain('School Setup Invoices');
   });
 });

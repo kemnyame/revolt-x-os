@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend } from '../dist/login-ui.js';
+import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from '../dist/login-ui.js';
 
 async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond}={}) {
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
@@ -60,4 +60,15 @@ test('incomplete reset links cannot submit and rejected resets can be retried',a
   const failed=await browser(adminPasswordResetFrontend,{search:'?token='+'c'.repeat(43),respond:()=>({ok:false,json:async()=>({error:{message:'Reset link has expired'}})})});
   failed.element('newPassword').value=failed.element('confirmPassword').value='NewSecurePass123';
   await failed.element('save').onclick();assert.equal(failed.element('save').disabled,false);assert.match(failed.element('status').textContent,/expired/);assert.equal(failed.sessions.size,2);
+});
+
+test('first administrator password change clears temporary sessions and returns to its school login',async()=>{
+  const b=await browser(passwordChangeFrontend,{path:'/change-password',respond:()=>({ok:true,json:async()=>({changed:true,requiresSignIn:true,schoolId:'alpha',redirectTo:'/s/alpha/admin-login'})})});
+  b.element('newPassword').value=b.element('confirmPassword').value='PersonalSecurePass123';await b.element('save').onclick();
+  assert.deepEqual(b.calls[0].body,{newPassword:'PersonalSecurePass123'});assert.equal(b.sessions.size,0);assert.equal(b.storage.get('rx_school_id'),'alpha');assert.deepEqual(b.redirects,['/s/alpha/admin-login']);assert.match(b.element('status').textContent,/Sign in with your new password/);
+});
+
+test('staff password change continues to the assigned workspace',async()=>{
+  const b=await browser(passwordChangeFrontend,{respond:()=>({ok:true,json:async()=>({changed:true,redirectTo:'/teacher'})})});
+  b.element('newPassword').value=b.element('confirmPassword').value='PersonalSecurePass123';await b.element('save').onclick();assert.deepEqual(b.redirects,['/teacher']);
 });
