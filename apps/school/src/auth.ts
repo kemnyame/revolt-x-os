@@ -75,6 +75,8 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
 
   // Prefer the HttpOnly cookie but tolerate a stale cookie/header pair by checking every
   // School-local token presented. No School token is ever forwarded to Core OS.
+  // A valid School session must satisfy both its absolute expiry and the organisation's
+  // administrator-configured inactivity timeout.
   for(const token of tokens){
     const row=await maybeOne<{core_context:CoreContext}>(
       db,
@@ -83,13 +85,18 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
          WHERE token_hash=$1
            AND revoked_at IS NULL
            AND expires_at>now()
+           AND last_used_at > now()-make_interval(mins=>COALESCE((
+             SELECT idle_timeout_minutes
+             FROM school_security_settings sss
+             WHERE sss.organisation_id=school_sessions.organisation_id
+           ),30))
          RETURNING core_context`,
       [schoolSessionHash(token)]
     );
     if(row?.core_context)return row.core_context;
   }
 
-  throw Object.assign(new Error('School session expired. Please sign in again.'),{statusCode:401});
+  throw Object.assign(new Error('Your School session has expired because of inactivity or its security time limit. Please sign in again.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
 }
 
 const CORE_TRANSIENT_STATUSES=new Set([429,502,503,504]);
