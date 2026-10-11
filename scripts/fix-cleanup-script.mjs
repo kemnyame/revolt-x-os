@@ -15,7 +15,7 @@ const replacement=String.raw`const exportRoute = [
 "    const run=await one<any>(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);",
 "    const items=(await db.query('SELECT * FROM payroll_run_items WHERE payroll_run_id=$1 AND organisation_id=$2 ORDER BY staff_name',[id,a.core.organisation_id])).rows;",
 "    const period=String(run.period_year)+'-'+String(run.period_month).padStart(2,'0');",
-"    if(q.format==='excel'){","
+"    if(q.format==='excel'){",
 "      const escXml=(v:any)=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');",
 "      const rows=items.map((r:any)=>'<tr><td>'+escXml(r.staff_id)+'</td><td>'+escXml(r.staff_name)+'</td><td>'+Number(r.base_salary).toFixed(2)+'</td><td>'+Number(r.gross_earnings).toFixed(2)+'</td><td>'+Number(r.total_deductions).toFixed(2)+'</td><td>'+Number(r.net_pay).toFixed(2)+'</td></tr>').join('');",
 "      const html='<html><head><meta charset=\"utf-8\"></head><body><table border=\"1\"><tr><th colspan=\"6\">Revolt-X School Payroll '+period+'</th></tr><tr><th>Staff ID</th><th>Staff</th><th>Basic</th><th>Gross</th><th>Deductions</th><th>Net Pay</th></tr>'+rows+'<tr><th colspan=\"3\">Totals</th><th>'+Number(run.gross_total).toFixed(2)+'</th><th>'+Number(run.deductions_total).toFixed(2)+'</th><th>'+Number(run.net_total).toFixed(2)+'</th></tr></table></body></html>';",
