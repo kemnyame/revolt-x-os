@@ -13,6 +13,14 @@ src=src.replace(
   '  "payroll_profile:profiles.find((x:any)=>x.os_user_id===m.os_user_id)||null,\\n        payroll_grade:(()=>{const p=profiles.find((x:any)=>x.os_user_id===m.os_user_id);return p?.grade_id?grades.find((g:any)=>g.id===p.grade_id)||null:null})(),\\n        payroll_components:assignments.filter((x:any)=>x.os_user_id===m.os_user_id)};",'
 );
 
+// Avoid a regex literal inside the generated HTML template. Template-string escape
+// processing can strip the regex's slash escapes, so parse /s/<school>/... using path
+// segments instead. It is simpler and produces valid browser JavaScript.
+src=src.replace(
+  `  "pathSchool=(location.pathname.match(/^\\\\/s\\\\/([^/]+)\\\\//)||[])[1]||'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';"`,
+  `  "pathParts=location.pathname.split('/').filter(Boolean),pathSchool=pathParts[0]==='s'?(pathParts[1]||''):'',requested=decodeURIComponent(pathSchool||new URLSearchParams(location.search).get('school')||''),saved='';"`
+);
+
 const start=src.indexOf('const exportRoute = `');
 const endMarker="payroll = insertBefore(payroll, \"  app.get('/api/payroll/me',async(request:any)=>{\", exportRoute, 'payroll export route');";
 const end=src.indexOf(endMarker,start);
