@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
-const booleanFromEnv = z.enum(['true', 'false']).default('false').transform(value => value === 'true');
-
+/**
+ * Core OS configuration.
+ *
+ * Commercial deployments intentionally expose only authenticated production entry points.
+ * Legacy Preview/Demo access is no longer a runtime feature and therefore has no environment
+ * switch here. Development/test fixtures should use test helpers rather than production routes.
+ */
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -12,7 +17,6 @@ const schema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
-  ENABLE_PREVIEW_ACCESS: booleanFromEnv,
   AI_GATEWAY_URL: z.string().url().optional().or(z.literal('')),
   AI_GATEWAY_TOKEN: z.string().optional(),
   SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
