@@ -23,7 +23,7 @@ const replacement=String.raw`const exportRoute = [
 "    const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.view');",
 "    const {id}=z.object({id:z.string().uuid()}).parse(request.params);",
 "    const q=z.object({format:z.enum(['pdf','excel']).default('pdf')}).parse(request.query);",
-"    const run=await one<any>(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);",
+"    const run=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);",
 "    const items=(await db.query('SELECT * FROM payroll_run_items WHERE payroll_run_id=$1 AND organisation_id=$2 ORDER BY staff_name',[id,a.core.organisation_id])).rows;",
 "    const period=String(run.period_year)+'-'+String(run.period_month).padStart(2,'0');",
 "    if(q.format==='excel'){",
@@ -42,5 +42,10 @@ const replacement=String.raw`const exportRoute = [
 payroll = insertBefore(payroll, "  app.get('/api/payroll/me',async(request:any)=>{", exportRoute, 'payroll export route');`;
 
 src=src.slice(0,start)+replacement+src.slice(end+endMarker.length);
+// hr-payroll-routes receives its helpers through deps:any. Generic calls on those
+// dynamically supplied helpers are rejected by TypeScript once the old compile-fix
+// patch is removed, so generated commercial routes must use the same non-generic style
+// as the materialized production source.
+src=src.replaceAll('one<any>(', 'one(').replaceAll('maybeOne<any>(', 'maybeOne(');
 await writeFile(file,src);
 console.log('Repaired commercial launch cleanup materializer');
