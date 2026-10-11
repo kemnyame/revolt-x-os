@@ -20,7 +20,7 @@ import { commercialSupportRoutes } from './routes/commercial-support.js';
 import { commercialLaunchRoutes } from './routes/commercial-launch.js';
 import { assuranceRoutes } from './routes/assurance.js';
 import { osFrontend } from './ui.js';
-import { commercialControlEnhancedFrontend } from './commercial-control-enhanced-ui.js';
+import { commercialControlLaunchFrontend } from './commercial-control-launch-ui.js';
 import { licenseLoginFrontend, osLoginFrontend } from './login-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
@@ -71,8 +71,6 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
     if (s !== 'Bearer' || !t) throw new AppError(401, 'UNAUTHORIZED', 'Malformed authorization header');
     request.auth = await verifyAccessToken(config, t);
 
-    // Every authenticated production request must still belong to an active membership. The old
-    // Preview exception has been removed so demo/preview tokens cannot bypass membership state.
     const activeSession = await db.query(
       `SELECT 1
        FROM sessions s
@@ -84,12 +82,12 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
     if (!activeSession.rowCount) throw new AppError(401, 'UNAUTHORIZED', 'Session is no longer active');
   });
 
-  // Main OS users always enter the Core OS home page. Licence administrators have a dedicated
-  // authentication entry point that validates commercial.read before opening Commercial Control.
+  // Main OS sign-in always opens Core OS. Licence administrators have a separate entry point that
+  // verifies commercial.read before redirecting to Commercial Control.
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
   app.get('/login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osLoginFrontend));
   app.get('/license-login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(licenseLoginFrontend));
-  app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlEnhancedFrontend));
+  app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlLaunchFrontend));
   app.get('/health/live', async () => ({ status: 'ok' }));
   app.get('/health/ready', async (_request, reply) => {
     try {
