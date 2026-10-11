@@ -3,9 +3,10 @@ import { z } from 'zod';
 /**
  * Core OS configuration.
  *
- * Commercial deployments intentionally expose only authenticated production entry points.
- * Legacy Preview/Demo access is no longer a runtime feature and therefore has no environment
- * switch here. Development/test fixtures should use test helpers rather than production routes.
+ * Commercial deployments expose only authenticated production entry points. The
+ * ENABLE_PREVIEW_ACCESS property remains as a compatibility tombstone for one older internal
+ * route, but it is forced to false regardless of environment input. There is no production
+ * switch that can re-enable Preview/Demo access.
  */
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -22,7 +23,8 @@ const schema = z.object({
   SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
   SCHOOL_APP_URL: z.string().url().optional().or(z.literal('')),
   SCHOOL_DEFAULT_STAFF_PASSWORD: z.string().min(12).default('Welcome@2026!'),
-  OWNER_PASSWORD_RESET: z.string().optional()
+  OWNER_PASSWORD_RESET: z.string().optional(),
+  ENABLE_PREVIEW_ACCESS: z.preprocess(()=>false,z.boolean()).default(false)
 });
 
 export type Config = z.infer<typeof schema>;
