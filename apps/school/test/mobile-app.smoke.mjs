@@ -16,11 +16,14 @@ test('mobile entry and install assets are served with correct content types and 
   const home=await app.inject('/mobile');assert.equal(home.statusCode,200);
   assert.match(home.headers['content-type'],/text\/html/);assert.equal(home.headers['cache-control'],'no-store');
   const targets=[...home.body.matchAll(/data-mobile-role href="([^"]+)"/g)].map(m=>m[1]);
-  assert.deepEqual([...new Set(targets)],['/login','/parent','/student','/admin-login','/admissions']);
+  assert.deepEqual([...new Set(targets)],['/mobile/teacher','/mobile/parent']);
+  assert.doesNotMatch(home.body,/href="\/(student|admin-login|admissions)"/);
+  for(const target of targets)assert.equal((await app.inject(target)).statusCode,200);
   const manifestResponse=await app.inject('/school.webmanifest');
   assert.match(manifestResponse.headers['content-type'],/application\/manifest\+json/);
   const manifest=manifestResponse.json();assert.equal(manifest.start_url,'/mobile');assert.equal(manifest.display,'standalone');
   assert.equal((await app.inject(manifest.start_url)).statusCode,200);
+  assert.deepEqual(manifest.shortcuts.map(s=>s.url),targets);
   for(const item of manifest.icons){
    const response=await app.inject(item.src);assert.equal(response.statusCode,200);assert.match(response.headers['content-type'],/image\/png/);
    assert.equal(response.rawPayload.subarray(1,4).toString(),'PNG');
@@ -28,6 +31,7 @@ test('mobile entry and install assets are served with correct content types and 
   }
   const css=await app.inject('/school-mobile.css');assert.equal(css.statusCode,200);assert.match(css.headers['content-type'],/text\/css/);
   const js=await app.inject('/school-mobile.js');assert.equal(js.statusCode,200);assert.doesNotThrow(()=>new Function(js.body));
+  const nativeJs=await app.inject('/school-native.js');assert.equal(nativeJs.statusCode,200);assert.doesNotThrow(()=>new Function(nativeJs.body));
   const worker=await app.inject('/school-sw.js');assert.equal(worker.statusCode,200);assert.equal(worker.headers['cache-control'],'no-cache');assert.equal(worker.headers['service-worker-allowed'],'/');
  }finally{await app.close()}
 });

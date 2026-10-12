@@ -5,6 +5,8 @@ import { studentFrontend } from '../dist/student-ui.js';
 import { admissionsFrontend } from '../dist/admissions-ui.js';
 import { loginFrontend } from '../dist/login-ui.js';
 import { schoolDesignScript } from '../dist/school-design.js';
+import { mobileExperienceScript, mobileExperienceFrontend } from '../dist/mobile-experience.js';
+import { mobileWorkflowScript } from '../dist/mobile-workflows.js';
 
 function validateScript(name,source){
   try{
@@ -25,13 +27,17 @@ function inlineScripts(name,html){
 
 validateScript('School',schoolAppScript);
 validateScript('Shared school design',schoolDesignScript);
+validateScript('Dedicated mobile app',mobileExperienceScript);
+validateScript('Mobile workflow rules',mobileWorkflowScript);
 
 for(const [name,html] of [
   ['Teacher',teacherFrontend],
   ['Parent',parentFrontend],
   ['Student',studentFrontend],
   ['Admissions',admissionsFrontend],
-  ['Login',loginFrontend]
+  ['Login',loginFrontend],
+  ['Mobile teacher',mobileExperienceFrontend('teacher')],
+  ['Mobile parent',mobileExperienceFrontend('parent')]
 ]){
   inlineScripts(name,html).forEach((script,index)=>validateScript(`${name} #${index+1}`,script));
 }

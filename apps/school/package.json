@@ -13,19 +13,20 @@
     "test": "npm run build"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^13.0.1",
-    "dotenv": "^16.6.1",
-    "fastify": "^5.6.1",
-    "pg": "^8.16.3",
-    "zod": "^4.1.11",
-    "typescript": "^5.9.2",
     "@types/node": "^24.5.2",
     "@types/pg": "^8.15.5",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.6.1",
     "pdfkit": "^0.17.2",
-    "@electric-sql/pglite": "^0.5.8"
+    "pg": "^8.16.3",
+    "typescript": "^5.9.2",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
+    "linkedom": "^0.18.13",
     "tsx": "^4.20.6"
   }
 }
