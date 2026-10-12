@@ -31,6 +31,11 @@ export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student')
   }
   function loginTarget(){
     var url=safeHint(),q=new URLSearchParams(location.search);
+    if((portal==='teacher'||portal==='parent')&&location.pathname==='/mobile/'+portal){
+      var mobile=new URL('/mobile/'+portal,location.origin),mobileSchool=q.get('school')||localStorage.getItem('rx_school_id')||'';
+      if(mobileSchool)mobile.searchParams.set('school',mobileSchool);
+      mobile.searchParams.set('expired','1');return mobile.pathname+mobile.search;
+    }
     if(!url){
       var school=q.get('school')||(family==='staff'?localStorage.getItem('rx_school_id'):'')||'';
       var path=family==='staff'?(school?'/s/'+encodeURIComponent(school)+'/login':'/login'):'/'+family;

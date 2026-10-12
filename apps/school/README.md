@@ -82,25 +82,26 @@ During development, the School frontend obtains the temporary Core OS preview se
 
 ## Mobile application
 
-Open `/mobile` on Android or iPhone. No software download is required. The four
-workspace choices open the existing staff, parent, student and administrator
-sign-in pages and use the same school records and permissions. Staff continue
-to use Staff ID and password; administrator authentication remains separate.
+The `/mobile` application contains dedicated teacher and parent experiences.
+Teacher sign-in is `/mobile/teacher` and parent sign-in is `/mobile/parent`.
+It uses the existing authenticated APIs, school accounts and role permissions.
+The desktop workspaces remain available through their existing routes.
 
-Phone layouts include quick navigation, larger touch controls, bottom tabs,
-safe-area spacing and readable forms. `/mobile?school=<school-code>` carries the
-school selection to each workspace. All portals advertise the app manifest and
-icons so visitors can optionally add a home-screen shortcut. Installation is
-never required to use the application.
+Teacher screens include a three-step class/subject/assessment marking flow,
+learner-by-learner numeric entry, a quick class list, attendance status buttons,
+homework drafts and submissions, lesson notes, reports, timetables and updates.
+Parent screens include child switching, homework, verified payments, released
+report cards and PDFs, academic statements, timetables and updates.
 
-The service worker only handles same-origin document navigation. It does not
-cache student records, credentials, API responses or authenticated pages and
-does not queue mutations or payments. Offline navigation displays a generic
-reconnect page. School operations require an internet connection. Browser and
-device support determines whether a home-screen installation option is shown.
+Successful record saves clear their entry form and return to the appropriate
+list or empty selector. Failed saves preserve entries. Zero marks are retained,
+blank marks are never silently changed to zero, and duplicate saves are blocked.
+School records and payment verification remain owned by the existing backend.
 
-Run `npm test` to build and validate the application, including mobile routes,
-manifest targets, icons and offline privacy behavior.
+The Android client source is in `apps/school-android`. It uses the same live
+mobile experience, with Android document handling and a separate signing key.
+The service worker remains network-only; no school data or mutations are cached.
+Internet access is required. Run `npm test` for build and mobile workflow checks.
 
 ## Transactional email
 
