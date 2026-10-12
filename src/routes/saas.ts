@@ -1,3 +1,5 @@
+import {revokeLinkedSchoolSessions} from '../auth/school-sessions.js';
+import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
@@ -352,11 +354,10 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
 
       let admin = await maybeOne<any>(c, 'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1', [b.adminEmail]);
-      let temporaryAdminPassword: string | null = null;
+      let temporaryAdminPassword: string | null = 'SchAdm!A1'+randomBytes(16).toString('hex');
       let newAdministrator = false;
 
       if (!admin) {
-        temporaryAdminPassword = 'SchAdm!A1' + randomBytes(16).toString('hex');
         admin = await one<any>(
           c,
           "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',true,now()) RETURNING id,email,first_name,last_name,status",
@@ -390,6 +391,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [a.organisationId, org.id, b.schoolType ?? null, b.adminFirstName + ' ' + b.adminLastName, b.adminEmail, b.contactPhone ?? null, b.address ?? null, 'active', a.userId]
       );
 
+      await setSchoolCredential(c,org.id,admin.id,await bcrypt.hash(temporaryAdminPassword!,12),true);
       const subscription = await assignSubscription(c, {
         providerId: a.organisationId,
         customerId: org.id,
@@ -473,8 +475,8 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         firstName: created.schoolDetails.adminFirstName,
         lastName: created.schoolDetails.adminLastName,
         existingUser: !created.newAdministrator,
-        temporaryPassword: created.newAdministrator ? created.temporaryAdminPassword : null,
-        mustChangePassword: created.newAdministrator
+        temporaryPassword: created.temporaryAdminPassword,
+        mustChangePassword: true
       },
       provisioning
     };
@@ -594,12 +596,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       if (user) {
         existingUser = true;
         if (user.status !== 'active') throw conflict('The new administrator email belongs to an inactive Core OS user');
-        await q.query(
-          'UPDATE users SET first_name=$1,last_name=$2,password_hash=$3,must_change_password=false,school_password_bootstrapped_at=now(),updated_at=now() WHERE id=$4',
-          [b.firstName,b.lastName,passwordHash,user.id]
-        );
-        await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[user.id]);
-        await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
+        // Reusing an OS email must not change that user's OS password or sessions.
       } else {
         user = await one<any>(q,
           "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',false,now()) RETURNING id,email,first_name,last_name,status",
@@ -651,6 +648,11 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [b.firstName+' '+b.lastName,b.email,a.organisationId,id]
       );
 
+      await revokeLinkedSchoolSessions(q,config,user.id,undefined,id);
+      if(previousAdminUserId&&previousAdminUserId!==user.id)await revokeLinkedSchoolSessions(q,config,previousAdminUserId,undefined,id);
+      await setSchoolCredential(q,id,user.id,passwordHash,false);
+      await clearSchoolResetTokens(q,user.id,id);
+      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',[user.id,id]);
       return { user, membershipId: membership.id };
     });
 
@@ -744,7 +746,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
 
     const resetToken=randomBytes(32).toString('base64url');
     await transaction(db,async q=>{
-      await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
+      await clearSchoolResetTokens(q,user.id,id);
       await q.query(
         "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose) VALUES($1,$2,now()+interval '30 minutes',$3,'school_admin')",
         [user.id,tokenHash(resetToken),id]
@@ -985,3 +987,4 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     return getEntitlements(db, provider.provider_organisation_id, q.organisationId);
   });
 }
+

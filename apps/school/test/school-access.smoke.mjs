@@ -161,3 +161,28 @@ test('administrator link context verifies the exact account and canonical school
   wrong=true;assert.equal((await app.inject({url})).statusCode,503);assert.equal((await app.inject({url:'/api/auth/admin-login-context?schoolId=alpha&adminUserId=wrong'})).statusCode,400);
 });
 
+
+
+test('school-scoped revocation leaves the same user signed in to other schools',async t=>{
+  const other='33333333-3333-4333-8333-333333333333';
+  await db.query('INSERT INTO school_sessions(token_hash,os_user_id,organisation_id) VALUES($1,$2,$3),($4,$2,$5)',['alpha-old',user,org,'beta-current',other]);
+  const app=await appFor(t,()=>assert.fail());
+  const r=await app.inject({method:'POST',url:'/api/internal/revoke-user-sessions',headers:{'x-revolt-service-key':config.CORE_SERVICE_KEY},payload:{userId:user,organisationId:org}});
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().revoked,1);
+  const remaining=(await db.query('SELECT token_hash FROM school_sessions WHERE revoked_at IS NULL')).rows;assert.deepEqual(remaining,[{token_hash:'beta-current'}]);
+});
+
+test('a school password change preserves sessions in other schools',async t=>{
+  const {token}=await firstLogin(),other='33333333-3333-4333-8333-333333333333';
+  await db.query("INSERT INTO school_sessions(token_hash,os_user_id,organisation_id,expires_at) VALUES('beta-current',$1,$2,now()+interval '1 hour')",[user,other]);
+  const app=await appFor(t,async()=>response({changed:true}));
+  const r=await app.inject({method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token},payload:{newPassword:'PersonalSecurePass123'}});
+  assert.equal(r.statusCode,200,r.body);assert.deepEqual((await db.query('SELECT token_hash FROM school_sessions WHERE revoked_at IS NULL')).rows,[{token_hash:'beta-current'}]);
+});
+
+test('OS recovery email endpoint requires the trusted Core credential and hides delivery details',async t=>{
+  const app=await appFor(t,()=>assert.fail()),payload={email:'admin@example.test',resetToken:'t'.repeat(43)};
+  assert.equal((await app.inject({method:'POST',url:'/api/internal/os-password-reset-email',payload})).statusCode,401);
+  const result=await app.inject({method:'POST',url:'/api/internal/os-password-reset-email',payload,headers:{'x-revolt-service-key':config.CORE_SERVICE_KEY}});
+  assert.equal(result.statusCode,503);assert.equal(result.json().error.message,'OS recovery email delivery is unavailable');assert.ok(!result.body.includes(payload.resetToken));
+});

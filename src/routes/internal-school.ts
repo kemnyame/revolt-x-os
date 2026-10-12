@@ -1,3 +1,4 @@
+import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
@@ -176,22 +177,23 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }).parse(request.body);
 
     const row=await maybeOne<any>(db,`SELECT
-        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,u.must_change_password,
+        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,sc.password_hash,sc.must_change_password,
         m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
         o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
         COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
       FROM organisation_memberships m
       JOIN users u ON u.id=m.user_id
       JOIN organisations o ON o.id=m.organisation_id
+      LEFT JOIN school_credentials sc ON sc.organisation_id=m.organisation_id AND sc.user_id=u.id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
       WHERE (lower(o.slug)=lower($1) OR o.id::text=$1) AND lower(u.email)=lower($2)
         AND ($3::uuid IS NULL OR u.id=$3)
         AND (o.settings->>'primaryAdminUserId' IS NULL OR o.settings->>'primaryAdminUserId'=u.id::text)
-      GROUP BY u.id,m.id,o.id
+      GROUP BY u.id,m.id,o.id,sc.password_hash,sc.must_change_password
       LIMIT 1`,[b.schoolId,b.email,b.adminUserId??null]);
 
-    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
+    if(!row||!row.password_hash)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
     if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')
       throw new AppError(403,'ACCOUNT_INACTIVE','This school administrator account is not active');
 
@@ -237,21 +239,22 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }).parse(request.body);
 
     const row=await maybeOne<any>(db,`SELECT
-        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,u.password_hash,u.must_change_password,
+        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,sc.password_hash,sc.must_change_password,
         m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
         o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
         COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
       FROM organisation_memberships m
       JOIN users u ON u.id=m.user_id
       JOIN organisations o ON o.id=m.organisation_id
+      LEFT JOIN school_credentials sc ON sc.organisation_id=m.organisation_id AND sc.user_id=u.id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
       WHERE (lower(o.slug)=lower($1) OR o.id::text=$1)
         AND (lower(COALESCE(m.employee_number,''))=lower($2) OR lower(COALESCE(m.login_staff_id,''))=lower($2))
-      GROUP BY u.id,m.id,o.id
+      GROUP BY u.id,m.id,o.id,sc.password_hash,sc.must_change_password
       LIMIT 1`,[b.schoolId,b.staffId]);
 
-    if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school, Staff ID or password');
+    if(!row||!row.password_hash)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school, Staff ID or password');
     if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')
       throw new AppError(403,'ACCOUNT_INACTIVE','This staff account is not active');
 
@@ -303,12 +306,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         WHERE u.id=$1 AND (lower(o.slug)=lower($2) OR o.id::text=$2) AND u.status='active' AND m.status='active' AND o.status='active'
         FOR UPDATE OF u,m`,[b.userId,b.schoolId]);
       const passwordHash=await bcrypt.hash(b.newPassword,12);
-      await q.query(`UPDATE users
-        SET password_hash=$1,must_change_password=false,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now()
-        WHERE id=$2`,[passwordHash,b.userId]);
-      await revokeLinkedSchoolSessions(q,config,b.userId,b.keepSessionHash);
-      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[b.userId]);
-      await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[b.userId]);
+      await setSchoolCredential(q,account.organisation_id,b.userId,passwordHash,false);
+      await revokeLinkedSchoolSessions(q,config,b.userId,b.keepSessionHash,account.organisation_id);
+      await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',[b.userId,account.organisation_id]);
+      await clearSchoolResetTokens(q,b.userId,account.organisation_id);
       await audit(q,{
         organisationId:account.organisation_id,actorUserId:b.userId,sessionId:null,
         action:'school_service.staff_password_changed',resourceType:'user',resourceId:b.userId,
@@ -364,6 +365,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
            RETURNING id`,
           [internalEmail,await bcrypt.hash(generated,12),b.firstName,b.lastName]
         );
+        await setSchoolCredential(c,b.organisationId,user.id,await bcrypt.hash(generated,12),true);
         const existing=await c.query(
           'SELECT id FROM organisation_memberships WHERE organisation_id=$1 AND user_id=$2',
           [b.organisationId,user.id]
@@ -502,12 +504,13 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         [p.membershipId,b.organisationId]
       );
       if(!membership.email)throw conflict('Add a real email address before creating a password setup invitation');
-      await c.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1",[membership.user_id]);
+      if(!['active','invited'].includes(membership.user_status))throw conflict('This Core OS account is inactive. Ask the OS owner to restore it.');
+      await c.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1 AND status='invited'",[membership.user_id]);
       const token=randomBytes(32).toString('base64url');
       const tokenHash=createHash('sha256').update(token).digest('hex');
-      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[membership.user_id]);
-      await c.query(`INSERT INTO password_reset_tokens(user_id,token_hash,expires_at)
-        VALUES($1,$2,now()+interval '24 hours')`,[membership.user_id,tokenHash]);
+      await clearSchoolResetTokens(c,membership.user_id,b.organisationId);
+      await c.query(`INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose)
+        VALUES($1,$2,now()+interval '24 hours',$3,'school_staff')`,[membership.user_id,tokenHash,b.organisationId]);
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
         action:'school_service.teacher_password_setup_created',resourceType:'user',resourceId:membership.user_id,
@@ -542,11 +545,14 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         FROM organisation_memberships m JOIN users u ON u.id=m.user_id
         WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
       const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
-      await c.query("UPDATE users SET password_hash=$1,status='active',must_change_password=true,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now() WHERE id=$2",[passwordHash,membership.user_id]);
+      if(membership.user_status==='disabled'||membership.user_status==='suspended')throw conflict('This account is disabled. Restore it through the account access controls first.');
+      await setSchoolCredential(c,b.organisationId,membership.user_id,passwordHash,true);
+      await c.query("UPDATE users SET status='active' WHERE id=$1 AND status='invited'",[membership.user_id]);
+      await revokeLinkedSchoolSessions(c,config,membership.user_id,undefined,b.organisationId);
       await c.query("UPDATE organisation_memberships SET status='active' WHERE id=$1",[membership.id]);
       await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
         [membership.user_id,b.organisationId]);
-      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[membership.user_id]);
+      await clearSchoolResetTokens(c,membership.user_id,b.organisationId);
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
         action:'school_service.password_reset_to_temporary',resourceType:'user',resourceId:membership.user_id,
@@ -589,3 +595,4 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     });
   });
 }
+

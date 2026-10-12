@@ -21,6 +21,8 @@ import { commercialSupportRoutes } from './routes/commercial-support.js';
 import { assuranceRoutes } from './routes/assurance.js';
 import { osFrontend } from './ui.js';
 import { commercialControlFrontend } from './commercial-control2-ui.js';
+import {safeRequestUrl} from './auth/request-log.js';
+import {osPasswordResetFrontend} from './os-password-reset-ui.js';
 import { osLoginFrontend } from './login-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
@@ -46,9 +48,9 @@ function friendlyUnexpectedMessage(error: unknown) {
 }
 
 export async function buildApp({ db, config }: { db: Db; config: Config }) {
-  const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: true, requestIdHeader: 'x-request-id' });
+  const app = Fastify({ logger: config.NODE_ENV !== 'test' ? {serializers:{req:(req:any)=>({method:req.method,url:safeRequestUrl(req.url),hostname:req.hostname,remoteAddress:req.ip,remotePort:req.socket?.remotePort})}} : false, trustProxy: true, requestIdHeader: 'x-request-id' });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({
-    error: { code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found`, requestId: request.id }
+    error: { code: 'NOT_FOUND', message: `Route ${request.method} ${safeRequestUrl(request.url)} not found`, requestId: request.id }
   }));
 
   app.setErrorHandler((error, request, reply) => {
@@ -112,7 +114,8 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   });
 
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
-  app.get('/login', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osLoginFrontend));
+  app.get('/login', async (_request, reply) => reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(osLoginFrontend));
+  app.get('/password-reset',async(_request,reply)=>reply.header('cache-control','no-store').header('referrer-policy','no-referrer').type('text/html; charset=utf-8').send(osPasswordResetFrontend));
   app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlFrontend));
   app.get('/health/live', async () => ({ status: 'ok' }));
   app.get('/health/ready', async (_request, reply) => {
@@ -140,4 +143,3 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
 
   return app;
 }
-
