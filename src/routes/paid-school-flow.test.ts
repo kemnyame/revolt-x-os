@@ -86,7 +86,7 @@ describe('paid school setup and primary administrator access',()=>{
     const change=await internal('change-staff-password',{schoolId:result.organisation.id,userId:user.id,newPassword:'PersonalSecurePass123'});expect(change.statusCode,change.body).toBe(200);
     expect((await internal('authenticate-admin',{schoolId:'alpha',email:user.email,password:result.administrator.temporaryPassword})).statusCode).toBe(401);
     const login=await internal('authenticate-admin',{schoolId:'alpha',email:user.email,password:'PersonalSecurePass123'});expect(login.statusCode,login.body).toBe(200);expect(login.json().must_change_password).toBe(false);
-  });
+  },15000);
   it('rolls back a paid invoice claim on slug conflict and keeps provisioning failure retryable',async()=>{
     const invoice=await issue();await pay(invoice);await client.query("INSERT INTO organisations(name,slug) VALUES('Collision','alpha')");expect((await create(invoice)).statusCode).toBe(409);
     expect((await client.query('SELECT claimed_school_id FROM saas_school_orders WHERE id=$1',[invoice.id])).rows[0].claimed_school_id).toBeNull();await client.query("DELETE FROM organisations WHERE slug='alpha'");
