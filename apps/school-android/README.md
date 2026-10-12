@@ -34,4 +34,4 @@ manifest versionCode. Do not commit signing files or generated APKs.
 
 Run the Java navigation test by compiling `SecurityRules.java` and
 `test/SecurityRulesTest.java`, then running `SecurityRulesTest`. Run
-`node test/bridge.test.mjs` for native document download and message-channel checks.
+`node test/bridge.smoke.mjs` for native document download and message-channel checks.

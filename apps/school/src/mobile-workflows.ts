@@ -10,7 +10,8 @@ window.RevoltMobileFlow=(function(){
  function scorePayload(students,draft,max){
   var rows=[];
   students.forEach(function(student){
-   var item=draft[student.student_id]||{},value=score(item.score,max),before=student.score==null?null:Number(student.score);
+   var item=draft[student.student_id]||{},value,before=student.score==null?null:Number(student.score);
+   try{value=score(item.score,max)}catch(error){throw Error(student.first_name+' '+(student.last_name||'')+': '+error.message)}
    if(value===null&&before!==null)throw Error('Enter a corrected mark for '+student.first_name+'. A saved mark cannot be removed by leaving it blank.');
    if(value!==null&&(value!==before||String(item.comment||'')!==String(student.comment||'')))rows.push({studentId:student.student_id,score:value,comment:String(item.comment||'')});
   });

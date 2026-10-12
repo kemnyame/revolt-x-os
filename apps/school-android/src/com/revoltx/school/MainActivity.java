@@ -145,14 +145,21 @@ public class MainActivity extends Activity {
     private void toast(String text) { Toast.makeText(this, text, Toast.LENGTH_LONG).show(); }
     private boolean route(String url) { if (SecurityRules.isMobilePage(url)) return false; external(url); return true; }
     private void external(String url) { if (!SecurityRules.isExternalUrl(url)) return; try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (ActivityNotFoundException e) { toast("No application can open this link."); } }
-    private void goBack() { if (offline.getVisibility() == View.VISIBLE) { offline.setVisibility(View.GONE); web.loadUrl(SecurityRules.HOME); } else if (web.canGoBack()) web.goBack(); else finish(); }
+    private void goBack() {
+        if (offline.getVisibility() == View.VISIBLE) { offline.setVisibility(View.GONE); web.loadUrl(SecurityRules.HOME); return; }
+        if (SecurityRules.isMobilePage(web.getUrl())) {
+            web.evaluateJavascript("(function(){return typeof window.rxMobileBack==='function'?window.rxMobileBack():false})()", handled -> { if (!"true".equals(handled)) browserBack(); });
+        } else browserBack();
+    }
+    private void browserBack() { if (web.canGoBack()) web.goBack(); else finish(); }
     @Override public void onBackPressed() { goBack(); }
 
     private void showMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add(0,1,0,"Refresh"); menu.getMenu().add(0,2,1,"School home"); menu.getMenu().add(0,3,2,"Print / Save PDF"); menu.getMenu().add(0,4,3,"Open in browser");
-        menu.setOnMenuItemClickListener(item -> { switch (item.getItemId()) { case 1: web.reload(); break; case 2: web.loadUrl(SecurityRules.HOME); break; case 3: printPage(); break; case 4: external(SecurityRules.isSchoolUrl(web.getUrl()) ? web.getUrl() : SecurityRules.HOME); break; } return true; }); menu.show();
+        menu.setOnMenuItemClickListener(item -> { switch (item.getItemId()) { case 1: mobileAction("rxMobileRefresh", () -> web.reload()); break; case 2: mobileAction("rxMobileHome", () -> web.loadUrl(SecurityRules.HOME)); break; case 3: printPage(); break; case 4: external(SecurityRules.isSchoolUrl(web.getUrl()) ? web.getUrl() : SecurityRules.HOME); break; } return true; }); menu.show();
     }
+    private void mobileAction(String action, Runnable fallback) { web.evaluateJavascript("(function(){return typeof window." + action + "==='function'?window." + action + "():false})()", handled -> { if (!"true".equals(handled)) fallback.run(); }); }
     private void printPage() { if (!SecurityRules.isSchoolUrl(web.getUrl())) return; PrintManager manager = (PrintManager)getSystemService(PRINT_SERVICE); if (manager != null) manager.print("Revolt School document",web.createPrintDocumentAdapter("Revolt School document"),new PrintAttributes.Builder().build()); }
 
     private void closeChannel() { if (nativePort != null) { nativePort.close(); nativePort = null; } download = null; }

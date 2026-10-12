@@ -88,6 +88,14 @@ test('invalid marks block saving without clearing the entered value',async()=>{
  assert.match(h.document.getElementById('mError').textContent,/0 to 100/);assert.equal(h.document.getElementById('mLearnerMark').value,'101');assert.equal(h.writes.length,0);
 });
 
+test('Android back navigation protects unsaved marks and the class list stays in sync',async()=>{
+ const h=harness();await openMarks(h);h.change('mLearnerMark','20');
+ assert.equal(h.window.rxMobileBack(),true);assert.match(h.document.getElementById('mSheet').textContent,/unsaved entries/);
+ h.click('mKeepEditing');assert.equal(h.document.getElementById('mLearnerMark').value,'20');
+ h.click('mClassScores');const input=h.document.querySelector('[data-class-mark="student-1"]');input.value='25';input.oninput();h.click('mCloseSheet');
+ assert.equal(h.document.getElementById('mLearnerMark').value,'25');
+});
+
 test('attendance preserves explicit status on failure and clears the class register after successful save',async()=>{
  let fail=true;
  const h=harness('teacher',async(path,opt)=>path==='/api/attendance/mark'?response(fail?{error:{message:'Save unavailable'}}:{saved:1},fail?503:200):null);
