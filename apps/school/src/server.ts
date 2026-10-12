@@ -12,6 +12,7 @@ import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
 import { authorize, effectiveCapabilities, schoolRoleProfile } from './auth.js';
 import { schoolFrontend, schoolAppScript } from './ui.js';
+import { registerSchoolMobile } from './mobile-app.js';
 import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
@@ -1747,6 +1748,7 @@ app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-ag
 // Versioned presentation assets are shared by every School portal.
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
+await registerSchoolMobile(app);
 // Human-readable tenant URLs keep the school code in the address while every request
 // still resolves the tenant from the database. This avoids a separate deployment per school.
 app.get('/s/:school/login',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(loginFrontend)});

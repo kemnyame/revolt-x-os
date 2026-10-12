@@ -80,6 +80,28 @@ During development, the School frontend obtains the temporary Core OS preview se
 - removal of preview access
 
 
+## Mobile application
+
+Open `/mobile` on Android or iPhone. No software download is required. The four
+workspace choices open the existing staff, parent, student and administrator
+sign-in pages and use the same school records and permissions. Staff continue
+to use Staff ID and password; administrator authentication remains separate.
+
+Phone layouts include quick navigation, larger touch controls, bottom tabs,
+safe-area spacing and readable forms. `/mobile?school=<school-code>` carries the
+school selection to each workspace. All portals advertise the app manifest and
+icons so visitors can optionally add a home-screen shortcut. Installation is
+never required to use the application.
+
+The service worker only handles same-origin document navigation. It does not
+cache student records, credentials, API responses or authenticated pages and
+does not queue mutations or payments. Offline navigation displays a generic
+reconnect page. School operations require an internet connection. Browser and
+device support determines whether a home-screen installation option is shown.
+
+Run `npm test` to build and validate the application, including mobile routes,
+manifest targets, icons and offline privacy behavior.
+
 ## Transactional email
 
 Revolt-X School supports Brevo for automated transactional email. Set:

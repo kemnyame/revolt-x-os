@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { schoolMobileHead } from './mobile-app.js';
 
 /** Presentation only. Authentication, requests, permissions and business handlers
  * remain owned by each existing portal. No framework or remote assets required. */
@@ -197,7 +198,8 @@ export const schoolDesignVersion = createHash('sha256').update(schoolDesignCss +
 
 export function applySchoolDesign(html:string, portal:'admin'|'teacher'|'parent'|'student'|'login'|'admissions'){
   return html.replace('</head>',
-    `<meta name="theme-color" content="#24634e"><link rel="stylesheet" href="/school-design.css?v=${schoolDesignVersion}"><script src="/school-design.js?v=${schoolDesignVersion}" defer></script></head>`)
+    `<meta name="theme-color" content="#24634e"><link rel="stylesheet" href="/school-design.css?v=${schoolDesignVersion}"><script src="/school-design.js?v=${schoolDesignVersion}" defer></script>${schoolMobileHead}</head>`)
+    .replace('initial-scale=1"','initial-scale=1,viewport-fit=cover"')
     .replace('<body>',`<body data-portal="${portal}">`);
 }
 
