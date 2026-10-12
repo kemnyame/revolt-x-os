@@ -6,6 +6,7 @@ import { buildApp } from './app.js';
 import {bootstrapSchoolStaffPasswords} from './auth/school-password-policy.js';
 import {applyOwnerPasswordPolicy} from './auth/owner-password-policy.js';
 import {revokeLinkedSchoolSessions} from './auth/school-sessions.js';
+import {applyOsPasswordRecovery} from './auth/os-password-recovery.js';
 
 const config = loadConfig();
 const db = createDb(config);
@@ -38,6 +39,10 @@ try {
   if(bootstrapped)console.log(`Applied the temporary School password policy to ${bootstrapped} legacy staff account(s).`);
   const resetOwners=await applyOwnerPasswordPolicy(db,String(config.OWNER_PASSWORD_RESET||''),userId=>revokeLinkedSchoolSessions(db,config,userId));
   if(resetOwners)console.log(`Applied a changed owner password configuration once to ${resetOwners} account(s).`);
+  if(config.OS_PASSWORD_RECOVERY_USER_ID&&config.OS_PASSWORD_RECOVERY_REQUEST_ID&&config.OS_PASSWORD_RECOVERY_VALUE){
+    const recovered=await applyOsPasswordRecovery(db,{userId:config.OS_PASSWORD_RECOVERY_USER_ID,requestId:config.OS_PASSWORD_RECOVERY_REQUEST_ID,password:config.OS_PASSWORD_RECOVERY_VALUE});
+    if(recovered)console.log('Applied and verified the one-time OS account password recovery.');
+  }
   app = await buildApp({ db, config });
   await app.listen({ host: config.HOST, port: config.PORT });
   console.log(`Revolt-X OS listening on ${config.HOST}:${config.PORT}`);

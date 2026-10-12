@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const booleanFromEnv = z.enum(['true', 'false']).default('false').transform(value => value === 'true');
+const unsetEmpty=(value:unknown)=>value===''?undefined:value;
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -18,8 +19,13 @@ const schema = z.object({
   SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
   SCHOOL_APP_URL: z.string().url().optional().or(z.literal('')),
   SCHOOL_DEFAULT_STAFF_PASSWORD: z.string().min(12).default('Welcome@2026!'),
-  OWNER_PASSWORD_RESET: z.string().optional()
-});
+  OWNER_PASSWORD_RESET: z.string().optional(),
+  OS_PASSWORD_RECOVERY_USER_ID:z.preprocess(unsetEmpty,z.string().uuid().optional()),
+  OS_PASSWORD_RECOVERY_REQUEST_ID:z.preprocess(unsetEmpty,z.string().uuid().optional()),
+  OS_PASSWORD_RECOVERY_VALUE:z.preprocess(unsetEmpty,z.string().min(12).max(128).regex(/[A-Z]/).regex(/[a-z]/).regex(/[0-9]/).optional())
+}).refine(value=>![value.OS_PASSWORD_RECOVERY_USER_ID,value.OS_PASSWORD_RECOVERY_REQUEST_ID,value.OS_PASSWORD_RECOVERY_VALUE].some(Boolean)
+  ||[value.OS_PASSWORD_RECOVERY_USER_ID,value.OS_PASSWORD_RECOVERY_REQUEST_ID,value.OS_PASSWORD_RECOVERY_VALUE].every(Boolean),
+  {message:'OS password recovery requires an account, request ID and password together'});
 
 export type Config = z.infer<typeof schema>;
 export const loadConfig = (env: NodeJS.ProcessEnv = process.env): Config => schema.parse(env);
