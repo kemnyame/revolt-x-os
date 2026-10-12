@@ -95,7 +95,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
       headers:{'x-revolt-service-key':options.config.CORE_SERVICE_KEY},signal:AbortSignal.timeout(20000)
     }).catch(()=>null);
     const user:any=await response?.json().catch(()=>null);
-    if(!response?.ok)throw Object.assign(new Error(user?.error?.message||'The administrator link is unavailable. Open the current link from your school record.'),{statusCode:response?.status||503});
+    if(!response?.ok)throw Object.assign(new Error(user?.error?.message||user?.message||'The administrator link is unavailable. Open the current link from your school record.'),{statusCode:response?.status||503});
     if(user?.id!==query.adminUserId||typeof user.email!=='string'||!user.organisation_slug)throw Object.assign(new Error('The school administrator link could not be verified'),{statusCode:503});
     return{administrator:{id:user.id,email:user.email,name:[user.first_name,user.last_name].filter(Boolean).join(' ')},school:{id:user.organisation_slug,name:user.organisation_name}};
   });
@@ -144,7 +144,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     }).catch(() => null);
     if (!result) throw Object.assign(new Error('Core Revolt-X OS could not complete the password reset. Please try again.'), { statusCode: 503 });
     const payload: any = await result.json().catch(() => null);
-    if (!result.ok) throw Object.assign(new Error(payload?.error?.message || 'Reset link is invalid or has expired. Generate a new reset link.'), { statusCode: result.status });
+    if (!result.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || 'Reset link is invalid or has expired. Generate a new reset link.'), { statusCode: result.status });
     if (payload?.reset !== true || typeof payload?.email !== 'string')
       throw Object.assign(new Error('The password-reset response could not be verified. Please contact your administrator.'), { statusCode: 503 });
 

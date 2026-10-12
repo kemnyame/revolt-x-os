@@ -1925,7 +1925,7 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 
   if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
   const user=await authRes.json().catch(()=>null) as any;
-  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid School Administrator credentials');
+  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||user?.message||'Invalid School Administrator credentials');
 
   let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
   if(!school){

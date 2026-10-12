@@ -47,6 +47,37 @@ function friendlyUnexpectedMessage(error: unknown) {
 
 export async function buildApp({ db, config }: { db: Db; config: Config }) {
   const app = Fastify({ logger: config.NODE_ENV !== 'test', trustProxy: true, requestIdHeader: 'x-request-id' });
+  app.setNotFoundHandler((request, reply) => reply.code(404).send({
+    error: { code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found`, requestId: request.id }
+  }));
+
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof ZodError) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: friendlyValidationMessage(error),
+          details: error.issues,
+          requestId: request.id
+        }
+      });
+    }
+    if (error instanceof AppError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.code, message: error.message, details: error.details, requestId: request.id }
+      });
+    }
+    request.log.error(error);
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: friendlyUnexpectedMessage(error),
+        requestId: request.id
+      }
+    });
+  });
+
+
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: config.CORS_ORIGINS === '*' ? true : config.CORS_ORIGINS.split(',').map(v => v.trim()),
@@ -104,35 +135,6 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   await app.register(assuranceRoutes, { db, config });
   await app.register(internalSchoolRoutes, { db, config });
 
-  app.setNotFoundHandler((request, reply) => reply.code(404).send({
-    error: { code: 'NOT_FOUND', message: `Route ${request.method} ${request.url} not found`, requestId: request.id }
-  }));
-
-  app.setErrorHandler((error, request, reply) => {
-    if (error instanceof ZodError) {
-      return reply.code(400).send({
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: friendlyValidationMessage(error),
-          details: error.issues,
-          requestId: request.id
-        }
-      });
-    }
-    if (error instanceof AppError) {
-      return reply.code(error.statusCode).send({
-        error: { code: error.code, message: error.message, details: error.details, requestId: request.id }
-      });
-    }
-    request.log.error(error);
-    return reply.code(500).send({
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: friendlyUnexpectedMessage(error),
-        requestId: request.id
-      }
-    });
-  });
 
   return app;
 }
