@@ -609,7 +609,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [id,user.id]
       );
       if (membership) {
-        await q.query("UPDATE organisation_memberships SET status='active',job_title='School Administrator',updated_at=now() WHERE id=$1",[membership.id]);
+        await q.query("UPDATE organisation_memberships SET status='active',job_title='School Administrator' WHERE id=$1",[membership.id]);
       } else {
         membership = await one<any>(q,
           "INSERT INTO organisation_memberships(organisation_id,user_id,status,job_title) VALUES($1,$2,'active','School Administrator') RETURNING id",
