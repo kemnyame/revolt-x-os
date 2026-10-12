@@ -11,6 +11,8 @@ import {internalSchoolRoutes} from './internal-school.js';
 import {registerCommercialSchoolReporting} from './school-reporting.js';
 import {schoolAccessStatus,csvReport} from './commercial-reporting.js';
 import {bootstrapSchoolStaffPasswords} from '../auth/school-password-policy.js';
+import {applyOwnerPasswordPolicy} from '../auth/owner-password-policy.js';
+import {authRoutes} from '../auth/routes.js';
 
 const pg=new PGlite(),provider='11111111-1111-4111-8111-111111111111',actor='22222222-2222-4222-8222-222222222222',other='33333333-3333-4333-8333-333333333333';
 const client={query:async(sql:string,params?:unknown[])=>{const r=await pg.query(sql,params);return{rows:r.rows as any[],rowCount:r.rows.length||r.affectedRows||0}},release(){}};
@@ -24,11 +26,12 @@ app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof z.ZodErr
 beforeAll(async()=>{
   const dir=new URL('../../migrations/',import.meta.url);
   for(const file of readdirSync(dir).filter(x=>x.endsWith('.sql')).sort())await pg.exec(readFileSync(new URL(file,dir),'utf8'));
-  await saasRoutes(app,{db,config});await internalSchoolRoutes(app,{db,config});registerCommercialSchoolReporting(app,{db,config});await app.ready();
+  await saasRoutes(app,{db,config});await internalSchoolRoutes(app,{db,config});await authRoutes(app,{db,config});registerCommercialSchoolReporting(app,{db,config});await app.ready();
   planId=(await client.query("SELECT id FROM saas_pricing_plans WHERE plan_key='basic' LIMIT 1")).rows[0].id;
 },60000);
 beforeEach(async()=>{
   await pg.exec('TRUNCATE organisations,users CASCADE;');
+  await pg.exec('TRUNCATE auth_configuration_state;');
   // Cascading truncation also clears global roles; restore the production owner role.
   await pg.exec("INSERT INTO roles(organisation_id,key,name,is_system) VALUES(NULL,'owner','Organisation Owner',true);");
   await client.query("INSERT INTO organisations(id,name,slug) VALUES($1,'OEM','oem'),($2,'Other OEM','other-oem')",[provider,other]);
@@ -73,7 +76,7 @@ describe('paid school setup and primary administrator access',()=>{
     const {invoice,result}=await paidSchool();expect(result.invoiceNumber).toBe(invoice.invoice_no);expect(result.provisioning.status).toBe('completed');
     expect(result.administrator).toMatchObject({email:'alpha@example.test',existingUser:false,mustChangePassword:true});expect(result.administrator.temporaryPassword).toMatch(/^SchAdm!A1[0-9a-f]{32}$/);
     const user=(await client.query('SELECT * FROM users WHERE id=$1',[result.administrator.id])).rows[0];expect(await bcrypt.compare(result.administrator.temporaryPassword,user.password_hash)).toBe(true);expect(user.must_change_password).toBe(true);
-    expect(result.adminLoginUrl).toBe('https://school.example.test/s/alpha/admin-login');
+    expect(result.adminLoginUrl).toBe('https://school.example.test/s/alpha/admin-login?admin='+user.id);
     expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(0);
     expect(await bcrypt.compare(result.administrator.temporaryPassword,(await client.query('SELECT password_hash FROM users WHERE id=$1',[user.id])).rows[0].password_hash)).toBe(true);
     const history=await send('GET','/v1/commercial-control/schools/'+result.organisation.id);expect(history.json().invoices[0].invoice_no).toBe(invoice.invoice_no);expect(history.json().payments).toHaveLength(1);
@@ -141,5 +144,47 @@ describe('school-specific payment and administrator reports',()=>{
   it('classifies suspended organisations, expired licences and archived schools as disabled',()=>{
     const row={organisation_status:'active',customer_status:'active',licence_status:'active',current_period_end:'2099-01-01'};expect(schoolAccessStatus(row)).toBe('active');
     for(const update of [{organisation_status:'suspended'},{customer_status:'archived'},{licence_status:'suspended'},{current_period_end:'2000-01-01'}])expect(schoolAccessStatus({...row,...update})).toBe('disabled');
+  });
+});
+
+describe('administrator reset to its specific login',()=>{
+  it('runs a deliberately changed owner override once and revokes old sessions without repeating it at startup',async()=>{
+    const {result}=await paidSchool(),uid=result.administrator.id;
+    const m=(await client.query("INSERT INTO organisation_memberships(organisation_id,user_id,employee_number) VALUES($1,$2,'OWNER') RETURNING id",[provider,uid])).rows[0];
+    await client.query("INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id) SELECT $1,id,'organisation',$2 FROM roles WHERE key='owner'",[m.id,provider]);
+    await client.query("INSERT INTO sessions(user_id,organisation_id,refresh_token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[uid,provider,'a'.repeat(64)]);
+    const revoke=vi.fn(async()=>{});expect(await applyOwnerPasswordPolicy(db,'OldConfiguredPass123',revoke)).toBe(0);expect(revoke).not.toHaveBeenCalled();
+    expect(await applyOwnerPasswordPolicy(db,'ChangedConfiguredPass123',revoke)).toBe(1);expect(revoke).toHaveBeenCalledWith(uid);expect((await client.query('SELECT revoked_at FROM sessions')).rows[0].revoked_at).not.toBeNull();
+    await client.query('UPDATE users SET password_hash=$1 WHERE id=$2',[await bcrypt.hash('PersonalResetPass123',12),uid]);
+    expect(await applyOwnerPasswordPolicy(db,'ChangedConfiguredPass123',revoke)).toBe(0);expect(revoke).toHaveBeenCalledTimes(1);expect(await bcrypt.compare('PersonalResetPass123',(await client.query('SELECT password_hash FROM users WHERE id=$1',[uid])).rows[0].password_hash)).toBe(true);
+  });
+  it('resets the school administrator, resolves its exact account without a school parameter and preserves the password after restart',async()=>{
+    const {result}=await paidSchool(),uid=result.administrator.id;
+    const owner=(await client.query("INSERT INTO organisation_memberships(organisation_id,user_id,employee_number,joined_at) VALUES($1,$2,'OWNER',now()-interval '10 days') RETURNING id",[provider,uid])).rows[0];
+    await client.query("INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id) SELECT $1,id,'organisation',$2 FROM roles WHERE key='owner' AND organisation_id IS NULL",[owner.id,provider]);
+    expect(await applyOwnerPasswordPolicy(db,'LegacyOwnerPass123')).toBe(0);
+    const invite=await send('POST','/v1/commercial-control/schools/'+result.organisation.id+'/admin-invite',{});expect(invite.statusCode,invite.body).toBe(200);
+    const link=new URL(invite.json().resetUrl),token=link.searchParams.get('token');expect(invite.json().adminLoginUrl).toBe(result.adminLoginUrl);
+    const record=(await client.query('SELECT organisation_id,purpose FROM password_reset_tokens WHERE user_id=$1 AND used_at IS NULL',[uid])).rows[0];expect(record).toMatchObject({organisation_id:result.organisation.id,purpose:'school_admin'});
+    const reset=await send('POST','/v1/auth/password-reset/confirm',{token,password:'PersonalResetPass123',purpose:'school_admin'});expect(reset.statusCode,reset.body).toBe(200);expect(reset.json()).toMatchObject({userId:uid,email:'alpha@example.test',organisationSlug:'alpha'});
+    expect(await applyOwnerPasswordPolicy(db,'LegacyOwnerPass123')).toBe(0);expect(await bootstrapSchoolStaffPasswords(db,'LegacyStaffPass123')).toBe(0);
+    const context=await app.inject({url:'/v1/internal/school/admin-login-context?schoolId=alpha&adminUserId='+uid,headers:{'x-revolt-service-key':config.SCHOOL_SERVICE_KEY}});expect(context.statusCode,context.body).toBe(200);expect(context.json()).toMatchObject({id:uid,email:'alpha@example.test',organisation_slug:'alpha'});
+    const signIn=await internal('authenticate-admin',{schoolId:'alpha',adminUserId:uid,email:context.json().email,password:'PersonalResetPass123'});expect(signIn.statusCode,signIn.body).toBe(200);expect(signIn.json().must_change_password).toBe(false);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',adminUserId:actor,email:context.json().email,password:'PersonalResetPass123'})).statusCode).toBe(401);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',adminUserId:uid,email:context.json().email,password:result.administrator.temporaryPassword})).statusCode).toBe(401);
+    expect((await send('POST','/v1/auth/password-reset/confirm',{token,password:'DifferentSecurePass123',purpose:'school_admin'})).statusCode).toBe(401);
+  },15000);
+  it('rejects moving a reset link to another school even when the same administrator owns both schools',async()=>{
+    const alpha=await paidSchool(),invoice=await issue('beta');await client.query("UPDATE saas_school_orders SET school_details=jsonb_set(school_details,'{adminEmail}',to_jsonb('alpha@example.test'::text)) WHERE id=$1",[invoice.id]);await pay(invoice);const beta=await create(invoice);expect(beta.statusCode,beta.body).toBe(201);
+    const invite=await send('POST','/v1/commercial-control/schools/'+alpha.result.organisation.id+'/admin-invite',{}),token=new URL(invite.json().resetUrl).searchParams.get('token');
+    const wrong=await send('POST','/v1/auth/password-reset/confirm',{token,password:'PersonalResetPass123',purpose:'school_admin',schoolId:'beta'});expect(wrong.statusCode).toBe(401);
+    const right=await send('POST','/v1/auth/password-reset/confirm',{token,password:'PersonalResetPass123',purpose:'school_admin',schoolId:'alpha'});expect(right.statusCode,right.body).toBe(200);
+  });
+  it('stale primary administrator links cannot authenticate a replaced administrator or generate its reset',async()=>{
+    const {result}=await paidSchool(),uid=result.administrator.id;
+    await client.query("UPDATE organisations SET settings=jsonb_set(settings,'{primaryAdminUserId}',to_jsonb($1::text)) WHERE id=$2",[actor,result.organisation.id]);
+    const context=await app.inject({url:'/v1/internal/school/admin-login-context?schoolId=alpha&adminUserId='+uid,headers:{'x-revolt-service-key':config.SCHOOL_SERVICE_KEY}});expect(context.statusCode).toBe(404);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',email:'alpha@example.test',password:result.administrator.temporaryPassword})).statusCode).toBe(401);
+    expect((await send('POST','/v1/commercial-control/schools/'+result.organisation.id+'/admin-invite',{})).statusCode).toBe(404);
   });
 });

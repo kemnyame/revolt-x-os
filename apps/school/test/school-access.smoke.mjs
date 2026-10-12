@@ -31,7 +31,7 @@ test('reset accepts omitted and blank school IDs, uses the verified school and e
   const sent=[],app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({reset:true,email:'admin@example.test',userId:user,organisationSlug:'alpha'})});
   for(const schoolId of [undefined,'','   ']) {
     const r=await app.inject({method:'POST',url:'/api/auth/admin-password-reset',payload:{token:'t'.repeat(43),newPassword:'NewSecurePass123',schoolId}});
-    assert.equal(r.statusCode,200,r.body);assert.equal(r.json().adminLoginUrl,'/s/alpha/admin-login');assert.equal('schoolId' in sent.at(-1),false);assert.match(r.headers['set-cookie'],/Max-Age=0/);
+    assert.equal(r.statusCode,200,r.body);assert.equal(r.json().adminLoginUrl,'/s/alpha/admin-login?admin='+user);assert.equal('schoolId' in sent.at(-1),false);assert.equal(sent.at(-1).purpose,'school_admin');assert.match(r.headers['set-cookie'],/Max-Age=0/);
   }
 });
 
@@ -118,7 +118,7 @@ test('primary administrator must change the temporary password then sign in agai
   const app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({changed:true,staffId:'SCH-ADMIN-001'})},async()=>{audits++});
   await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
   const r=await app.inject({method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token},payload:{newPassword:'PersonalSecurePass123'}});
-  assert.equal(r.statusCode,200,r.body);assert.deepEqual(r.json(),{changed:true,requiresSignIn:true,schoolId:'alpha',redirectTo:'/s/alpha/admin-login'});assert.equal(audits,1);assert.equal('keepSessionHash' in sent[0],false);assert.equal(sent[0].schoolId,'alpha');assert.match(r.headers['set-cookie'],/Max-Age=0/);
+  assert.equal(r.statusCode,200,r.body);assert.deepEqual(r.json(),{changed:true,requiresSignIn:true,schoolId:'alpha',redirectTo:'/s/alpha/admin-login?admin='+user});assert.equal(audits,1);assert.equal('keepSessionHash' in sent[0],false);assert.equal(sent[0].schoolId,'alpha');assert.match(r.headers['set-cookie'],/Max-Age=0/);
   assert.equal((await db.query('SELECT count(*) count FROM school_sessions WHERE revoked_at IS NULL')).rows[0].count,0);
   await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:401});
 });
@@ -137,4 +137,11 @@ test('failed password change preserves sessions and a local audit failure cannot
   const input={method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token},payload:{newPassword:'PersonalSecurePass123'}};
   assert.equal((await app.inject(input)).statusCode,503);assert.equal((await db.query('SELECT count(*) count FROM school_sessions WHERE revoked_at IS NULL')).rows[0].count,2);
   failCore=false;const r=await app.inject(input);assert.equal(r.statusCode,200,r.body);assert.equal(r.json().requiresSignIn,true);
+});
+
+test('administrator link context verifies the exact account and canonical school before showing login details',async t=>{
+  let wrong=false;const app=await appFor(t,async()=>response({id:wrong?'33333333-3333-4333-8333-333333333333':user,email:'admin@example.test',first_name:'Primary',last_name:'Admin',organisation_slug:'alpha',organisation_name:'Alpha School'}));
+  const url='/api/auth/admin-login-context?schoolId=alpha&adminUserId='+user;
+  const r=await app.inject({url});assert.equal(r.statusCode,200,r.body);assert.deepEqual(r.json(),{administrator:{id:user,email:'admin@example.test',name:'Primary Admin'},school:{id:'alpha',name:'Alpha School'}});assert.equal(r.headers['cache-control'],'no-store');
+  wrong=true;assert.equal((await app.inject({url})).statusCode,503);assert.equal((await app.inject({url:'/api/auth/admin-login-context?schoolId=alpha&adminUserId=wrong'})).statusCode,400);
 });

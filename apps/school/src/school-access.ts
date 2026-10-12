@@ -86,6 +86,19 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
   fetchCore?: typeof fetch;
   passwordChangedAudit?: (context:CoreContext,staffId:string|null)=>Promise<void>;
 }) {
+  app.get('/api/auth/admin-login-context',async(request,reply)=>{
+    reply.header('cache-control','no-store');
+    const query=z.object({schoolId:schoolIdentifier,adminUserId:z.string().uuid()}).parse(request.query);
+    if(!options.config.CORE_SERVICE_KEY)throw Object.assign(new Error('Core service authentication is not configured'),{statusCode:503});
+    const q=new URLSearchParams(query);
+    const response=await(options.fetchCore??fetch)(options.config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/admin-login-context?'+q,{
+      headers:{'x-revolt-service-key':options.config.CORE_SERVICE_KEY},signal:AbortSignal.timeout(20000)
+    }).catch(()=>null);
+    const user:any=await response?.json().catch(()=>null);
+    if(!response?.ok)throw Object.assign(new Error(user?.error?.message||'The administrator link is unavailable. Open the current link from your school record.'),{statusCode:response?.status||503});
+    if(user?.id!==query.adminUserId||typeof user.email!=='string'||!user.organisation_slug)throw Object.assign(new Error('The school administrator link could not be verified'),{statusCode:503});
+    return{administrator:{id:user.id,email:user.email,name:[user.first_name,user.last_name].filter(Boolean).join(' ')},school:{id:user.organisation_slug,name:user.organisation_name}};
+  });
   app.post('/api/auth/change-password',async(request,reply)=>{
     reply.header('cache-control','no-store');
     const access=await authorize(request,options.db,options.config,undefined,{allowPasswordChange:true});
@@ -104,7 +117,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     if(access.core.dedicated_admin){
       const secure=options.config.NODE_ENV==='production'?'; Secure':'';
       reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
-      return{changed:true,requiresSignIn:true,schoolId:access.core.organisation_slug,redirectTo:'/s/'+encodeURIComponent(access.core.organisation_slug)+'/admin-login'};
+      return{changed:true,requiresSignIn:true,schoolId:access.core.organisation_slug,redirectTo:'/s/'+encodeURIComponent(access.core.organisation_slug)+'/admin-login?admin='+encodeURIComponent(access.core.id)};
     }
     if(keepSessionHash)await options.db.query(`UPDATE school_sessions SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
       WHERE token_hash=$1 AND revoked_at IS NULL`,[keepSessionHash]);
@@ -126,7 +139,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     }).parse(request.body);
     const result = await (options.fetchCore ?? fetch)(options.config.CORE_OS_URL.replace(/\/$/, '') + '/v1/auth/password-reset/confirm', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: body.token, password: body.newPassword, schoolId: body.schoolId }),
+      body: JSON.stringify({ token: body.token, password: body.newPassword, schoolId: body.schoolId, purpose:'school_admin' }),
       signal: AbortSignal.timeout(20000)
     }).catch(() => null);
     if (!result) throw Object.assign(new Error('Core Revolt-X OS could not complete the password reset. Please try again.'), { statusCode: 503 });
@@ -140,7 +153,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     if (payload.userId) await revokeSchoolUserSessions(options.db, payload.userId);
     else await options.db.query("UPDATE school_sessions SET revoked_at=now() WHERE lower(core_context->>'email')=lower($1) AND revoked_at IS NULL", [payload.email]);
     const school = typeof payload.organisationSlug === 'string' ? payload.organisationSlug : body.schoolId;
-    const adminLoginUrl = school ? '/s/' + encodeURIComponent(school) + '/admin-login' : '/admin-login';
+    const adminLoginUrl = (school ? '/s/' + encodeURIComponent(school) + '/admin-login' : '/admin-login')+(payload.userId?'?admin='+encodeURIComponent(payload.userId):'');
     const secure = options.config.NODE_ENV === 'production' ? '; Secure' : '';
     reply.header('set-cookie', 'rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + secure);
     return { reset: true, email: payload.email, schoolId: school ?? null, adminLoginUrl };

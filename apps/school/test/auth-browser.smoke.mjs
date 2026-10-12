@@ -5,8 +5,8 @@ import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, password
 
 async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond}={}) {
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
-  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){}});return elements.get(id)};
-  const context={document:{getElementById:element,querySelectorAll:()=>[]},URLSearchParams,
+  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
+  const context={document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URLSearchParams,
     location:{pathname:path,search,replace:url=>redirects.push(url)},history:{replaceState(){}},
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
     sessionStorage:{removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
@@ -71,4 +71,14 @@ test('first administrator password change clears temporary sessions and returns 
 test('staff password change continues to the assigned workspace',async()=>{
   const b=await browser(passwordChangeFrontend,{respond:()=>({ok:true,json:async()=>({changed:true,redirectTo:'/teacher'})})});
   b.element('newPassword').value=b.element('confirmPassword').value='PersonalSecurePass123';await b.element('save').onclick();assert.deepEqual(b.redirects,['/teacher']);
+});
+
+test('administrator-specific links lock the verified school and email and send the correct account ID at login',async()=>{
+  const uid='11111111-1111-4111-8111-111111111111',b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin='+uid,saved:'other',respond:url=>({ok:true,json:async()=>url.startsWith('/api/auth/admin-login-context')?{administrator:{id:uid,email:'primary@example.test',name:'Primary Admin'},school:{id:'alpha',name:'Alpha School'}}:{accessToken:'test-session',school:{id:'alpha'},user:{firstName:'Primary'},redirectTo:'/'}})});
+  assert.equal(b.element('schoolId').value,'alpha');assert.equal(b.element('schoolId').disabled,true);assert.equal(b.element('email').readOnly,true);assert.equal(b.element('email').value,'primary@example.test');assert.equal(b.element('signin').disabled,false);
+  b.element('email').value='wrong@example.test';b.element('password').value='PersonalResetPass123';await b.element('signin').onclick();assert.deepEqual(b.calls.at(-1).body,{schoolId:'alpha',email:'primary@example.test',password:'PersonalResetPass123',adminUserId:uid});
+});
+test('an expired or replaced administrator link blocks sign-in instead of falling back to another account',async()=>{
+  const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin=11111111-1111-4111-8111-111111111111',respond:()=>({ok:false,json:async()=>({error:{message:'School administrator login link is no longer valid'}})})});
+  assert.equal(b.element('signin').disabled,true);await b.element('signin').onclick();assert.equal(b.calls.length,1);assert.match(b.element('status').textContent,/no longer valid/);
 });

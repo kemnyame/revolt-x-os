@@ -9,6 +9,7 @@ import { audit, emitEvent } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
 import { buildPreviewContext } from '../auth/preview.js';
 import { revokeLinkedSchoolSessions } from '../auth/school-sessions.js';
+import {schoolAdministratorContext} from '../auth/school-admin-links.js';
 
 function requireSchoolService(request:FastifyRequest,config:Config){
   if(!config.SCHOOL_SERVICE_KEY)throw new AppError(503,'SERVICE_UNAVAILABLE','School service authentication is not configured');
@@ -24,6 +25,11 @@ const scopeSchema=z.object({
 });
 
 export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:Db;config:Config}){
+  app.get('/v1/internal/school/admin-login-context',async(request,reply)=>{
+    requireSchoolService(request,config);reply.header('cache-control','no-store');
+    const q=z.object({schoolId:z.string().trim().min(1).max(120),adminUserId:z.string().uuid()}).parse(request.query);
+    return schoolAdministratorContext(db,q.schoolId,q.adminUserId);
+  });
   app.get('/v1/internal/school/preview-context',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
     if(!config.ENABLE_PREVIEW_ACCESS)throw new AppError(403,'PREVIEW_DISABLED','Development preview access is disabled');
@@ -164,6 +170,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     requireSchoolService(request,config);
     const b=z.object({
       schoolId:z.string().trim().min(1).max(120),
+      adminUserId:z.string().uuid().optional(),
       email:z.string().trim().toLowerCase().email(),
       password:z.string().min(1).max(200)
     }).parse(request.body);
@@ -179,8 +186,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
       WHERE (lower(o.slug)=lower($1) OR o.id::text=$1) AND lower(u.email)=lower($2)
+        AND ($3::uuid IS NULL OR u.id=$3)
+        AND (o.settings->>'primaryAdminUserId' IS NULL OR o.settings->>'primaryAdminUserId'=u.id::text)
       GROUP BY u.id,m.id,o.id
-      LIMIT 1`,[b.schoolId,b.email]);
+      LIMIT 1`,[b.schoolId,b.email,b.adminUserId??null]);
 
     if(!row)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
     if(row.user_status!=='active'||row.membership_status!=='active'||row.organisation_status!=='active')

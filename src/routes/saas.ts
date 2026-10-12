@@ -9,6 +9,7 @@ import { audit } from '../core/audit.js';
 import { AppError, conflict, notFound } from '../core/errors.js';
 import { requirePermission } from '../core/http.js';
 import { schoolAccessStatus } from './commercial-reporting.js';
+import {schoolAdminLoginPath,schoolAdministratorContext} from '../auth/school-admin-links.js';
 import { registerSchoolOrderRoutes, lockPaidSchoolOrder, claimSchoolOrder, paidInvoiceNumber, newInvoiceNumber, commercialPaymentSchema, recordCommercialPayment } from './school-orders.js';
 
 function requireSchoolService(request: FastifyRequest, config: Config) {
@@ -416,7 +417,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
 
     const entitlement = await getEntitlements(db, a.organisationId, created.organisation.id);
     const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/login';
-    const adminLoginUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(created.organisation.slug) + '/admin-login';
+    const adminLoginUrl = schoolApplicationBase(config) + schoolAdminLoginPath(created.organisation.slug,created.admin.id);
 
     let provisioning: any = { status: 'failed', message: 'Revolt-X School provisioning did not complete' };
     try {
@@ -537,7 +538,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
     }
     const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(customer.slug) + '/login';
-    const adminLoginUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(customer.slug) + '/admin-login';
+    const adminLoginUrl = schoolApplicationBase(config) + schoolAdminLoginPath(customer.slug,administrator?.id);
     return {
       customer,
       license,
@@ -681,7 +682,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       schoolSync={ok:false,pending:true,message:String(error?.message||error)};
     }
 
-    const adminLoginUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(customer.slug)+'/admin-login';
+    const adminLoginUrl=schoolApplicationBase(config)+schoolAdminLoginPath(customer.slug,created.user.id);
     await audit(db,{
       organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
       action:'commercial.school_admin.changed',resourceType:'organisation',resourceId:id,
@@ -739,13 +740,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     }
     if(!user)throw notFound('Organisation administrator. Use Set New Admin first.');
     if(user.status!=='active')throw conflict('The organisation administrator account is inactive');
+    await schoolAdministratorContext(db,org.slug,user.id);
 
     const resetToken=randomBytes(32).toString('base64url');
     await transaction(db,async q=>{
       await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[user.id]);
       await q.query(
-        "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')",
-        [user.id,tokenHash(resetToken)]
+        "INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose) VALUES($1,$2,now()+interval '30 minutes',$3,'school_admin')",
+        [user.id,tokenHash(resetToken),id]
       );
       await q.query(
         'UPDATE saas_customers SET primary_contact_name=$1,primary_contact_email=$2,updated_at=now() WHERE provider_organisation_id=$3 AND customer_organisation_id=$4',
@@ -759,7 +761,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
     });
 
-    const adminLoginUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(org.slug)+'/admin-login';
+    const adminLoginUrl=schoolApplicationBase(config)+schoolAdminLoginPath(org.slug,user.id);
     const resetUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(org.slug)+'/admin-password-reset?token='+encodeURIComponent(resetToken);
     await audit(db,{
       organisationId:a.organisationId,
