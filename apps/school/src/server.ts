@@ -17,6 +17,7 @@ import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
 import { registerSchoolReportingRoutes } from './school-reporting.js';
+import {safeRequestUrl} from './request-log.js';
 import { registerSchoolAccessRoutes, schoolIdentifier, schoolAuthValidationMessage, withSchoolAuthThrottle, ensureSchoolLoginMembership } from './school-access.js';
 import { schoolDesignCss, schoolDesignScript } from './school-design.js';
 import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, providerStatus, validateBrevoConnection, verifyPaystack, type MessageChannel } from './providers.js';
@@ -45,7 +46,7 @@ await migrateSchool(db);
 // This prevents production from going live with a permanent "Connecting to Core" splash.
 new Script(schoolAppScript,{filename:'school-app.js'});
 
-const app=Fastify({logger:config.NODE_ENV!=='test',trustProxy:true});
+const app=Fastify({logger:config.NODE_ENV==='test'?false:{serializers:{req:(r:any)=>({method:r.method,url:safeRequestUrl(r.url),hostname:r.hostname,remoteAddress:r.ip})}},trustProxy:true});
 app.log.info({
   emailProvider:config.EMAIL_PROVIDER,
   emailDeliveryMode:providerStatus(config).email.mode,
@@ -1908,6 +1909,7 @@ app.get('/api/auth/schools',async()=>{
 async function handleSchoolAdminLogin(request:any,reply:any){
   const b=z.object({
     schoolId:schoolIdentifier,
+    adminUserId:z.string().uuid().optional(),
     email:z.string().trim().toLowerCase().email(),
     password:z.string().min(1).max(200)
   }).parse(request.body);
@@ -1917,7 +1919,7 @@ async function handleSchoolAdminLogin(request:any,reply:any){
   const authRes=await fetch(base+'/v1/internal/school/authenticate-admin',{
     method:'POST',
     headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({schoolId:b.schoolId,email:b.email,password:b.password}),
+    body:JSON.stringify({schoolId:b.schoolId,email:b.email,password:b.password,adminUserId:b.adminUserId}),
     signal:AbortSignal.timeout(20000)
   }).catch(()=>null);
 

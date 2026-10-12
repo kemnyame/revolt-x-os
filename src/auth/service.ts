@@ -14,6 +14,7 @@ export async function login(db:Db,c:Config,i:{email:string;password:string;organ
 export async function requestPasswordReset(db:Db,email:string,m:RequestMeta={}){const u=await maybeOne<{id:string;organisation_id:string}>(db,`SELECT u.id,m.organisation_id FROM users u JOIN organisation_memberships m ON m.user_id=u.id WHERE u.email=$1 AND u.status='active' ORDER BY m.joined_at LIMIT 1`,[email.trim().toLowerCase()]);if(!u)return{accepted:true};const t=randomBytes(32).toString('base64url');await transaction(db,async q=>{await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[u.id]);await q.query(`INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,requested_ip) VALUES($1,$2,now()+interval '30 minutes',$3)`,[u.id,hashToken(t),m.ipAddress??null]);await audit(q,{organisationId:u.organisation_id,actorUserId:u.id,action:'auth.password_reset.requested',resourceType:'user',resourceId:u.id,...m})});return{accepted:true,resetToken:t,expiresInMinutes:30}}
 export async function resetPassword(db:Db,t:string,p:string,m:RequestMeta={},options:{
   schoolId?:string|undefined;
+  purpose?:'school_admin'|undefined;
   revokeSchoolSessions?:(userId:string)=>Promise<void>;
 }={}){
   const ph=await bcrypt.hash(p,12);
@@ -26,12 +27,17 @@ export async function resetPassword(db:Db,t:string,p:string,m:RequestMeta={},opt
       WHERE pr.token_hash=$1 AND pr.used_at IS NULL AND pr.expires_at>now()
         AND u.status='active' AND m.status='active' AND o.status='active'
         AND ($2::text IS NULL OR lower(o.slug)=lower($2) OR o.id::text=$2)
-      ORDER BY m.joined_at LIMIT 1 FOR UPDATE OF pr`,[hashToken(t),options.schoolId?.trim()||null]);
+        AND (pr.organisation_id IS NULL OR pr.organisation_id=o.id)
+        AND ((pr.purpose<>'school_admin' AND $3::text IS NULL) OR (
+          EXISTS(SELECT 1 FROM saas_customers c WHERE c.customer_organisation_id=o.id AND c.customer_type='school')
+          AND o.settings->>'primaryAdminUserId'=u.id::text
+          AND EXISTS(SELECT 1 FROM membership_roles mr JOIN roles r ON r.id=mr.role_id WHERE mr.membership_id=m.id AND r.key='owner')))
+      ORDER BY m.joined_at LIMIT 1 FOR UPDATE OF pr`,[hashToken(t),options.schoolId?.trim()||null,options.purpose??null]);
     if(!r)throw unauthorized('Reset link is invalid, expired, or does not belong to this school. Generate a new link.');
     // Revocation must succeed before the token is consumed. A bridge failure rolls
     // back the Core changes and leaves this link available for a safe retry.
     await options.revokeSchoolSessions?.(r.user_id);
-    await q.query('UPDATE users SET password_hash=$1,must_change_password=false,updated_at=now() WHERE id=$2',[ph,r.user_id]);
+    await q.query('UPDATE users SET password_hash=$1,must_change_password=false,school_password_bootstrapped_at=now(),updated_at=now() WHERE id=$2',[ph,r.user_id]);
     await q.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL',[r.user_id]);
     await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[r.user_id]);
     await audit(q,{organisationId:r.organisation_id,actorUserId:r.user_id,action:'auth.password_reset.completed',resourceType:'user',resourceId:r.user_id,...m});
@@ -39,4 +45,3 @@ export async function resetPassword(db:Db,t:string,p:string,m:RequestMeta={},opt
   });
 }
 export async function refresh(db:Db,c:Config,t:string,m:RequestMeta={}){const s=await maybeOne<{id:string;user_id:string;organisation_id:string}>(db,'SELECT id,user_id,organisation_id FROM sessions WHERE refresh_token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',[hashToken(t)]);if(!s)throw unauthorized('Invalid or expired refresh token');const n=randomBytes(48).toString('base64url');await db.query('UPDATE sessions SET refresh_token_hash=$1,last_used_at=now(),ip_address=$2,user_agent=$3 WHERE id=$4',[hashToken(n),m.ipAddress??null,m.userAgent??null,s.id]);return{accessToken:await issueAccessToken(db,c,s.user_id,s.organisation_id,s.id),refreshToken:n,expiresIn:c.ACCESS_TOKEN_TTL_SECONDS}}export async function logout(db:Db,a:AuthContext,m:RequestMeta={}){await db.query('UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2',[a.sessionId,a.userId]);await audit(db,{organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,action:'auth.logout',resourceType:'session',resourceId:a.sessionId,...m})}
-

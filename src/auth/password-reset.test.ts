@@ -12,18 +12,20 @@ const token='test-reset-token-'.repeat(3),hash=createHash('sha256').update(token
 const client={query:async(sql:string,params?:unknown[])=>{const r=await pg.query(sql,params);return{rows:r.rows,rowCount:r.rows.length||r.affectedRows||0}},release(){}};
 const db={...client,connect:async()=>client} as unknown as Db;
 beforeAll(async()=>pg.exec(`
- CREATE TABLE organisations(id uuid PRIMARY KEY,slug text,status text);
- CREATE TABLE users(id uuid PRIMARY KEY,email text,password_hash text,status text,must_change_password boolean,updated_at timestamptz);
- CREATE TABLE organisation_memberships(user_id uuid,organisation_id uuid,status text,joined_at timestamptz);
- CREATE TABLE password_reset_tokens(id serial,user_id uuid,token_hash text,used_at timestamptz,expires_at timestamptz);
+ CREATE TABLE organisations(id uuid PRIMARY KEY,slug text,status text,settings jsonb DEFAULT '{}');
+ CREATE TABLE users(id uuid PRIMARY KEY,email text,password_hash text,status text,must_change_password boolean,updated_at timestamptz,school_password_bootstrapped_at timestamptz);
+ CREATE TABLE organisation_memberships(id uuid,user_id uuid,organisation_id uuid,status text,joined_at timestamptz);
+ CREATE TABLE roles(id uuid,key text);
+ CREATE TABLE membership_roles(membership_id uuid,role_id uuid);
+ CREATE TABLE password_reset_tokens(id serial,user_id uuid,token_hash text,used_at timestamptz,expires_at timestamptz,organisation_id uuid,purpose text DEFAULT 'account');
  CREATE TABLE sessions(user_id uuid,organisation_id uuid,revoked_at timestamptz);
  CREATE TABLE saas_customers(customer_organisation_id uuid,customer_type text);
  CREATE TABLE audit_logs(id serial,organisation_id uuid,actor_user_id uuid,session_id uuid,action text,resource_type text,resource_id uuid,outcome text,ip_address text,user_agent text,before_state jsonb,after_state jsonb,metadata jsonb,severity text,source text,previous_event_hash text,event_hash text,integrity_version int,created_at timestamptz);`));
 beforeEach(async()=>{
   await pg.exec('TRUNCATE organisations,users,organisation_memberships,password_reset_tokens,sessions,saas_customers,audit_logs;');
-  await client.query("INSERT INTO organisations VALUES($1,'alpha','active'),($2,'beta','active')",[org,other]);
-  await client.query("INSERT INTO users VALUES($1,'admin@example.test','old-hash','active',true,now())",[user]);
-  await client.query("INSERT INTO organisation_memberships VALUES($1,$2,'active',now()-interval '1 day'),($1,$3,'active',now())",[user,org,other]);
+  await client.query("INSERT INTO organisations(id,slug,status) VALUES($1,'alpha','active'),($2,'beta','active')",[org,other]);
+  await client.query("INSERT INTO users(id,email,password_hash,status,must_change_password,updated_at) VALUES($1,'admin@example.test','old-hash','active',true,now())",[user]);
+  await client.query("INSERT INTO organisation_memberships(user_id,organisation_id,status,joined_at) VALUES($1,$2,'active',now()-interval '1 day'),($1,$3,'active',now())",[user,org,other]);
   await client.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')",[user,hash]);
   await client.query('INSERT INTO sessions VALUES($1,$2,NULL),($1,$3,NULL)',[user,org,other]);
 });

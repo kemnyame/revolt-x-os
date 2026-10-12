@@ -199,15 +199,28 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     return body
   }
   ${schoolSelectionScript}
+  var administratorId=(new URLSearchParams(location.search).get('admin')||'').trim();
+  var boundAdministrator=null;
+  async function loadAdministrator(){
+    E('signin').disabled=true;E('schoolId').disabled=true;E('email').readOnly=true;
+    try{
+      var school=schoolFromLocation();if(!school)throw Error('This administrator link is missing its school. Open the link from your school record.');
+      var context=await json('/api/auth/admin-login-context?'+new URLSearchParams({schoolId:school,adminUserId:administratorId}));
+      boundAdministrator=context.administrator;E('schoolId').innerHTML='<option></option>';
+      var option=document.createElement('option');option.value=context.school.id;option.textContent=context.school.name;E('schoolId').appendChild(option);E('schoolId').value=context.school.id;
+      E('email').value=boundAdministrator.email;E('password').value='';E('signin').disabled=false;
+      show('Sign in as '+boundAdministrator.name+' for '+context.school.name+'. Use the new password you set after resetting.','success');
+    }catch(err){show(err.message||'The administrator link could not be verified.');E('signin').disabled=true}
+  }
   async function signIn(){
     if(E('signin').disabled)return;
-    var schoolId=E('schoolId').value,email=E('email').value.trim().toLowerCase(),password=E('password').value;
+    var schoolId=E('schoolId').value,email=boundAdministrator?boundAdministrator.email:E('email').value.trim().toLowerCase(),password=E('password').value;
     if(!schoolId){show('Select your school.');E('schoolId').focus();return}
     if(!email){show('Enter the administrator email.');E('email').focus();return}
     if(!password){show('Enter the administrator password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';E('status').className='';E('status').textContent='';
     try{
-      var result=await json('/api/auth/admin-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,email:email,password:password})});
+      var result=await json('/api/auth/admin-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,email:email,password:password,adminUserId:boundAdministrator?boundAdministrator.id:undefined})});
       try{
         sessionStorage.setItem('rx_school_token',result.accessToken);
         sessionStorage.removeItem('rx_teacher_token');
@@ -224,7 +237,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       show(err.message||'Administrator sign in failed');btn.disabled=false;btn.textContent=old
     }
   }
-  loadSchools();
+  if(administratorId)loadAdministrator();else loadSchools();
   E('signin').onclick=signIn;
   E('email').onkeydown=function(e){if(e.key==='Enter')E('password').focus()};
   E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
@@ -376,4 +389,3 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
 </script>
 </body>
 </html>`,'login');
-

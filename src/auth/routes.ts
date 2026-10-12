@@ -12,10 +12,11 @@ export async function authRoutes(app:FastifyInstance,options:{db:Db;config:Confi
  app.post('/v1/auth/password-reset/request',async request=>{const body=z.object({email:z.string().trim().toLowerCase().email()}).parse(request.body);await requestPasswordReset(options.db,body.email,meta(request));return{accepted:true}});
  app.post('/v1/auth/password-reset/confirm',async request=>{
    const body=z.object({token:z.string().trim().min(32).max(500).regex(/^[A-Za-z0-9_-]+$/),password,
-     schoolId:z.preprocess(v=>v==null||(typeof v==='string'&&!v.trim())?undefined:v,z.string().trim().min(1).max(120).optional())
+     schoolId:z.preprocess(v=>v==null||(typeof v==='string'&&!v.trim())?undefined:v,z.string().trim().min(1).max(120).optional()),
+     purpose:z.literal('school_admin').optional()
    }).parse(request.body);
    return resetPassword(options.db,body.token,body.password,meta(request),{
-     schoolId:body.schoolId,
+     schoolId:body.schoolId,purpose:body.purpose,
      revokeSchoolSessions:userId=>revokeLinkedSchoolSessions(options.db,options.config,userId)
    });
  });
@@ -23,4 +24,3 @@ export async function authRoutes(app:FastifyInstance,options:{db:Db;config:Confi
  app.get('/v1/auth/context',{config:{rateLimit:{max:1200,timeWindow:'1 minute'}}},async request=>{if(!request.auth)throw unauthorized();const a=request.auth;const user=await options.db.query(`SELECT u.id,u.email,u.first_name,u.last_name,u.status,m.id membership_id,m.job_title,m.status membership_status,o.id organisation_id,o.name organisation_name,o.slug organisation_slug FROM users u JOIN organisation_memberships m ON m.user_id=u.id JOIN organisations o ON o.id=m.organisation_id WHERE u.id=$1 AND o.id=$2 LIMIT 1`,[a.userId,a.organisationId]);if(!user.rowCount)throw unauthorized('User context is no longer available');return{...user.rows[0],sessionId:a.sessionId,permissions:a.permissions,preview:a.preview===true}});
  app.post('/v1/auth/logout',async(request,reply)=>{if(!request.auth)throw unauthorized();await logout(options.db,request.auth,meta(request));return reply.code(204).send()});
 }
-
