@@ -20,13 +20,13 @@
     "@types/pg": "^8.15.5",
     "dotenv": "^16.6.1",
     "fastify": "^5.6.1",
+    "linkedom": "^0.18.13",
     "pdfkit": "^0.17.2",
     "pg": "^8.16.3",
     "typescript": "^5.9.2",
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "linkedom": "^0.18.13",
     "tsx": "^4.20.6"
   }
 }
