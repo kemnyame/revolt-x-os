@@ -209,7 +209,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       boundAdministrator=context.administrator;E('schoolId').innerHTML='<option></option>';
       var option=document.createElement('option');option.value=context.school.id;option.textContent=context.school.name;E('schoolId').appendChild(option);E('schoolId').value=context.school.id;
       E('email').value=boundAdministrator.email;E('password').value='';E('signin').disabled=false;
-      show('Sign in as '+boundAdministrator.name+' for '+context.school.name+'. Use the new password you set after resetting.','success');
+      show('Sign in as '+boundAdministrator.name+' for '+context.school.name+'. Enter this administrator’s password. If you reset it, use the new password.','success');
     }catch(err){show(err.message||'The administrator link could not be verified.');E('signin').disabled=true}
   }
   async function signIn(){
