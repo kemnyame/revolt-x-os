@@ -94,7 +94,7 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   });
 
   app.decorateRequest('auth', null);
-  app.addHook('onRequest', async request => {
+  app.addHook('onRequest', async (request,reply) => {
     const h = request.headers.authorization;
     if (!h) return;
     const [s, t] = h.split(' ');
@@ -102,11 +102,13 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
     request.auth = await verifyAccessToken(config, t);
     const activeSession = await db.query(
       request.auth.preview
-        ? `SELECT 1 FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()`
-        : `SELECT 1 FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
+        ? `SELECT s.expires_at FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()`
+        : `SELECT s.expires_at FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
       [request.auth.sessionId, request.auth.userId, request.auth.organisationId]
     );
     if (!activeSession.rowCount) throw new AppError(401, 'UNAUTHORIZED', 'Session is no longer active');
+    const expiresAt=activeSession.rows[0]?.expires_at;
+    if(expiresAt)reply.header('x-revolt-session-expires-at',new Date(expiresAt).toISOString());
   });
 
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
@@ -138,3 +140,4 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
 
   return app;
 }
+

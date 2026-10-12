@@ -6,15 +6,16 @@ import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, password
 async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond}={}) {
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
-  const context={document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URLSearchParams,
-    location:{pathname:path,search,replace:url=>redirects.push(url)},history:{replaceState(){}},
+  const context={document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URL,URLSearchParams,
+    location:{pathname:path,search,origin:'https://school.example.test',href:'https://school.example.test'+path+search,replace:url=>redirects.push(url)},history:{replaceState(){}},
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
-    sessionStorage:{removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
-    setTimeout:fn=>fn(),fetch:async(url,options)=>{
+    sessionStorage:{getItem:key=>sessions.get(key),removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
+    clearTimeout(){},setTimeout:fn=>fn(),fetch:async(url,options)=>{
       calls.push({url,body:options?.body?JSON.parse(options.body):undefined});
       if(url==='/api/auth/schools')return{ok:true,json:async()=>schools};
       return respond?respond(url,options):{ok:true,json:async()=>({reset:true,schoolId:'alpha',adminLoginUrl:'/s/alpha/admin-login'})};
     }};
+  context.window=context;
   const script=html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];assert.ok(script);
   vm.runInNewContext(script,context);
   await new Promise(resolve=>setImmediate(resolve));
@@ -82,3 +83,10 @@ test('an expired or replaced administrator link blocks sign-in instead of fallin
   const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin=11111111-1111-4111-8111-111111111111',respond:()=>({ok:false,json:async()=>({error:{message:'School administrator login link is no longer valid'}})})});
   assert.equal(b.element('signin').disabled,true);await b.element('signin').onclick();assert.equal(b.calls.length,1);assert.match(b.element('status').textContent,/no longer valid/);
 });
+
+test('expired administrator login explains expiry and a fresh sign-in replaces its old session deadline',async()=>{
+  const uid='11111111-1111-4111-8111-111111111111',b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin='+uid+'&expired=1',respond:url=>({ok:true,json:async()=>url.startsWith('/api/auth/admin-login-context')?{administrator:{id:uid,email:'primary@example.test',name:'Primary Admin'},school:{id:'alpha',name:'Alpha'}}:{accessToken:'fresh-session',school:{id:'alpha'},user:{id:uid},redirectTo:'/'}})});
+  assert.equal(b.element('sessionExpired').hidden,false);b.sessions.set('rx_school_session_expires_at','old-expired-time');b.element('password').value='test-only-password';await b.element('signin').onclick();
+  assert.equal(b.sessions.has('rx_school_session_expires_at'),false);assert.equal(b.sessions.get('rx_school_token'),'fresh-session');assert.equal(b.sessions.get('rx_school_login_url'),'/s/alpha/admin-login?admin='+uid);assert.deepEqual(b.redirects,['/']);
+});
+

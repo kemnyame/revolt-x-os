@@ -1,3 +1,5 @@
+import { osSessionScript } from './session-ui.js';
+
 export const osFrontend=`<!doctype html>
 <html lang="en">
 <head>
@@ -29,6 +31,7 @@ input,select,textarea{width:100%;padding:10px;background:#07131c;border:1px soli
 <div id="modal" class="modal hide"><div class="card"><div id="modalBody"></div><button class="ghost" id="closeModal">Close</button></div></div>
 <div id="toast" class="toast hide"></div>
 <script>
+${osSessionScript}
 (function(){
 var token='',refresh='',data={},currentPage='dashboard';
 var pages=[
@@ -53,10 +56,7 @@ async function raw(path,opt){
  opt=opt||{};opt.headers=Object.assign({},opt.headers||{}, {'content-type':'application/json'},token?{authorization:'Bearer '+token}:{});
  var r=await fetch(path,opt),j=null;
  try{j=await r.json()}catch(e){}
- if(r.status===401&&refresh){
-   var q=await fetch('/v1/auth/refresh',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({refreshToken:refresh})});
-   if(q.ok){var n=await q.json();token=n.accessToken;refresh=n.refreshToken;sessionStorage.setItem('rx_access',token);sessionStorage.setItem('rx_refresh',refresh);return raw(path,opt)}
- }
+
  if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');
  return j;
 }
@@ -318,3 +318,4 @@ boot();
 </script>
 </body>
 </html>`;
+

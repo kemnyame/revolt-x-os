@@ -24,11 +24,13 @@ export const osLoginFrontend=String.raw`<!doctype html>
 (function(){
 function E(id){return document.getElementById(id)}
 function msg(text,bad){E('message').innerHTML='<div class="'+(bad?'error':'success')+'">'+String(text).replace(/[<>&]/g,'')+'</div>'}
-function save(x){sessionStorage.setItem('rx_access',x.accessToken);sessionStorage.setItem('rx_refresh',x.refreshToken||'');location.replace('/')}
+function save(x){sessionStorage.removeItem('rx_os_session_expires_at');sessionStorage.setItem('rx_access',x.accessToken);sessionStorage.setItem('rx_refresh',x.refreshToken||'');location.replace('/')}
 function tab(which){var login=which==='login';E('loginView').classList.toggle('hidden',!login);E('registerView').classList.toggle('hidden',login);E('loginTab').classList.toggle('active',login);E('registerTab').classList.toggle('active',!login);E('message').innerHTML=''}
+if(new URLSearchParams(location.search).get('expired')==='1')msg('Your session expired. Please sign in again.',false);
 E('loginTab').onclick=function(){tab('login')};E('registerTab').onclick=function(){tab('register')};
 E('loginBtn').onclick=async function(){var b=E('loginBtn');b.disabled=true;try{var r=await fetch('/v1/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:E('loginEmail').value.trim(),password:E('loginPassword').value})});var j=await r.json().catch(function(){return{}});if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Sign in failed');save(j)}catch(e){msg(e.message,true);b.disabled=false}};
 E('registerBtn').onclick=async function(){var b=E('registerBtn');b.disabled=true;try{var r=await fetch('/v1/auth/register-organisation',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({organisationName:E('orgName').value.trim(),slug:E('orgSlug').value.trim(),firstName:E('firstName').value.trim(),lastName:E('lastName').value.trim(),email:E('registerEmail').value.trim(),password:E('registerPassword').value})});var j=await r.json().catch(function(){return{}});if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Workspace creation failed');save(j)}catch(e){msg(e.message,true);b.disabled=false}};
 E('showLoginPassword').onchange=function(){E('loginPassword').type=this.checked?'text':'password'};E('showRegisterPassword').onchange=function(){E('registerPassword').type=this.checked?'text':'password'};E('loginPassword').onkeydown=function(e){if(e.key==='Enter')E('loginBtn').click()};
 })();
 </script></body></html>`;
+

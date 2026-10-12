@@ -1,3 +1,4 @@
+import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 
 export const teacherFrontend=applySchoolDesign(`<!doctype html>
@@ -11,6 +12,7 @@ export const teacherFrontend=applySchoolDesign(`<!doctype html>
 <div id="app" class="shell hide"><aside class="side"><div class="brand"><span>RX</span><div class="rx-brand-copy">Revolt-X School<small>Teaching workspace</small></div></div><nav id="nav" class="nav"></nav></aside><main class="main"><header class="top"><div><b id="school">Revolt-X School</b><div id="who" class="muted"></div></div><div class="row" style="flex:0 0 auto"><button id="myProfile" class="ghost">My Profile</button><button id="refresh" class="ghost">Refresh</button><button id="signOut" class="ghost">Sign out</button></div></header><div id="content"></div></main></div>
 <div id="modal" class="modal hide"><div class="box"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div><div id="toast" class="toast hide"></div>
 <script>
+${schoolSessionScript('teacher')}
 (function(){
 var token=sessionStorage.getItem('rx_teacher_token')||'',ctx=null,current='dashboard';
 var nav=[
@@ -92,7 +94,7 @@ async function boot(){
     await openWorkspace();
     if(token){sessionStorage.setItem('rx_teacher_token',token);sessionStorage.setItem('rx_school_token',token)}
   }catch(e){
-    if(e.status===401||e.status===403){showTeacherLogin(e.message);return}
+    if(e.status===401){window.rxSessionGuard.expire();return}
     E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><h1>Teacher workspace unavailable</h1><p class="muted">'+esc(e.message)+'</p><button id="teacherRetry" class="primary" style="width:100%">Retry</button><button id="teacherSignIn" class="ghost" style="width:100%;margin-top:8px">Return to sign in</button></div>';
     E('teacherRetry').onclick=function(){location.reload()};
     E('teacherSignIn').onclick=function(){location.replace('/login?next='+encodeURIComponent('/teacher'))}
@@ -333,3 +335,4 @@ else if(p==='reports'){
 boot();
 })();
 </script></body></html>`,'teacher');
+

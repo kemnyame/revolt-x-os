@@ -1,3 +1,4 @@
+import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 
 const schoolLocationScript=`
@@ -89,7 +90,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
       <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password">
 
       <button id="signin" type="button">Sign in</button>
-      <div id="status"></div>
+      <p id="sessionExpired" class="help" hidden>Your session expired. Please sign in again.</p><div id="status"></div>
 
       <div class="help"><b>First sign-in:</b> use the temporary password given by your administrator. You will be asked to create your own password before your workspace opens.</div>\n      <div class="switch">School Administrator? <a href="/admin-login">Use Admin Login</a></div>
     </div>
@@ -100,6 +101,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
   function E(id){return document.getElementById(id)}
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
   enablePasswordVisibility();
+  if(new URLSearchParams(location.search).get('expired')==='1')E('sessionExpired').hidden=false;
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   async function json(url,options){
     var res=await fetch(url,Object.assign({headers:{'content-type':'application/json'}},options||{}));
@@ -118,6 +120,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     try{
       var result=await json('/api/auth/staff-id-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,staffId:staffId,password:password})});
       try{
+        sessionStorage.removeItem('rx_school_session_expires_at');sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/login');
         sessionStorage.setItem('rx_school_token',result.accessToken);
         if(result.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',result.accessToken);else sessionStorage.removeItem('rx_teacher_token');
         localStorage.setItem('rx_school_id',result.school&&result.school.id?result.school.id:schoolId)
@@ -179,7 +182,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <input id="password" type="password" autocomplete="current-password" placeholder="Enter administrator password">
 
       <button id="signin" type="button">Sign in as Administrator</button>
-      <div id="status"></div>
+      <p id="sessionExpired" class="help" hidden>Your session expired. Please sign in again.</p><div id="status"></div>
 
       <div class="help"><b>Administrator access:</b> use the Admin Email and password configured for this school in Revolt-X OS Commercial Control.</div>
       <div class="switch">Staff member? <a href="/login">Use Staff Login</a></div>
@@ -191,6 +194,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
   function E(id){return document.getElementById(id)}
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
   enablePasswordVisibility();
+  if(new URLSearchParams(location.search).get('expired')==='1')E('sessionExpired').hidden=false;
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   async function json(url,options){
     var res=await fetch(url,Object.assign({headers:{'content-type':'application/json'}},options||{}));
@@ -222,6 +226,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     try{
       var result=await json('/api/auth/admin-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,email:email,password:password,adminUserId:boundAdministrator?boundAdministrator.id:undefined})});
       try{
+        sessionStorage.removeItem('rx_school_session_expires_at');sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/admin-login'+(result.user&&result.user.id?'?admin='+encodeURIComponent(result.user.id):''));
         sessionStorage.setItem('rx_school_token',result.accessToken);
         sessionStorage.removeItem('rx_teacher_token');
         localStorage.setItem('rx_school_id',result.school&&result.school.id?result.school.id:schoolId)
@@ -283,6 +288,7 @@ export const passwordChangeFrontend=applySchoolDesign(`<!doctype html>
   </section>
 </main>
 <script>
+${schoolSessionScript('staff')}
 (function(){
   function E(id){return document.getElementById(id)}
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
@@ -389,3 +395,4 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
 </script>
 </body>
 </html>`,'login');
+

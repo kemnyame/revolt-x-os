@@ -1,3 +1,4 @@
+import { setSessionDeadline, schoolSessionLoginPath } from './session-ui.js';
 import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -102,6 +103,11 @@ async function requestActor(request:any){
   return{organisationId:school?.organisation_id??null,userId:null,actorType:'public'};
 }
 app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
+app.addHook('onSend',async(request,reply,payload)=>{
+  const deadline=(request as any).sessionExpiresAt;
+  if(deadline)reply.header('x-revolt-session-expires-at',deadline);
+  return payload;
+});
 app.addHook('onResponse',async(request,reply)=>{
   const started=requestStartedAt.get(String(request.id))??Date.now();requestStartedAt.delete(String(request.id));
   if(!request.url.startsWith('/api/'))return;
@@ -1356,10 +1362,11 @@ async function guardianAuth(request:any){
   const auth=String(request.headers.authorization||'');
   if(!auth.startsWith('Bearer '))throw fail(401,'Parent portal sign-in required');
   const token=auth.slice(7);
-  const row=await maybeOne<any>(db,`SELECT gps.id session_id,g.id guardian_id,g.organisation_id,g.first_name,g.last_name,g.phone,g.email
+  const row=await maybeOne<any>(db,`SELECT gps.id session_id,gps.expires_at session_expires_at,g.id guardian_id,g.organisation_id,g.first_name,g.last_name,g.phone,g.email
     FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
     WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
   if(!row)throw fail(401,'Parent portal session has expired');
+  setSessionDeadline(request,row.session_expires_at);
   return row;
 }
 async function ensureGuardianStudent(guardianId:string,studentId:string){
@@ -1372,10 +1379,11 @@ async function studentAuth(request:any){
   const auth=String(request.headers.authorization||'');
   if(!auth.startsWith('Bearer '))throw fail(401,'Student portal sign-in required');
   const token=auth.slice(7);
-  const row=await maybeOne<any>(db,`SELECT sps.id session_id,s.id student_id,s.organisation_id,s.admission_no,s.first_name,s.last_name,s.status
+  const row=await maybeOne<any>(db,`SELECT sps.id session_id,sps.expires_at session_expires_at,s.id student_id,s.organisation_id,s.admission_no,s.first_name,s.last_name,s.status
     FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
     WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
   if(!row)throw fail(401,'Student portal session has expired');
+  setSessionDeadline(request,row.session_expires_at);
   return row;
 }
 async function effectiveClassTeacher(organisationId:string,classroomId:string,termId?:string|null){
@@ -1717,44 +1725,24 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
   `,[orgId,classroomId,termId,studentId]);
 }
 
-app.get('/',async(request,p)=>{
-  // Do not depend on browser JavaScript to discover that a School session is missing
-  // or expired. Route unauthenticated users straight to sign-in on the server.
+async function openSchoolDocument(request:any,p:any,next:string){
   const token=requestSessionToken(request);
-  let active=false;
+  let session:any=null;
   if(token&&token.startsWith('rxs_')){
-    const hash=createHash('sha256').update(token).digest('hex');
-    const session=await maybeOne<any>(db,
-      'SELECT 1 FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',
-      [hash]
-    );
-    active=Boolean(session);
+    session=await maybeOne<any>(db,`SELECT core_context,
+      (revoked_at IS NULL AND expires_at>now() AND last_used_at>now()-make_interval(mins=>COALESCE((
+        SELECT idle_timeout_minutes FROM school_security_settings sss WHERE sss.organisation_id=school_sessions.organisation_id
+      ),30))) active FROM school_sessions WHERE token_hash=$1`,[createHash('sha256').update(token).digest('hex')]);
   }
-  if(!active){
+  if(!session?.active){
     const secure=config.NODE_ENV==='production'?'; Secure':'';
     p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
-    return p.redirect('/login?next=%2F');
+    return p.redirect(schoolSessionLoginPath(session?.core_context,next,Boolean(token)));
   }
   return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
-});
-app.get('/students/:id',async(request,p)=>{
-  const token=requestSessionToken(request);
-  let active=false;
-  if(token&&token.startsWith('rxs_')){
-    const hash=createHash('sha256').update(token).digest('hex');
-    const session=await maybeOne<any>(db,
-      'SELECT 1 FROM school_sessions WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now()',
-      [hash]
-    );
-    active=Boolean(session);
-  }
-  if(!active){
-    const secure=config.NODE_ENV==='production'?'; Secure':'';
-    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
-    return p.redirect('/login?next='+encodeURIComponent(request.url));
-  }
-  return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
-});
+}
+app.get('/',async(request,p)=>openSchoolDocument(request,p,'/'));
+app.get('/students/:id',async(request,p)=>openSchoolDocument(request,p,request.url));
 app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
 // Versioned presentation assets are shared by every School portal.
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
@@ -5946,7 +5934,7 @@ app.post('/api/parent/logout',async request=>{const g=await guardianAuth(request
 app.get('/api/parent/me',async request=>{
   const g=await guardianAuth(request);
   const students=(await db.query(`SELECT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.name classroom_name FROM student_guardians sg JOIN students s ON s.id=sg.student_id LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id WHERE sg.guardian_id=$1 ORDER BY s.first_name,s.last_name`,[g.guardian_id])).rows;
-  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,logo_image_data,logo_url,email_accent_color FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,logo_image_data,logo_url,email_accent_color,tenant_slug FROM school_profiles WHERE organisation_id=$1',[g.organisation_id]);
   return{guardian:g,students,school};
 });
 
@@ -6476,7 +6464,7 @@ app.get('/api/student/me',async request=>{
   const s=await studentAuth(request);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[s.student_id]);
   const student={...s,...(current||{})};
-  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address FROM school_profiles WHERE organisation_id=$1',[s.organisation_id]);
+  const school=await one<any>(db,'SELECT school_name,short_name,motto,phone,email,address,tenant_slug FROM school_profiles WHERE organisation_id=$1',[s.organisation_id]);
   const attRows=(await db.query('SELECT status,count(*)::int count FROM attendance_records WHERE organisation_id=$1 AND student_id=$2 GROUP BY status',[s.organisation_id,s.student_id])).rows;const attendance:any={};for(const x of attRows)attendance[x.status]=x.count;
   const homework=current?(await db.query(`SELECT h.id,h.title,h.instructions,h.due_at,h.status,h.max_score,sub.name subject_name,hs.status submission_status,hs.score,hs.teacher_comment FROM homework_assignments h JOIN subjects sub ON sub.id=h.subject_id LEFT JOIN homework_submissions hs ON hs.homework_id=h.id AND hs.student_id=$2 WHERE h.organisation_id=$1 AND h.classroom_id=$3 AND h.status='published' ORDER BY h.due_at DESC NULLS LAST LIMIT 30`,[s.organisation_id,s.student_id,current.classroom_id])).rows:[];
   const timetable=current?(await db.query(`SELECT tt.*,sub.name subject_name FROM timetable_entries tt JOIN subjects sub ON sub.id=tt.subject_id WHERE tt.organisation_id=$1 AND tt.classroom_id=$2 ORDER BY tt.day_of_week,tt.start_time`,[s.organisation_id,current.classroom_id])).rows:[];
@@ -8050,3 +8038,4 @@ void warmCoreUserDirectories();
 void runCommunicationRetries();
 communicationRetryTimer=setInterval(()=>void runCommunicationRetries(),config.COMMUNICATION_RETRY_INTERVAL_MS);
 communicationRetryTimer.unref();
+
