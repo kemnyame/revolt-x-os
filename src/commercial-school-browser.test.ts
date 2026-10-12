@@ -10,12 +10,13 @@ async function browser(respond?:(url:string,body:any)=>any){
   function parse(html:string){for(const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)){const e=make(match[1]!);e.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';e.disabled=/\sdisabled(?:\s|>)/.test(match[0])}
     for(const match of html.matchAll(/<select[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g)){elements.get(match[1]!)!.value=match[2]!.match(/<option value="([^"]*)"/)?.[1]||''}}
   parse(commercialControlFrontend.split('<script>')[0]!);make('nav');
-  const context={document:{getElementById:(id:string)=>elements.get(id)||null,querySelector:()=>elements.get('nav'),querySelectorAll:()=>[],createElement:()=>make('download')},
-    sessionStorage:{getItem:(key:string)=>key==='rx_access'?'test-token':'',setItem(){}},location:{href:''},
-    navigator:{clipboard:{writeText:(s:string)=>copies.push(s)}},URL,URLSearchParams,Blob,crypto:{randomUUID:()=> 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'},setTimeout:()=>0,window:{print(){}},
+  const context:any={document:{getElementById:(id:string)=>elements.get(id)||null,querySelector:()=>elements.get('nav'),querySelectorAll:()=>[],createElement:()=>make('download')},
+    sessionStorage:{getItem:(key:string)=>key==='rx_access'?'test-token':'',setItem(){},removeItem(){}},location:{origin:'https://os.example.test',href:'https://os.example.test/commercial-control',replace(){}},
+    navigator:{clipboard:{writeText:(s:string)=>copies.push(s)}},URL,URLSearchParams,Request,Headers,Blob,crypto:{randomUUID:()=> 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'},clearTimeout(){},setTimeout:()=>0,window:{print(){}},
     fetch:async(url:string,options:any)=>{const body=options?.body?JSON.parse(options.body):undefined;calls.push({url,body});let data:any;
       if(url==='/v1/auth/context')data={permissions:['commercial.read']};else if(url==='/v1/commercial-control/catalog')data={plans:[],modules:[]};else if(url==='/v1/commercial-control/schools'&&!options?.method)data=schools;else if(url==='/v1/commercial-control/overview')data={};else data=respond?.(url,body)??{};
-      return{ok:true,status:200,text:async()=>typeof data==='string'?data:JSON.stringify(data)}}};
+      return{ok:true,status:200,headers:new Headers(),text:async()=>typeof data==='string'?data:JSON.stringify(data)}}};
+  context.print=context.window.print;context.window=context;
   vm.runInNewContext(commercialControlFrontend.match(/<script>([\s\S]*?)<\/script>/i)![1]!,context);await flush();
   const E=(id:string)=>elements.get(id);
   async function navigate(page:string){E('nav').onclick({target:{closest:()=>({dataset:{page}})}});await flush()}
@@ -47,3 +48,4 @@ it('selects a school to display all payments and filters active and disabled sch
   b.E('billingSchool').value='alpha-id';b.E('billingSchool').onchange();await flush();expect(b.E('billingRows').innerHTML).toContain('BANK-001');expect(b.E('billingRows').innerHTML).toContain('All Payments (1)');
   await b.navigate('schools');b.E('schoolState').value='disabled';b.E('schoolState').onchange();expect(b.E('schoolRows').innerHTML).toContain('Beta School');expect(b.E('schoolRows').innerHTML).not.toContain('Alpha School');
 });
+

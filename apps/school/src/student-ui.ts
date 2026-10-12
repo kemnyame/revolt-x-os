@@ -1,3 +1,4 @@
+import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 
 export const studentFrontend=applySchoolDesign(`<!doctype html>
@@ -11,6 +12,7 @@ export const studentFrontend=applySchoolDesign(`<!doctype html>
 <section id="portal" class="hide"><div class="top"><div><h2 id="studentName"></h2><div id="schoolName" class="muted"></div></div><button id="logout" class="ghost">Sign out</button></div><div id="summary" class="grid"></div><div class="tabs"><button id="homework" class="ghost">Homework</button><button id="results" class="ghost">Results</button><button id="statement" class="ghost">Academic Statement</button><button id="timetable" class="ghost">Timetable</button><button id="announcements" class="ghost">Announcements</button></div><div id="detail"></div></section>
 </div><div id="toast" class="toast hide"></div>
 <script>
+${schoolSessionScript('student')}
 (function(){
 var token=sessionStorage.getItem('rx_student_token')||'',me=null;var schoolSlug=new URLSearchParams(location.search).get('school')||'';
 function E(i){return document.getElementById(i)}function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function statusBadge(v){var s=String(v||'not_submitted'),cls=/late/.test(s)?'warn':/not_submitted/.test(s)?'gray':/submitted/.test(s)?'info':'';return'<span class="badge '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>'}function toast(m,b){var t=E('toast');if(!t)return;t.textContent=m;t.style.borderColor=b?'#71323a':'#2c6d5c';t.classList.remove('hide');setTimeout(function(){t.classList.add('hide')},3200)}
@@ -58,7 +60,8 @@ async function configureLogin(){
 async function boot(){await configureLogin();if(!token)return;try{me=await raw('/api/student/me');show()}catch(e){sessionStorage.removeItem('rx_student_token');token=''}}
 function show(){E('login').classList.add('hide');E('portal').classList.remove('hide');E('studentName').textContent=me.student.first_name+' '+me.student.last_name;E('schoolName').textContent=me.school.school_name+' • '+(me.student.classroom_name||'No current class');E('summary').innerHTML=[['Admission No.',me.student.admission_no],['Grade',me.student.grade_name||'—'],['Present days',me.attendance.present||0],['Absent days',me.attendance.absent||0]].map(function(x){return'<div class="panel stat"><span class="muted">'+esc(x[0])+'</span><b>'+esc(x[1])+'</b></div>'}).join('');E('homework').click()}
 if(E('schoolSlug'))E('schoolSlug').value=schoolSlug;
-E('signin').onclick=async function(){E('err').textContent='';try{var x=await raw('/api/student/login',{method:'POST',body:JSON.stringify({schoolSlug:E('schoolSlug').value.trim()||undefined,admissionNo:E('admission').value,pin:E('pin').value})});token=x.token;sessionStorage.setItem('rx_student_token',token);me=await raw('/api/student/me');show()}catch(e){E('err').textContent=e.message}}
+if(new URLSearchParams(location.search).get('expired')==='1')E('err').textContent='Your session expired. Please sign in again.';
+E('signin').onclick=async function(){E('err').textContent='';try{var x=await raw('/api/student/login',{method:'POST',body:JSON.stringify({schoolSlug:E('schoolSlug').value.trim()||undefined,admissionNo:E('admission').value,pin:E('pin').value})});token=x.token;sessionStorage.removeItem('rx_student_session_expires_at');sessionStorage.setItem('rx_student_token',token);me=await raw('/api/student/me');show()}catch(e){E('err').textContent=e.message}}
 E('logout').onclick=async function(){try{await raw('/api/student/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_student_token');location.reload()};
 E('homework').onclick=function(){E('detail').innerHTML='<div class="panel"><h3>Homework</h3>'+table(me.homework,[{key:'subject_name',label:'Subject'},{key:'title'},{key:'due_at',label:'Due',render:function(r){return esc(r.due_at?new Date(r.due_at).toLocaleString():'')}},{key:'submission_status',label:'Status',render:function(r){return statusBadge(r.submission_status)}}])+'</div>'};
 E('results').onclick=async function(){var r=await raw('/api/student/latest-report'),cm=r.comments||{},promo=r.promotion||{},third=Number(r.term&&r.term.term_no)===3;E('detail').innerHTML='<div class="panel"><h3>'+(r.term?esc(r.term.name):'Latest Report')+'</h3>'+(third?'<p><b>Cumulative average:</b> '+esc(promo.annualAverage==null?'—':promo.annualAverage+'%')+' &nbsp; <b>Promotion status:</b> '+esc(String(promo.decision||cm.promotion_decision||'Pending').replace('_',' '))+'</p>':'')+table(r.subjects,[{key:'subject_name',label:'Subject'},{key:'class_assessment_score',label:'Continuous Assessment (30%)',render:function(x){return x.class_assessment_score==null?'—':esc(x.class_assessment_score)+' / 30'}},{key:'exam_score',label:'Exam (70%)',render:function(x){return x.exam_score==null?'—':esc(x.exam_score)+' / 70'}},{key:'total',label:'Total',render:function(x){return x.total==null?'—':'<b>'+esc(x.total)+'%</b>'}}])+'<p><b>Class Teacher comment:</b> '+esc(cm.class_teacher_comment||'')+'</p><p><b>Headteacher comment:</b> '+esc(cm.headteacher_comment||'')+'</p><p><b>Next term begins:</b> '+esc(cm.next_term_begins||(r.term&&r.term.next_term_begins)||'—')+'</p></div>'};
@@ -76,3 +79,4 @@ E('announcements').onclick=function(){E('detail').innerHTML='<div class="panel">
 boot();
 })();
 </script></body></html>`,'student');
+

@@ -1,3 +1,4 @@
+import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 
 const schoolFrontendDocument=`<!doctype html>
@@ -43,6 +44,7 @@ input,select,textarea{width:100%;padding:10px;background:#f7f9fb;border:1px soli
 <div id="modal" class="modal hide"><div class="modalbox"><div id="modalBody"></div><button id="closeModal" class="ghost">Close</button></div></div>
 <div id="toast" class="toast hide"></div>
 <script>
+${schoolSessionScript('staff')}
 (function(){
 var token='',ctx=null,current='dashboard',selectedStudentId='';
 var nav=[
@@ -245,10 +247,7 @@ async function boot(){try{
   try{
     ctx=await raw('/api/context')
   }catch(e){
-    if(e.status===401||e.status===403){
-      sessionStorage.removeItem('rx_school_token');token='';
-      location.replace('/login?next='+encodeURIComponent('/'));return
-    }
+    if(e.status===401){window.rxSessionGuard.expire();return}
     if(e.status===429||e.status===502||e.status===503||e.status===504){
       await wait(1200);ctx=await raw('/api/context')
     }else throw e
@@ -1827,3 +1826,4 @@ export const schoolFrontend=applySchoolDesign(
   schoolFrontendDocument.slice(0,schoolScriptStart)+
   '<script src="/school-app.js?v=20260921-access-scale-1" defer></script>'+
   schoolFrontendDocument.slice(schoolScriptEnd+schoolScriptClose.length),'admin');
+

@@ -1,3 +1,4 @@
+import { setSessionDeadline } from './session-ui.js';
 import type { FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 import type { SchoolConfig } from './config.js';
@@ -79,7 +80,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
   // A valid School session must satisfy both its absolute expiry and the organisation's
   // administrator-configured inactivity timeout.
   for(const token of tokens){
-    const row=await maybeOne<{core_context:CoreContext}>(
+    const row=await maybeOne<{core_context:CoreContext;session_expires_at:Date|string}>(
       db,
       `UPDATE school_sessions
          SET last_used_at=now()
@@ -91,10 +92,10 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
              FROM school_security_settings sss
              WHERE sss.organisation_id=school_sessions.organisation_id
            ),30))
-         RETURNING core_context`,
+         RETURNING core_context,LEAST(expires_at,now()+make_interval(mins=>COALESCE((SELECT idle_timeout_minutes FROM school_security_settings sss WHERE sss.organisation_id=school_sessions.organisation_id),30))) session_expires_at`,
       [schoolSessionHash(token)]
     );
-    if(row?.core_context)return{core:row.core_context,token};
+    if(row?.core_context){setSessionDeadline(request,row.session_expires_at);return{core:row.core_context,token}}
   }
 
   throw Object.assign(new Error('School session expired. Please sign in again. The session ended because of inactivity or its configured security time limit.'),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
@@ -201,4 +202,5 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
 
   return {core,role:membership.role,schoolToken:schoolSession?.token};
 }
+
 

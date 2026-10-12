@@ -1,3 +1,5 @@
+import { osSessionScript } from './session-ui.js';
+
 export const commercialControlFrontend=String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -40,6 +42,7 @@ export const commercialControlFrontend=String.raw`<!doctype html>
 <div class="drawer hidden" id="drawer"><div id="drawerBody"></div></div>
 <div class="toast hidden" id="toast"></div>
 <script>
+${osSessionScript}
 (function(){
 var token=sessionStorage.getItem("rx_access")||"",refreshToken=sessionStorage.getItem("rx_refresh")||"",catalog=null,schools=[],current="overview";
 var E=function(id){return document.getElementById(id)};
@@ -55,7 +58,6 @@ function licenceResultToast(result,savedMessage){
 }
 async function raw(path,opt){opt=opt||{};opt.headers=Object.assign({"content-type":"application/json"},opt.headers||{},token?{authorization:"Bearer "+token}:{});
  var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}
- if(r.status===401&&refreshToken){var rr=await fetch("/v1/auth/refresh",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({refreshToken:refreshToken})});if(rr.ok){var n=await rr.json();token=n.accessToken;refreshToken=n.refreshToken;sessionStorage.setItem("rx_access",token);sessionStorage.setItem("rx_refresh",refreshToken);return raw(path,opt)}}
  if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:"Request failed ("+r.status+")");return j}
 function closeModal(){E("modal").classList.add("hidden");E("modalBody").innerHTML=""}
 function showModal(html){E("modalBody").innerHTML=html;E("modal").classList.remove("hidden")}
@@ -249,3 +251,4 @@ E("backOs").onclick=function(){location.href="/"};E("refresh").onclick=function(
 })();
 </script>
 </body></html>`;
+

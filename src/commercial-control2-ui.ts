@@ -1,3 +1,5 @@
+import { osSessionScript } from './session-ui.js';
+
 export const commercialControlFrontend=String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -33,6 +35,7 @@ export const commercialControlFrontend=String.raw`<!doctype html>
 <div class="drawer hidden" id="drawer"><div id="drawerBody"></div></div>
 <div class="toast hidden" id="toast"></div>
 <script>
+${osSessionScript}
 (function(){
 var token=sessionStorage.getItem('rx_access')||'',refreshToken=sessionStorage.getItem('rx_refresh')||'',catalog=null,schools=[],current='overview';
 function E(id){return document.getElementById(id)}
@@ -44,7 +47,6 @@ function nice(msg){msg=String(msg||'');if(/invalid input syntax for type date/i.
 function toast(msg,bad){var t=E('toast');t.textContent=nice(msg);t.style.background=bad?'#8f2731':'#102e50';t.classList.remove('hidden');setTimeout(function(){t.classList.add('hidden')},3600)}
 async function raw(path,opt,asText){opt=opt||{};opt.headers=Object.assign({'content-type':'application/json'},opt.headers||{},token?{authorization:'Bearer '+token}:{});
  var r=await fetch(path,opt),text=await r.text(),j=null;try{j=JSON.parse(text)}catch(e){}
- if(r.status===401&&refreshToken){var rr=await fetch('/v1/auth/refresh',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({refreshToken:refreshToken})});if(rr.ok){var n=await rr.json();token=n.accessToken;refreshToken=n.refreshToken;sessionStorage.setItem('rx_access',token);sessionStorage.setItem('rx_refresh',refreshToken);return raw(path,opt,asText)}}
  if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');return asText?text:j}
 function table(rows,cols,action){if(!rows||!rows.length)return '<div class="empty">No records yet.</div>';return '<div class="tablewrap"><table><thead><tr>'+cols.map(function(c){return '<th>'+esc(c.label||c.key)+'</th>'}).join('')+(action?'<th>Action</th>':'')+'</tr></thead><tbody>'+rows.map(function(r){return '<tr>'+cols.map(function(c){var v=c.render?c.render(r):esc(r[c.key]);return '<td>'+(v==null?'':v)+'</td>'}).join('')+(action?'<td>'+action(r)+'</td>':'')+'</tr>'}).join('')+'</tbody></table></div>'}
 function showModal(h){E('modalBody').innerHTML=h;E('modal').classList.remove('hidden')}function closeModal(){E('modal').classList.add('hidden');E('modalBody').innerHTML=''}function closeDrawer(){E('drawer').classList.add('hidden');E('drawerBody').innerHTML=''}
@@ -159,3 +161,4 @@ document.querySelector('.nav').onclick=function(e){var b=e.target.closest('[data
 })();
 </script>
 </body></html>`;
+

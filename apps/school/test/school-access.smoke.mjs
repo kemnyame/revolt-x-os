@@ -96,6 +96,21 @@ test('invalid or revoked School sessions never fall through to Core authenticati
   await assert.rejects(authorize({headers:{authorization:'Bearer rxs_revoked'}},db,config),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
 });
 
+test('School responses expose the earlier idle or absolute session deadline and expired idle sessions reject access',async()=>{
+  const token='rxs_deadline_test',hash=createHash('sha256').update(token).digest('hex'),core={id:user,organisation_id:org,permissions:[]};
+  await db.query("INSERT INTO school_roles(organisation_id,key,is_active) VALUES($1,'teacher',true)",[org]);
+  await db.query("INSERT INTO school_memberships VALUES($1,$2,'teacher','active',now())",[org,user]);
+  await db.query('INSERT INTO school_security_settings VALUES($1,5)',[org]);
+  await db.query("INSERT INTO school_sessions(token_hash,os_user_id,organisation_id,core_context,expires_at) VALUES($1,$2,$3,$4,now()+interval '1 hour')",[hash,user,org,JSON.stringify(core)]);
+  const request={headers:{cookie:'rx_school_session='+token}};
+  await authorize(request,db,config);
+  let remaining=Date.parse(request.sessionExpiresAt)-Date.now();assert.ok(remaining>290000&&remaining<=301000);
+  await db.query("UPDATE school_sessions SET expires_at=now()+interval '1 minute' WHERE token_hash=$1",[hash]);
+  await authorize(request,db,config);remaining=Date.parse(request.sessionExpiresAt)-Date.now();assert.ok(remaining>50000&&remaining<=61000);
+  await db.query("UPDATE school_sessions SET last_used_at=now()-interval '6 minutes' WHERE token_hash=$1",[hash]);
+  await assert.rejects(authorize({headers:{cookie:'rx_school_session='+token}},db,config),{statusCode:401,code:'SCHOOL_SESSION_EXPIRED'});
+});
+
 test('concurrent failures are counted atomically and repeated sign-in failures are blocked',async()=>{
   await Promise.all(Array.from({length:10},()=>recordPortalLoginFailure(db,'staff','same',10,15)));
   assert.equal((await db.query('SELECT failures FROM portal_login_throttle')).rows[0].failures,10);
@@ -145,3 +160,4 @@ test('administrator link context verifies the exact account and canonical school
   const r=await app.inject({url});assert.equal(r.statusCode,200,r.body);assert.deepEqual(r.json(),{administrator:{id:user,email:'admin@example.test',name:'Primary Admin'},school:{id:'alpha',name:'Alpha School'}});assert.equal(r.headers['cache-control'],'no-store');
   wrong=true;assert.equal((await app.inject({url})).statusCode,503);assert.equal((await app.inject({url:'/api/auth/admin-login-context?schoolId=alpha&adminUserId=wrong'})).statusCode,400);
 });
+

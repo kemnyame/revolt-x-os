@@ -1,3 +1,4 @@
+import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 
 export const parentFrontend=applySchoolDesign(`<!doctype html>
@@ -21,6 +22,7 @@ export const parentFrontend=applySchoolDesign(`<!doctype html>
 <section id="portal" class="hide"><div class="top"><div><h2 id="guardianName"></h2><div class="muted" id="schoolName"></div></div><button id="logout" class="ghost">Sign out</button></div><div class="children-head"><div><h3>My Children</h3><div id="childrenHelp" class="muted"></div></div></div><div id="children" class="grid"></div><div id="studentArea"></div></section>
 </div><div id="toast" class="toast hide"></div>
 <script>
+${schoolSessionScript('parent')}
 (function(){
 var token=sessionStorage.getItem('rx_parent_token')||'',me=null,currentStudent=null;var schoolSlug=new URLSearchParams(location.search).get('school')||'';
 function E(i){return document.getElementById(i)}function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function statusBadge(v){var s=String(v||'not_submitted'),cls=/late/.test(s)?'warn':/not_submitted/.test(s)?'gray':/submitted/.test(s)?'info':/graded/.test(s)?'':'gray';return'<span class="badge '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>'}function toast(m,b){var t=E('toast');if(!t)return;t.textContent=m;t.style.borderColor=b?'#71323a':'#2c6d5c';t.classList.remove('hide');setTimeout(function(){t.classList.add('hide')},3200)}
@@ -101,8 +103,10 @@ async function loadStudent(id){
  E('tabHomework').click();
 }
 if(E('schoolSlug'))E('schoolSlug').value=schoolSlug;
-E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({schoolSlug:E('schoolSlug').value.trim()||undefined,phone:E('phone').value,studentId:E('admission').value})});token=x.token;sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
+if(new URLSearchParams(location.search).get('expired')==='1')E('loginError').textContent='Your session expired. Please sign in again.';
+E('signin').onclick=async function(){E('loginError').textContent='';try{var x=await raw('/api/parent/login',{method:'POST',body:JSON.stringify({schoolSlug:E('schoolSlug').value.trim()||undefined,phone:E('phone').value,studentId:E('admission').value})});token=x.token;sessionStorage.removeItem('rx_parent_session_expires_at');sessionStorage.setItem('rx_parent_token',token);me=await raw('/api/parent/me');showPortal()}catch(e){E('loginError').textContent=e.message}};
 E('logout').onclick=async function(){try{await raw('/api/parent/logout',{method:'POST',body:'{}'})}catch(e){}sessionStorage.removeItem('rx_parent_token');location.reload()};
 boot();
 })();
 </script></body></html>`,'parent');
+
