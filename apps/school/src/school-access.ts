@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import {sendOsPasswordReset} from './os-password-email.js';
 import {createHash} from 'node:crypto';
 import type { SchoolConfig } from './config.js';
 import type { SchoolDb } from './db.js';
@@ -73,11 +74,11 @@ export function schoolAuthValidationMessage(issues: any[]) {
   }))].join(' ');
 }
 
-/** Passwords belong to the Core user, so revoke that user's sessions across every School tenant. */
-export async function revokeSchoolUserSessions(db: SchoolDb, userId: string, keepSessionHash?: string) {
+/** Password changes revoke only the affected school; an omitted scope is reserved for explicit global revocation. */
+export async function revokeSchoolUserSessions(db: SchoolDb, userId: string, keepSessionHash?: string,organisationId?:string) {
   const result = await db.query(`UPDATE school_sessions SET revoked_at=now()
     WHERE os_user_id=$1 AND revoked_at IS NULL
-      AND ($2::text IS NULL OR token_hash<>$2) RETURNING id`, [userId, keepSessionHash ?? null]);
+      AND ($2::text IS NULL OR token_hash<>$2) AND ($3::uuid IS NULL OR organisation_id=$3) RETURNING id`, [userId, keepSessionHash ?? null,organisationId??null]);
   return result.rowCount ?? 0;
 }
 
@@ -111,7 +112,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     }).catch(()=>null);
     const payload:any=await changed?.json().catch(()=>null);
     if(!changed?.ok||payload?.changed!==true)throw Object.assign(new Error(payload?.error?.message||'Core Revolt-X OS could not update the password. Please try again.'),{statusCode:changed?.status&&changed.status>=400?changed.status:503});
-    await revokeSchoolUserSessions(options.db,access.core.id,keepSessionHash);
+    await revokeSchoolUserSessions(options.db,access.core.id,keepSessionHash,access.core.organisation_id);
     try{await options.passwordChangedAudit?.(access.core,payload.staffId??access.core.employee_number??null)}
     catch(error){request.log.error({err:error},'School password changed but its local audit could not be written');}
     if(access.core.dedicated_admin){
@@ -124,10 +125,18 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     const profile=await schoolRoleProfile(options.db,access.core.organisation_id,access.role);
     return{changed:true,redirectTo:profile?.portal_mode==='teacher'?'/teacher':'/'};
   });
+  app.post('/api/internal/os-password-reset-email',async(request,reply)=>{
+    options.requireCoreServiceRequest(request);
+    reply.header('cache-control','no-store');
+    const body=z.object({email:z.string().trim().toLowerCase().email(),resetToken:z.string().min(32).max(500).regex(/^[A-Za-z0-9_-]+$/)}).parse(request.body);
+    try{await sendOsPasswordReset(options.config,body.email,body.resetToken)}
+    catch{throw Object.assign(new Error('OS recovery email delivery is unavailable'),{statusCode:503});}
+    return{sent:true};
+  });
   app.post('/api/internal/revoke-user-sessions', async request => {
     options.requireCoreServiceRequest(request);
-    const body = z.object({ userId: z.string().uuid(), keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional() }).parse(request.body);
-    return { revoked: await revokeSchoolUserSessions(options.db, body.userId, body.keepSessionHash) };
+    const body = z.object({ userId: z.string().uuid(), keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),organisationId:z.string().uuid().optional() }).parse(request.body);
+    return { revoked: await revokeSchoolUserSessions(options.db, body.userId, body.keepSessionHash,body.organisationId) };
   });
 
   app.post('/api/auth/admin-password-reset', async (request, reply) => withSchoolAuthThrottle(options.db, 'admin_reset', request, async () => {
@@ -150,7 +159,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
 
     // Core also calls the trusted revocation endpoint before consuming a reset token.
     // Retain a local fallback for a rolling deployment against an older Core response.
-    if (payload.userId) await revokeSchoolUserSessions(options.db, payload.userId);
+    if (payload.userId) await revokeSchoolUserSessions(options.db, payload.userId,undefined,payload.organisationId);
     else await options.db.query("UPDATE school_sessions SET revoked_at=now() WHERE lower(core_context->>'email')=lower($1) AND revoked_at IS NULL", [payload.email]);
     const school = typeof payload.organisationSlug === 'string' ? payload.organisationSlug : body.schoolId;
     const adminLoginUrl = (school ? '/s/' + encodeURIComponent(school) + '/admin-login' : '/admin-login')+(payload.userId?'?admin='+encodeURIComponent(payload.userId):'');
@@ -159,3 +168,4 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     return { reset: true, email: payload.email, schoolId: school ?? null, adminLoginUrl };
   }));
 }
+

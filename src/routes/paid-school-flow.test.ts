@@ -96,7 +96,7 @@ describe('paid school setup and primary administrator access',()=>{
   it('preserves an existing account password and prevents invoicing an inactive administrator',async()=>{
     await client.query("INSERT INTO users(email,password_hash,first_name,last_name,status) VALUES('alpha@example.test','existing-hash','Existing','Admin','disabled')");
     expect((await send('POST','/v1/commercial-control/school-orders',{school:school(),amount:100})).statusCode).toBe(409);
-    await client.query("UPDATE users SET status='active' WHERE email='alpha@example.test'");const {result}=await paidSchool();expect(result.administrator.existingUser).toBe(true);expect(result.administrator.temporaryPassword).toBeNull();expect((await client.query("SELECT password_hash FROM users WHERE email='alpha@example.test'")).rows[0].password_hash).toBe('existing-hash');
+    await client.query("UPDATE users SET status='active' WHERE email='alpha@example.test'");const {result}=await paidSchool();expect(result.administrator.existingUser).toBe(true);expect(result.administrator.temporaryPassword).toMatch(/^SchAdm!A1[0-9a-f]{32}$/);expect(result.administrator.mustChangePassword).toBe(true);expect((await client.query("SELECT password_hash FROM users WHERE email='alpha@example.test'")).rows[0].password_hash).toBe('existing-hash');
     expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(0);
     expect((await client.query("SELECT password_hash FROM users WHERE email='alpha@example.test'")).rows[0].password_hash).toBe('existing-hash');
   });
@@ -107,8 +107,8 @@ describe('paid school setup and primary administrator access',()=>{
       await client.query('INSERT INTO organisation_memberships(organisation_id,user_id,status,employee_number) VALUES($1,$2,$3,$4)',[result.organisation.id,u.id,membership,email]);
     }
     expect(await bootstrapSchoolStaffPasswords(db,'LegacyDefaultPass123')).toBe(1);expect(await bootstrapSchoolStaffPasswords(db,'DifferentDefaultPass123')).toBe(0);
-    const users=(await client.query("SELECT u.*,m.status membership_status FROM users u JOIN organisation_memberships m ON m.user_id=u.id WHERE u.email IN('legacy@example.test','disabled@example.test','suspended@example.test','changed@example.test')")).rows;
-    const legacy=users.find(x=>x.email==='legacy@example.test');expect(legacy.status).toBe('active');expect(await bcrypt.compare('LegacyDefaultPass123',legacy.password_hash)).toBe(true);
+    const users=(await client.query("SELECT u.*,m.status membership_status,sc.password_hash school_password_hash FROM users u JOIN organisation_memberships m ON m.user_id=u.id JOIN school_credentials sc ON sc.user_id=u.id AND sc.organisation_id=m.organisation_id WHERE u.email IN('legacy@example.test','disabled@example.test','suspended@example.test','changed@example.test')")).rows;
+    const legacy=users.find(x=>x.email==='legacy@example.test');expect(legacy.status).toBe('active');expect(await bcrypt.compare('LegacyDefaultPass123',legacy.school_password_hash)).toBe(true);expect(legacy.password_hash).toBe('deliberate-password-hash');
     for(const email of ['disabled','suspended','changed'])expect(users.find(x=>x.email===email+'@example.test').password_hash).toBe('deliberate-password-hash');
     expect(users.find(x=>x.email==='disabled@example.test').status).toBe('disabled');expect(users.find(x=>x.email==='suspended@example.test').membership_status).toBe('suspended');
   });
@@ -188,3 +188,60 @@ describe('administrator reset to its specific login',()=>{
     expect((await send('POST','/v1/commercial-control/schools/'+result.organisation.id+'/admin-invite',{})).statusCode).toBe(404);
   });
 });
+
+
+describe('OS owner with administrator accounts across several schools',()=>{
+  it('school creation, reassignment, first-login change and reset never overwrite the OS or another school password',async()=>{
+    const osPassword='OwnerOsOriginalPass123';await client.query('UPDATE users SET password_hash=$1 WHERE id=$2',[await bcrypt.hash(osPassword,12),actor]);
+    const owner=(await client.query("INSERT INTO organisation_memberships(organisation_id,user_id,status,joined_at) VALUES($1,$2,'active',now()-interval '10 days') RETURNING id",[provider,actor])).rows[0];
+    await client.query("INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id) SELECT $1,id,'organisation',$2 FROM roles WHERE key='owner'",[owner.id,provider]);
+    await client.query("INSERT INTO sessions(user_id,organisation_id,refresh_token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')",[actor,provider,'o'.repeat(64)]);
+    const before=(await client.query('SELECT password_hash,updated_at FROM users WHERE id=$1',[actor])).rows[0];
+    const results:any[]=[];
+    for(const name of ['alpha','beta']){
+      const invoice=await issue(name);await client.query("UPDATE saas_school_orders SET school_details=jsonb_set(school_details,'{adminEmail}',to_jsonb('oem@example.test'::text)) WHERE id=$1",[invoice.id]);await pay(invoice);const response=await create(invoice);expect(response.statusCode,response.body).toBe(201);results.push(response.json());
+    }
+    const alpha=results[0],beta=results[1],betaPassword=beta.administrator.temporaryPassword;
+    expect(alpha.administrator.temporaryPassword).not.toBe(betaPassword);expect(alpha.administrator.mustChangePassword).toBe(true);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',email:'oem@example.test',password:alpha.administrator.temporaryPassword})).statusCode).toBe(200);
+    expect((await internal('change-staff-password',{schoolId:'alpha',userId:actor,newPassword:'AlphaFirstPersonal123'})).statusCode).toBe(200);
+    const assigned=await send('POST','/v1/commercial-control/schools/'+alpha.organisation.id+'/admin',{email:'oem@example.test',firstName:'OEM',lastName:'Owner',password:'AlphaReassignedPass123'});expect(assigned.statusCode,assigned.body).toBe(200);
+    const invite=await send('POST','/v1/commercial-control/schools/'+alpha.organisation.id+'/admin-invite',{}),token=new URL(invite.json().resetUrl).searchParams.get('token');
+    const reset=await send('POST','/v1/auth/password-reset/confirm',{token,password:'AlphaResetPersonal123',purpose:'school_admin'});expect(reset.statusCode,reset.body).toBe(200);
+    const after=(await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0];expect(after.password_hash).toBe(before.password_hash);
+    expect((await client.query('SELECT revoked_at FROM sessions WHERE organisation_id=$1',[provider])).rows[0].revoked_at).toBeNull();
+    const login=await send('POST','/v1/auth/login',{email:'oem@example.test',password:osPassword});expect(login.statusCode,login.body).toBe(200);expect(login.json().organisationId).toBe(provider);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',email:'oem@example.test',password:'AlphaResetPersonal123'})).statusCode).toBe(200);
+    expect((await internal('authenticate-admin',{schoolId:'beta',email:'oem@example.test',password:betaPassword})).statusCode).toBe(200);
+    expect((await internal('authenticate-admin',{schoolId:'beta',email:'oem@example.test',password:'AlphaResetPersonal123'})).statusCode).toBe(401);
+    expect(fetchMock.mock.calls.filter(([url])=>String(url).includes('/revoke-user-sessions')).every(([,init])=>JSON.parse(init!.body as string).organisationId===alpha.organisation.id)).toBe(true);
+  },25000);
+  it('selects an active OS workspace when an older membership is suspended',async()=>{
+    await client.query('UPDATE users SET password_hash=$1 WHERE id=$2',[await bcrypt.hash('ActiveOwnerPass123',12),actor]);
+    await client.query("INSERT INTO organisation_memberships(organisation_id,user_id,status,joined_at) VALUES($1,$3,'suspended',now()-interval '10 days'),($2,$3,'active',now())",[other,provider,actor]);
+    const result=await send('POST','/v1/auth/login',{email:'oem@example.test',password:'ActiveOwnerPass123'});expect(result.statusCode,result.body).toBe(200);expect(result.json().organisationId).toBe(provider);
+    expect((await send('POST','/v1/auth/login',{email:'oem@example.test',password:'ActiveOwnerPass123',organisationId:other})).statusCode).toBe(401);
+  });
+  it('requests OS recovery privately and keeps school tokens reusable',async()=>{
+    const {result}=await paidSchool();
+    const invite=await send('POST','/v1/commercial-control/schools/'+result.organisation.id+'/admin-invite',{}),schoolToken=new URL(invite.json().resetUrl).searchParams.get('token');
+    fetchMock.mockResolvedValue(json({sent:true}));fetchMock.mockClear();
+    const response=await send('POST','/v1/auth/password-reset/request',{email:'alpha@example.test'});expect(response.statusCode,response.body).toBe(200);expect(response.json()).toEqual({accepted:true});expect(fetchMock).toHaveBeenCalledOnce();
+    const body=JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);expect(body.email).toBe('alpha@example.test');expect(body.resetToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const unknown=await send('POST','/v1/auth/password-reset/request',{email:'unknown@example.test'});expect(unknown.json()).toEqual(response.json());expect(fetchMock).toHaveBeenCalledOnce();
+    const reset=await send('POST','/v1/auth/password-reset/confirm',{token:body.resetToken,password:'NewOsPersonal123',purpose:'account'});expect(reset.statusCode,reset.body).toBe(200);
+    expect((await internal('authenticate-admin',{schoolId:'alpha',email:'alpha@example.test',password:result.administrator.temporaryPassword})).statusCode).toBe(200);
+    fetchMock.mockResolvedValue(json({revoked:0}));expect((await send('POST','/v1/auth/password-reset/confirm',{token:schoolToken,password:'NewSchoolPersonal123',purpose:'school_admin'})).statusCode).toBe(200);
+  },15000);
+});
+
+it('school staff creation and temporary resets preserve the existing OS account and use the scoped Staff ID password',async()=>{
+  const {result}=await paidSchool(),osHash=await bcrypt.hash('StaffOsOriginal123',12);await client.query('UPDATE users SET password_hash=$1 WHERE id=$2',[osHash,actor]);
+  const created=await internal('users',{organisationId:result.organisation.id,actorUserId:result.administrator.id,email:'oem@example.test',firstName:'Existing',lastName:'Owner',roleKey:'owner',temporaryPassword:'StaffFirstTemporary123'});expect(created.statusCode,created.body).toBe(201);const membership=created.json();
+  const reset=await internal('users/'+membership.id+'/password-reset',{organisationId:result.organisation.id,actorUserId:result.administrator.id,temporaryPassword:'StaffSecondTemporary123'});expect(reset.statusCode,reset.body).toBe(200);
+  const signedIn=await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'StaffSecondTemporary123'});expect(signedIn.statusCode,signedIn.body).toBe(200);expect(signedIn.json().must_change_password).toBe(true);
+  expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'StaffOsOriginal123'})).statusCode).toBe(401);
+  expect((await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash).toBe(osHash);
+  const change=await internal('change-staff-password',{schoolId:'alpha',userId:actor,newPassword:'StaffPersonalSchool123'});expect(change.statusCode,change.body).toBe(200);
+  expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'StaffPersonalSchool123'})).statusCode).toBe(200);expect((await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash).toBe(osHash);
+},15000);
