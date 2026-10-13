@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.revoltx.school" android:versionCode="2" android:versionName="2.0.0">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.revoltx.school" android:versionCode="3" android:versionName="3.0.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
     <application android:label="Revolt School" android:icon="@drawable/app_icon" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="false" android:hardwareAccelerated="true" android:supportsRtl="true">

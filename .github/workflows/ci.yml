@@ -32,7 +32,6 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           JWT_SECRET: test-only-ci-secret-that-is-at-least-32-characters
 
-
   school-verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,3 +51,42 @@ jobs:
       - name: Build and test Revolt-X School
         working-directory: apps/school
         run: npm test
+
+  android-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Ensure Android 35 SDK is available
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Compile Android resources and Java client
+        working-directory: apps/school-android
+        run: |
+          rm -rf build/ci && mkdir -p build/ci/generated build/ci/classes
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" compile --dir res -o build/ci/resources.zip
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" link -o build/ci/resources.apk --manifest AndroidManifest.xml -I "$ANDROID_HOME/platforms/android-35/android.jar" --min-sdk-version 26 --target-sdk-version 35 --java build/ci/generated -A assets build/ci/resources.zip
+          javac --release 8 -cp "$ANDROID_HOME/platforms/android-35/android.jar" -d build/ci/classes $(find src build/ci/generated -name '*.java' -print)
+
+      - name: Test Android navigation and document bridge
+        working-directory: apps/school-android
+        run: |
+          mkdir -p build/ci/tests
+          javac --release 8 -d build/ci/tests src/com/revoltx/school/SecurityRules.java test/SecurityRulesTest.java
+          java -cp build/ci/tests SecurityRulesTest
+          node test/bridge.smoke.mjs

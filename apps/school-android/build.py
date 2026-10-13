@@ -24,7 +24,7 @@ def run(*args):
 
 def main():
     if BUILD.exists(): shutil.rmtree(BUILD)
-    for path in [BUILD / 'classes', BUILD / 'dex', SIGNING, OUTPUT.parent]: path.mkdir(parents=True, exist_ok=True)
+    for path in [BUILD / 'classes', BUILD / 'dex', BUILD / 'generated', SIGNING, OUTPUT.parent]: path.mkdir(parents=True, exist_ok=True)
     os.chmod(SIGNING, 0o700)
     keystore = SIGNING / 'revolt-school.p12'
     password = SIGNING / 'keystore-password.txt'
@@ -35,8 +35,9 @@ def main():
         os.chmod(keystore, 0o600)
     if not password.exists(): raise RuntimeError('The saved signing password is required to update this application.')
     run(TOOLS / 'aapt2', 'compile', '--dir', ROOT / 'res', '-o', BUILD / 'resources.zip')
-    run(TOOLS / 'aapt2', 'link', '-o', BUILD / 'resources.apk', '--manifest', ROOT / 'AndroidManifest.xml', '-I', PLATFORM, '--min-sdk-version', '26', '--target-sdk-version', '35', '-A', ROOT / 'assets', BUILD / 'resources.zip')
-    run('java', 'com.sun.tools.javac.Main', '--release', '8', '-cp', PLATFORM, '-d', BUILD / 'classes', *sorted((ROOT / 'src').rglob('*.java')))
+    run(TOOLS / 'aapt2', 'link', '-o', BUILD / 'resources.apk', '--manifest', ROOT / 'AndroidManifest.xml', '-I', PLATFORM, '--min-sdk-version', '26', '--target-sdk-version', '35', '--java', BUILD / 'generated', '-A', ROOT / 'assets', BUILD / 'resources.zip')
+    java_sources = [*sorted((ROOT / 'src').rglob('*.java')), *sorted((BUILD / 'generated').rglob('*.java'))]
+    run('java', 'com.sun.tools.javac.Main', '--release', '8', '-cp', PLATFORM, '-d', BUILD / 'classes', *java_sources)
     run('java', '-cp', TOOLS / 'lib' / 'd8.jar', 'com.android.tools.r8.D8', '--min-api', '26', '--lib', PLATFORM, '--output', BUILD / 'dex', *sorted((BUILD / 'classes').rglob('*.class')))
     unsigned = BUILD / 'unsigned.apk'; shutil.copyfile(BUILD / 'resources.apk', unsigned)
     with zipfile.ZipFile(unsigned, 'a', compression=zipfile.ZIP_DEFLATED) as apk:
