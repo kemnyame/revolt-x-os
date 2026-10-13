@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.revoltx.school" android:versionCode="4" android:versionName="3.1.0">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.revoltx.school" android:versionCode="5" android:versionName="3.2.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
