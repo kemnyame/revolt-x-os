@@ -48,9 +48,9 @@ async function revokeTemporaryParentSession(app:FastifyInstance,token:string){
 }
 
 export async function registerMobilePhoneAuth(app:FastifyInstance){
-  const config=loadSchoolConfig();
   app.get('/api/auth/admin-reset-context',async(request,reply)=>{
     reply.header('cache-control','no-store');
+    const config=loadSchoolConfig();
     const query=z.object({token:z.string().trim().min(32).max(500),schoolId:z.string().trim().min(1).max(120)}).parse(request.query);
     const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/password-reset/context?'+new URLSearchParams({token:query.token,schoolId:query.schoolId,purpose:'school_admin'}).toString();
     const response=await fetch(url,{headers:{accept:'application/json'},signal:AbortSignal.timeout(12000)}).catch(()=>null);
@@ -62,6 +62,7 @@ export async function registerMobilePhoneAuth(app:FastifyInstance){
 
   app.post('/api/mobile/parent/phone-auth/start',async(request,reply)=>{
     reply.header('cache-control','no-store');cleanup();
+    const config=loadSchoolConfig();
     const body=z.object({
       schoolSlug:z.string().trim().min(1).max(120),
       phone:z.string().trim().min(5).max(60),
