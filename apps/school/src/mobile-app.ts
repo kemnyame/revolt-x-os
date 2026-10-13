@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { mobileIcons } from './mobile-icons.js';
 import { mobileExperienceCss, mobileExperienceFrontend, mobileExperienceScript, mobileRoleChoiceFrontend } from './mobile-experience.js';
+import { mobilePolishCss, mobilePolishScript } from './mobile-polish.js';
+import { registerMobilePhoneAuth } from './mobile-phone-auth.js';
 
 /** Mobile presentation reuses the existing authenticated portals and permissions. */
 export const schoolMobileCss = String.raw`
@@ -58,18 +60,22 @@ self.addEventListener('fetch',event=>{
 });
 `;
 
-export const schoolMobileVersion=createHash('sha256').update(schoolMobileCss+schoolMobileScript+schoolServiceWorker).digest('hex').slice(0,12);
-export const schoolMobileHead=`<link rel="manifest" href="/school.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Revolt School"><link rel="apple-touch-icon" href="/school-icon-192.png"><link rel="icon" type="image/png" href="/school-icon-192.png"><link rel="stylesheet" href="/school-mobile.css?v=${schoolMobileVersion}"><script src="/school-mobile.js?v=${schoolMobileVersion}" defer></script>`;
+export const schoolMobileVersion=createHash('sha256').update(schoolMobileCss+mobilePolishCss+schoolMobileScript+mobilePolishScript+schoolServiceWorker).digest('hex').slice(0,12);
+const polishHead=`<link rel="stylesheet" href="/school-polish.css?v=${schoolMobileVersion}"><script src="/school-polish.js?v=${schoolMobileVersion}" defer></script>`;
+export const schoolMobileHead=`<link rel="manifest" href="/school.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Revolt School"><link rel="apple-touch-icon" href="/school-icon-192.png"><link rel="icon" type="image/png" href="/school-icon-192.png"><link rel="stylesheet" href="/school-mobile.css?v=${schoolMobileVersion}"><script src="/school-mobile.js?v=${schoolMobileVersion}" defer></script>${polishHead}`;
 
 export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_name:'Revolt School',description:'A focused mobile app for teachers and parents.',lang:'en',start_url:'/mobile',scope:'/mobile',display:'standalone',background_color:'#f6f7f3',theme_color:'#24634e',prefer_related_applications:false,icons:[{src:'/school-icon-192.png',sizes:'192x192',type:'image/png',purpose:'any maskable'},{src:'/school-icon-512.png',sizes:'512x512',type:'image/png',purpose:'any maskable'}],shortcuts:[{name:'Teacher app',url:'/mobile/teacher'},{name:'Parent app',url:'/mobile/parent'}]};
 
 export { mobileRoleChoiceFrontend as schoolMobileFrontend };
 
 export async function registerSchoolMobile(app:FastifyInstance){
- for(const path of ['/mobile','/mobile/'])app.get(path,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileRoleChoiceFrontend));
- for(const role of ['teacher','parent'] as const)app.get('/mobile/'+role,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileExperienceFrontend(role)));
+ await registerMobilePhoneAuth(app);
+ for(const path of ['/mobile','/mobile/'])app.get(path,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileRoleChoiceFrontend.replace('</head>',polishHead+'</head>')));
+ for(const role of ['teacher','parent'] as const)app.get('/mobile/'+role,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileExperienceFrontend(role).replace('</head>',polishHead+'</head>')));
  app.get('/school-native.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(mobileExperienceCss));
  app.get('/school-native.js',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(mobileExperienceScript));
+ app.get('/school-polish.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(mobilePolishCss));
+ app.get('/school-polish.js',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(mobilePolishScript));
  app.get('/school.webmanifest',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/manifest+json').send(schoolMobileManifest));
  app.get('/school-mobile.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolMobileCss));
  app.get('/school-mobile.js',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolMobileScript));
