@@ -48,7 +48,7 @@ export const schoolSignInStartupScript = String.raw`
   }
   async function start(progress){
     var deadline=Date.now()+90000;
-    var status=await read('/api/system/core-status',5000,false),core=status.body&&status.body.core;
+    var status=await read('/api/system/core-status',15000,false),core=status.body&&status.body.core;
     if(status.ok&&core&&core.healthy===true)return;
     var url=core&&publicHealthUrl(core.url);
     if(!url)throw unavailable();
@@ -57,7 +57,7 @@ export const schoolSignInStartupScript = String.raw`
       await read(url,Math.max(1,Math.min(15000,deadline-Date.now())),true);
       if(Date.now()>=deadline)break;
       // Confirm the original School-to-Core connection before sending a password.
-      var verified=await read('/api/system/core-status',Math.max(1,Math.min(5000,deadline-Date.now())),false);
+      var verified=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
       if(verified.ok&&verified.body&&verified.body.core&&verified.body.core.healthy===true){
         if(progress)progress('Signing in…');return;
       }
