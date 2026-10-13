@@ -4,7 +4,7 @@ import java.net.URI;
 
 /** Strict origin checks also cover redirects and popup navigation. */
 public final class SecurityRules {
-    public static final String ORIGIN = "https://revolt-x-school.onrender.com";
+    public static final String ORIGIN = "https://revolt-x-school-production.up.railway.app";
     public static final String HOME = ORIGIN + "/mobile";
     public static final int MAX_DOWNLOAD = 16 * 1024 * 1024;
 
@@ -12,7 +12,7 @@ public final class SecurityRules {
         try {
             URI uri = new URI(input);
             return "https".equalsIgnoreCase(uri.getScheme())
-                && "revolt-x-school.onrender.com".equalsIgnoreCase(uri.getHost())
+                && "revolt-x-school-production.up.railway.app".equalsIgnoreCase(uri.getHost())
                 && uri.getUserInfo() == null && (uri.getPort() == -1 || uri.getPort() == 443);
         } catch (Exception ignored) { return false; }
     }
