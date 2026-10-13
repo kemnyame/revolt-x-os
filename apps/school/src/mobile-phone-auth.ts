@@ -49,6 +49,17 @@ async function revokeTemporaryParentSession(app:FastifyInstance,token:string){
 }
 
 export async function registerMobilePhoneAuth(app:FastifyInstance){
+  app.get('/api/auth/admin-reset-context',async(request,reply)=>{
+    reply.header('cache-control','no-store');
+    const query=z.object({token:z.string().trim().min(32).max(500),schoolId:z.string().trim().min(1).max(120)}).parse(request.query);
+    const url=config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/password-reset/context?'+new URLSearchParams({token:query.token,schoolId:query.schoolId,purpose:'school_admin'}).toString();
+    const response=await fetch(url,{headers:{accept:'application/json'},signal:AbortSignal.timeout(12000)}).catch(()=>null);
+    if(!response)throw Object.assign(new Error('The administrator reset service is temporarily unavailable.'),{statusCode:503});
+    const body=await response.json().catch(()=>null) as any;
+    if(!response.ok)throw Object.assign(new Error(body?.error?.message||'This administrator reset link is invalid or expired.'),{statusCode:response.status});
+    return body;
+  });
+
   app.post('/api/mobile/parent/phone-auth/start',async(request,reply)=>{
     reply.header('cache-control','no-store');cleanup();
     const body=z.object({
