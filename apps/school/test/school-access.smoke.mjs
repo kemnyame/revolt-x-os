@@ -7,6 +7,7 @@ import { registerSchoolAccessRoutes, schoolAuthValidationMessage, schoolIdentifi
 import { recordPortalLoginFailure, assertPortalLoginAllowed } from '../dist/reliability.js';
 import { authorize } from '../dist/auth.js';
 import { createHash } from 'node:crypto';
+import { authenticateCoreSchoolLogin } from '../dist/core-school-login.js';
 
 const pg=new PGlite();
 await pg.exec(`CREATE TABLE portal_login_throttle(portal text,throttle_key text,failures int,window_started_at timestamptz,blocked_until timestamptz,last_failure_at timestamptz,updated_at timestamptz,PRIMARY KEY(portal,throttle_key));
@@ -19,6 +20,19 @@ const user='11111111-1111-4111-8111-111111111111',org='22222222-2222-4222-8222-2
 const config={NODE_ENV:'test',CORE_OS_URL:'https://core.example.test',CORE_SERVICE_KEY:'test-only-service-key'};
 beforeEach(()=>pg.exec('TRUNCATE portal_login_throttle,school_sessions,school_memberships,school_roles,school_security_settings;'));
 after(()=>pg.close());
+
+test('service startup failures do not consume the staff password failure allowance',async()=>{
+  const request={ip:'192.0.2.10',body:{schoolId:'alpha',staffId:'STF-000001',password:'FixtureOnly123!'}};
+  await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,()=>authenticateCoreSchoolLogin(config,'staff',request.body,{
+    fetchCore:async()=>new Response('Service starting',{status:429}),wait:async()=>{}
+  })),{statusCode:429});
+  assert.equal((await db.query('SELECT count(*) count FROM portal_login_throttle')).rows[0].count,0);
+  await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,()=>authenticateCoreSchoolLogin(config,'staff',request.body,{
+    fetchCore:async()=>new Response(JSON.stringify({error:{code:'INVALID_CREDENTIALS',message:'Invalid school, Staff ID or password'}}),{status:401}),wait:async()=>{}
+  })),{statusCode:401});
+  const failures=(await db.query('SELECT failures FROM portal_login_throttle')).rows;
+  assert.equal(failures.length,2);assert.ok(failures.every(row=>row.failures===1));
+});
 const response=(payload,status=200)=>new Response(JSON.stringify(payload),{status,headers:{'content-type':'application/json'}});
 async function appFor(t,fetchCore,passwordChangedAudit){
   const app=Fastify();t.after(()=>app.close());

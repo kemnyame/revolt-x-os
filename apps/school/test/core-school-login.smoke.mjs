@@ -1,0 +1,75 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { authenticateCoreSchoolLogin } from '../dist/core-school-login.js';
+
+const config={CORE_OS_URL:'https://core.example.test/',CORE_SERVICE_KEY:'test-only-service-key'};
+const credentials={schoolId:'alpha',staffId:'STF-000001',password:'FixturePassword123! '};
+const account={id:'fixture-user',organisation_id:'fixture-school',membership_id:'fixture-membership',must_change_password:true};
+const response=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json',...headers}});
+
+test('staff sign-in recovers from startup throttling and an unavailable gateway without changing the supplied credentials',async()=>{
+  const calls=[],pauses=[],replies=[new Response('Service is starting',{status:429}),response({message:'Gateway unavailable'},503),response(account)];
+  const result=await authenticateCoreSchoolLogin(config,'staff',credentials,{
+    fetchCore:async(url,options)=>{calls.push({url,options});return replies.shift()},wait:async milliseconds=>pauses.push(milliseconds)
+  });
+  assert.deepEqual(result,account);assert.equal(calls.length,3);assert.deepEqual(pauses,[750,1500]);
+  for(const call of calls){assert.equal(call.url,'https://core.example.test/v1/internal/school/authenticate-staff');assert.deepEqual(JSON.parse(call.options.body),credentials);assert.equal(call.options.headers['x-revolt-service-key'],config.CORE_SERVICE_KEY);assert.ok(call.options.signal instanceof AbortSignal)}
+});
+
+test('wrong passwords and disabled staff are returned immediately and are never retried',async()=>{
+  for(const status of [401,403]){
+    let calls=0;const message=status===401?'Invalid school, Staff ID or password':'This staff account is not active';
+    await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
+      fetchCore:async()=>{calls++;return response({error:{code:status===401?'INVALID_CREDENTIALS':'ACCOUNT_INACTIVE',message}},status)},wait:()=>assert.fail('Credential failures must not be retried')
+    }),{statusCode:status,message});assert.equal(calls,1);
+  }
+});
+
+test('persistent service throttling reports a busy service rather than invalid staff credentials',async()=>{
+  let calls=0;
+  await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
+    fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429)},wait:async()=>{}
+  }),error=>error.statusCode===429&&error.code==='SCHOOL_SIGN_IN_BUSY'&&error.retryAfterSeconds===5&&!/Invalid school|password/i.test(error.message));
+  assert.equal(calls,4);
+});
+
+test('long Retry-After pauses return an actionable retry time without retrying too early',async()=>{
+  let calls=0;
+  await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
+    fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429,{'retry-after':'30'})},wait:()=>assert.fail('Must respect upstream backoff')
+  }),{statusCode:429,retryAfterSeconds:30});assert.equal(calls,1);
+});
+
+test('short Retry-After pauses are respected during startup recovery',async()=>{
+  let calls=0;const pauses=[];
+  const result=await authenticateCoreSchoolLogin(config,'staff',credentials,{
+    fetchCore:async()=>++calls===1?response({},503,{'retry-after':'2'}):response(account),wait:async ms=>pauses.push(ms)
+  });assert.equal(result.id,account.id);assert.deepEqual(pauses,[2000]);
+});
+
+test('connection failures and incomplete successful responses do not become credential errors',async()=>{
+  for(const fetchCore of [async()=>{throw Error('network unavailable')},async()=>response({starting:true}),async()=>new Response('<html>Starting</html>')]){
+    await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{fetchCore,wait:async()=>{}}),{statusCode:503,code:'SCHOOL_SIGN_IN_UNAVAILABLE'});
+  }
+});
+
+test('startup retries stop at the request deadline',async()=>{
+  let time=0,calls=0;
+  await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
+    now:()=>time,fetchCore:async()=>{calls++;time+=55_000;throw Error('timed out')},wait:()=>assert.fail('Expired requests must not wait')
+  }),{statusCode:503});assert.equal(calls,1);
+});
+
+test('missing or rejected service credentials are configuration errors rather than wrong staff passwords',async()=>{
+  await assert.rejects(authenticateCoreSchoolLogin({...config,CORE_SERVICE_KEY:undefined},'staff',credentials,{fetchCore:()=>assert.fail()}),{statusCode:503});
+  await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
+    fetchCore:async()=>response({error:{code:'UNAUTHORIZED',message:'Invalid School service credential'}},401),wait:()=>assert.fail()
+  }),{statusCode:503,code:'SCHOOL_SIGN_IN_UNAVAILABLE'});
+});
+
+test('administrator login uses the same recovery and preserves its specific administrator identity',async()=>{
+  const body={schoolId:'alpha',adminUserId:'primary-admin',email:'primary@example.test',password:'FixtureAdmin123!'};
+  const result=await authenticateCoreSchoolLogin(config,'admin',body,{fetchCore:async(url,options)=>{
+    assert.equal(url,'https://core.example.test/v1/internal/school/authenticate-admin');assert.deepEqual(JSON.parse(options.body),body);return response(account)
+  }});assert.deepEqual(result,account);
+});

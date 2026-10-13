@@ -84,7 +84,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
       <select id="schoolId"><option value="">Loading schools...</option></select>
 
       <label for="staffId">Staff ID</label>
-      <input id="staffId" autocomplete="username" placeholder="e.g. STF-000001">
+      <input id="staffId" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="e.g. STF-000001">
 
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password">
@@ -116,7 +116,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     if(!schoolId){show('Select your school.');E('schoolId').focus();return}
     if(!staffId){show('Enter your Staff ID.');E('staffId').focus();return}
     if(!password){show('Enter your password.');E('password').focus();return}
-    var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';E('status').className='';E('status').textContent='';
+    var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';show('Connecting securely. This may take a moment if the sign-in service is starting.','success');
     try{
       var result=await json('/api/auth/staff-id-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,staffId:staffId,password:password})});
       try{

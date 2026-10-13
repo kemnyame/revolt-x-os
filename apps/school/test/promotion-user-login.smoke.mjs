@@ -17,7 +17,7 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   assert.match(server,/promotionScore:\s*annualAverage/);
   assert.match(server,/\/api\/auth\/schools/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
-  assert.match(server,/authenticate-staff/);
+  assert.match(server,/authenticateCoreSchoolLogin\(config,\s*['"]staff['"]/);
   assert.match(server,/staff\.signed_in/);
   assert.match(server,/requiresPasswordChange/);
   assert.match(access,/\/api\/auth\/change-password/);

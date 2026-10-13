@@ -88,6 +88,7 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
   await app.register(rateLimit, {
     max: 200,
     timeWindow: '1 minute',
+    errorResponseBuilder: (_request, context) => new AppError(context.statusCode, 'RATE_LIMITED', `Too many requests. Try again in ${context.after}.`),
     allowList: request => {
       if (request.url.startsWith('/health/')) return true;
       const trustedSchool = Boolean(config.SCHOOL_SERVICE_KEY) && request.headers['x-revolt-service-key'] === config.SCHOOL_SERVICE_KEY;

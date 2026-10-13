@@ -22,6 +22,30 @@ async function browser(html, {path='/admin-login',search='',saved='',schools=[{i
   return{element,calls,redirects,storage,sessions};
 }
 
+test('staff web login resolves a saved school UUID and replaces the expired teacher session after successful sign-in',async()=>{
+  const b=await browser(loginFrontend,{path:'/login',saved:'ORG-ALPHA',respond:()=>({ok:true,json:async()=>({accessToken:'fixture-fresh-session',school:{id:'alpha'},user:{firstName:'Ama'},redirectTo:'/teacher'})})});
+  assert.equal(b.element('schoolId').value,'alpha');b.sessions.set('rx_school_session_expires_at','expired');
+  b.element('staffId').value='  STF-000001  ';b.element('password').value='FixtureStaffPass123!';
+  await b.element('signin').onclick();
+  assert.deepEqual(b.calls.at(-1).body,{schoolId:'alpha',staffId:'STF-000001',password:'FixtureStaffPass123!'});
+  assert.equal(b.sessions.get('rx_teacher_token'),'fixture-fresh-session');assert.equal(b.sessions.has('rx_school_session_expires_at'),false);
+  assert.deepEqual(b.redirects,['/teacher']);
+});
+
+test('staff web login preserves credentials after a service failure, prevents duplicate submission and can retry',async()=>{
+  let finish,attempts=0;
+  const b=await browser(loginFrontend,{path:'/s/alpha/login',respond:async()=>{
+    attempts++;if(attempts===1)return new Promise(resolve=>{finish=()=>resolve({ok:false,status:503,json:async()=>({error:{message:'The sign-in service is starting or unavailable. Please try again in a moment.'}})})});
+    return{ok:true,json:async()=>({accessToken:'fixture-session',school:{id:'alpha'},requiresPasswordChange:true,passwordChangeUrl:'/change-password',user:{firstName:'Ama'},redirectTo:'/teacher'})};
+  }});
+  b.element('staffId').value='STF-000001';b.element('password').value='FixtureTemporary123!';
+  const pending=b.element('signin').onclick();await b.element('signin').onclick();assert.equal(attempts,1);assert.match(b.element('status').textContent,/may take a moment/);
+  finish();await pending;
+  assert.equal(b.element('staffId').value,'STF-000001');assert.equal(b.element('password').value,'FixtureTemporary123!');assert.equal(b.element('signin').disabled,false);assert.deepEqual(b.redirects,[]);
+  assert.match(b.element('status').textContent,/sign-in service is starting/);assert.doesNotMatch(b.element('status').textContent,/Invalid school/);
+  await b.element('signin').onclick();assert.deepEqual(b.redirects,['/change-password']);
+});
+
 for(const [name,html] of [['admin',adminLoginFrontend],['staff',loginFrontend]]) {
   test(name+' school selection resolves tenant paths, case and legacy organisation IDs',async()=>{
     for(const options of [{path:'/s/ALPHA/admin-login',search:'?school=other'},{search:'?school=ORG-ALPHA'},{saved:'ALPHA'}]) {

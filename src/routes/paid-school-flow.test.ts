@@ -245,3 +245,25 @@ it('school staff creation and temporary resets preserve the existing OS account 
   const change=await internal('change-staff-password',{schoolId:'alpha',userId:actor,newPassword:'StaffPersonalSchool123'});expect(change.statusCode,change.body).toBe(200);
   expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'StaffPersonalSchool123'})).statusCode).toBe(200);expect((await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash).toBe(osHash);
 },15000);
+
+it('staff login accepts both assigned Staff ID forms and school UUIDs while keeping each school password isolated',async()=>{
+  const alpha=(await paidSchool('alpha')).result,beta=(await paidSchool('beta')).result;
+  async function add(result:any,password:string){
+    const response=await internal('users',{organisationId:result.organisation.id,actorUserId:result.administrator.id,email:'fixture-shared-staff@example.test',firstName:'Test',lastName:'Teacher',roleKey:'owner',temporaryPassword:password});
+    expect(response.statusCode,response.body).toBe(201);const membership=response.json();
+    const activated=await internal('users/'+membership.id+'/password-reset',{organisationId:result.organisation.id,actorUserId:result.administrator.id,temporaryPassword:password});
+    expect(activated.statusCode,activated.body).toBe(200);return membership;
+  }
+  const a=await add(alpha,'FixtureAlphaPass123!'),b=await add(beta,'FixtureBetaPass123!');
+  expect(a.user_id).toBe(b.user_id);expect(a.employee_number).toBe(b.employee_number);
+  for(const schoolId of [' alpha ','ALPHA',alpha.organisation.id])for(const staffId of [a.employee_number,' '+a.login_staff_id.toLowerCase()+' ']){
+    const response=await internal('authenticate-staff',{schoolId,staffId,password:'FixtureAlphaPass123!'});
+    expect(response.statusCode,response.body).toBe(200);expect(response.json()).toMatchObject({id:a.user_id,organisation_id:alpha.organisation.id,must_change_password:true});
+  }
+  expect((await internal('authenticate-staff',{schoolId:'beta',staffId:b.employee_number,password:'FixtureAlphaPass123!'})).statusCode).toBe(401);
+  expect((await internal('authenticate-staff',{schoolId:'beta',staffId:a.login_staff_id,password:'FixtureBetaPass123!'})).statusCode).toBe(401);
+  expect((await internal('authenticate-staff',{schoolId:'beta',staffId:b.login_staff_id,password:'FixtureBetaPass123!'})).statusCode).toBe(200);
+  await client.query("UPDATE organisation_memberships SET status='suspended' WHERE id=$1",[a.id]);
+  expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:a.employee_number,password:'FixtureAlphaPass123!'})).statusCode).toBe(403);
+  expect((await internal('authenticate-staff',{schoolId:'beta',staffId:b.employee_number,password:'FixtureBetaPass123!'})).statusCode).toBe(200);
+},20000);

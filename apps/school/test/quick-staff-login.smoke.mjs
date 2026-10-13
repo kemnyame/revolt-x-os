@@ -16,7 +16,7 @@ test('legacy Quick Login is removed and School plus Staff ID plus password is ca
   assert.doesNotMatch(server,/\/api\/quick-login\/staff-login/);
   assert.doesNotMatch(server,/validateQuickLoginPassword/);
   assert.match(server,/handleSchoolStaffIdLogin/);
-  assert.match(server,/authenticate-staff/);
+  assert.match(server,/authenticateCoreSchoolLogin\(config,\s*['"]staff['"]/);
   assert.match(server,/\/api\/auth\/schools/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
   assert.match(server,/createSchoolStaffSession\(coreContext,\s*['"]staff_id['"]\)/);
