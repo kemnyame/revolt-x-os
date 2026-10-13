@@ -4,7 +4,6 @@ import {z} from 'zod';
 import {loadSchoolConfig} from './config.js';
 import {normalizeMessagePhone,providerStatus,sendMessage} from './providers.js';
 
-const config=loadSchoolConfig();
 const challengeTtlMs=5*60*1000;
 const resendCooldownMs=45*1000;
 const maxAttempts=5;
@@ -49,6 +48,7 @@ async function revokeTemporaryParentSession(app:FastifyInstance,token:string){
 }
 
 export async function registerMobilePhoneAuth(app:FastifyInstance){
+  const config=loadSchoolConfig();
   app.get('/api/auth/admin-reset-context',async(request,reply)=>{
     reply.header('cache-control','no-store');
     const query=z.object({token:z.string().trim().min(32).max(500),schoolId:z.string().trim().min(1).max(120)}).parse(request.query);
