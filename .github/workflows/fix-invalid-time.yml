@@ -1,0 +1,112 @@
+name: One-time fix invalid School date handling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fix-invalid-time.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Install one-time invalid date fix workflow'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch School date normalization
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('apps/school/src/server.ts')
+          s=p.read_text()
+
+          old="""function dateOnlyValue(value:any){
+            if(value==null||value==='')return null;
+            if(value instanceof Date&&!Number.isNaN(value.getTime()))return value.toISOString().slice(0,10);
+            const raw=String(value).trim();
+            if(/^\\d{4}-\\d{2}-\\d{2}/.test(raw))return raw.slice(0,10);
+            const parsed=new Date(raw);
+            return Number.isNaN(parsed.getTime())?null:parsed.toISOString().slice(0,10);
+          }
+          """
+          new=old+"""
+          function requiredDateOnlyValue(value:any,label='Date'){
+            const normalized=dateOnlyValue(value);
+            if(!normalized)throw fail(400,label+' is invalid. Use the calendar and select a valid date.');
+            return normalized;
+          }
+          """
+          assert old in s, 'dateOnlyValue block not found'
+          s=s.replace(old,new,1)
+
+          old="""function isoDateAdd(value:string,days:number){
+            const d=new Date(value+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);
+          }
+          """
+          new="""function isoDateAdd(value:any,days:number){
+            const normalized=requiredDateOnlyValue(value,'Academic calendar date');
+            const d=new Date(normalized+'T00:00:00.000Z');
+            d.setUTCDate(d.getUTCDate()+days);
+            return d.toISOString().slice(0,10);
+          }
+          """
+          assert old in s, 'isoDateAdd block not found'
+          s=s.replace(old,new,1)
+
+          old="  const start=String(year.start_date).slice(0,10),end=String(year.end_date).slice(0,10);\n"
+          new="  const start=requiredDateOnlyValue(year.start_date,'Academic year start date');\n  const end=requiredDateOnlyValue(year.end_date,'Academic year end date');\n  if(end<=start)throw fail(400,'Academic year dates are invalid. The end date must be after the start date.');\n"
+          assert old in s, 'fixed-term academic year date extraction not found'
+          s=s.replace(old,new,1)
+
+          old="  const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);\n"
+          assert s.count(old)==2, f'expected two edit date extractions, found {s.count(old)}'
+          s=s.replace(old,"  const start=b.startDate??requiredDateOnlyValue(current.start_date,'Academic year start date');\n  const end=b.endDate??requiredDateOnlyValue(current.end_date,'Academic year end date');\n",1)
+          s=s.replace(old,"  const start=b.startDate??requiredDateOnlyValue(current.start_date,'Term start date');\n  const end=b.endDate??requiredDateOnlyValue(current.end_date,'Term end date');\n",1)
+
+          old="  const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?String(current.next_term_begins).slice(0,10):null);\n"
+          new="  const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?requiredDateOnlyValue(current.next_term_begins,'Next term date'):null);\n"
+          assert old in s, 'next term date extraction not found'
+          s=s.replace(old,new,1)
+
+          old="  let status=Number(error.statusCode)||(error?.name==='ZodError'?400:500);\n"
+          new="  const invalidTimeValue=error instanceof RangeError&&/invalid time value/i.test(String(error.message||''));\n  let status=Number(error.statusCode)||(error?.name==='ZodError'||invalidTimeValue?400:500);\n"
+          assert old in s, 'error status line not found'
+          s=s.replace(old,new,1)
+
+          old="""        :validationMessage
+                    ?validationMessage
+                    :(error.message||'Unexpected school service error');
+          """
+          new="""        :invalidTimeValue
+                    ?'A date or time is invalid. Use the calendar/date picker and select a valid value.'
+                  :validationMessage
+                    ?validationMessage
+                    :(error.message||'Unexpected school service error');
+          """
+          assert old in s, 'error message block not found'
+          s=s.replace(old,new,1)
+
+          p.write_text(s)
+          PY
+
+          grep -n "requiredDateOnlyValue\|invalidTimeValue" apps/school/src/server.ts
+          if grep -n "String(year.start_date).slice(0,10)" apps/school/src/server.ts; then
+            echo "Unsafe academic year date conversion remains" >&2
+            exit 1
+          fi
+
+      - name: Commit fix to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/school/src/server.ts
+          git commit -m "Fix invalid date normalization in School calendar"
+          git push origin HEAD:main
