@@ -1,5 +1,6 @@
 import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
+import { schoolSignInStartupScript } from './sign-in-startup.js';
 
 const schoolLocationScript=`
   function schoolFromLocation(){
@@ -97,6 +98,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
   </section>
 </main>
 <script>
+${schoolSignInStartupScript}
 (function(){
   function E(id){return document.getElementById(id)}
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
@@ -118,6 +120,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     if(!password){show('Enter your password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';show('Connecting securely. This may take a moment if the sign-in service is starting.','success');
     try{
+      await window.RevoltSchoolSignIn.ensureReady(function(message){show(message,'success')});
       var result=await json('/api/auth/staff-id-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,staffId:staffId,password:password})});
       try{
         sessionStorage.removeItem('rx_school_session_expires_at');sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/login');
@@ -190,6 +193,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
   </section>
 </main>
 <script>
+${schoolSignInStartupScript}
 (function(){
   function E(id){return document.getElementById(id)}
   function enablePasswordVisibility(){document.querySelectorAll('input[type=\"password\"]').forEach(function(input){if(input.dataset.visibilityReady)return;input.dataset.visibilityReady='1';var label=document.createElement('label');label.className='password-visibility';var check=document.createElement('input');check.type='checkbox';check.onchange=function(){input.type=check.checked?'text':'password'};label.appendChild(check);label.appendChild(document.createTextNode('Show password'));input.insertAdjacentElement('afterend',label)})}
@@ -224,6 +228,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     if(!password){show('Enter the administrator password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';E('status').className='';E('status').textContent='';
     try{
+      await window.RevoltSchoolSignIn.ensureReady(function(message){show(message,'success')});
       var result=await json('/api/auth/admin-login',{method:'POST',body:JSON.stringify({schoolId:schoolId,email:email,password:password,adminUserId:boundAdministrator?boundAdministrator.id:undefined})});
       try{
         sessionStorage.removeItem('rx_school_session_expires_at');sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/admin-login'+(result.user&&result.user.id?'?admin='+encodeURIComponent(result.user.id):''));

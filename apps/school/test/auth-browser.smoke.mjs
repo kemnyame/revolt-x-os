@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from '../dist/login-ui.js';
 
-async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond}={}) {
+async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond,startup}={}) {
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
   const context={document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URL,URLSearchParams,
@@ -13,6 +13,7 @@ async function browser(html, {path='/admin-login',search='',saved='',schools=[{i
     clearTimeout(){},setTimeout:fn=>fn(),fetch:async(url,options)=>{
       calls.push({url,body:options?.body?JSON.parse(options.body):undefined});
       if(url==='/api/auth/schools')return{ok:true,json:async()=>schools};
+      if(url==='/api/system/core-status'||String(url).startsWith('https://core.example.test/'))return startup?startup(url,options):{ok:true,json:async()=>({core:{healthy:true,status:200,url:'https://core.example.test'}})};
       return respond?respond(url,options):{ok:true,json:async()=>({reset:true,schoolId:'alpha',adminLoginUrl:'/s/alpha/admin-login'})};
     }};
   context.window=context;
@@ -39,11 +40,28 @@ test('staff web login preserves credentials after a service failure, prevents du
     return{ok:true,json:async()=>({accessToken:'fixture-session',school:{id:'alpha'},requiresPasswordChange:true,passwordChangeUrl:'/change-password',user:{firstName:'Ama'},redirectTo:'/teacher'})};
   }});
   b.element('staffId').value='STF-000001';b.element('password').value='FixtureTemporary123!';
-  const pending=b.element('signin').onclick();await b.element('signin').onclick();assert.equal(attempts,1);assert.match(b.element('status').textContent,/may take a moment/);
+  const pending=b.element('signin').onclick();await b.element('signin').onclick();await new Promise(resolve=>setImmediate(resolve));assert.equal(attempts,1);assert.match(b.element('status').textContent,/may take a moment/);
   finish();await pending;
   assert.equal(b.element('staffId').value,'STF-000001');assert.equal(b.element('password').value,'FixtureTemporary123!');assert.equal(b.element('signin').disabled,false);assert.deepEqual(b.redirects,[]);
   assert.match(b.element('status').textContent,/sign-in service is starting/);assert.doesNotMatch(b.element('status').textContent,/Invalid school/);
   await b.element('signin').onclick();assert.deepEqual(b.redirects,['/change-password']);
+});
+
+test('web login starts a sleeping service before submitting the staff password to School',async()=>{
+  let probes=0;
+  const b=await browser(loginFrontend,{path:'/s/alpha/login',startup:(url,options)=>{
+    if(url==='/api/system/core-status')return{ok:true,json:async()=>({core:{url:'https://core.example.test',healthy:++probes>1,status:probes>1?200:429}})};
+    assert.equal(options.credentials,'omit');assert.equal(options.body,undefined);return{ok:false,status:0,json:()=>assert.fail()};
+  },respond:()=>({ok:true,json:async()=>({accessToken:'fixture-session',school:{id:'alpha'},user:{firstName:'Ama'},redirectTo:'/teacher'})})});
+  b.element('staffId').value='STF-000001';b.element('password').value='FixtureStaffPass123!';await b.element('signin').onclick();
+  const auth=b.calls.findIndex(call=>call.url==='/api/auth/staff-id-login'),ping=b.calls.findIndex(call=>call.url==='https://core.example.test/health/live');
+  assert.ok(ping>0&&auth>ping);assert.deepEqual(b.calls[auth].body,{schoolId:'alpha',staffId:'STF-000001',password:'FixtureStaffPass123!'});assert.deepEqual(b.redirects,['/teacher']);
+});
+
+test('web login keeps entered credentials and never posts a password when startup remains unavailable',async()=>{
+  const b=await browser(loginFrontend,{path:'/s/alpha/login',startup:()=>({ok:true,json:async()=>({core:{url:'https://core.example.test',healthy:false,status:429}})})});
+  b.element('staffId').value='STF-000001';b.element('password').value='FixtureStaffPass123!';await b.element('signin').onclick();
+  assert.equal(b.calls.some(call=>call.url==='/api/auth/staff-id-login'),false);assert.equal(b.element('password').value,'FixtureStaffPass123!');assert.equal(b.element('signin').disabled,false);assert.match(b.element('status').textContent,/entries are still here/);
 });
 
 for(const [name,html] of [['admin',adminLoginFrontend],['staff',loginFrontend]]) {
