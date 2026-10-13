@@ -19,16 +19,22 @@ function normalizeDatabaseUrl(value:string){
 }
 
 export function createSchoolDb(config: SchoolConfig) {
-  return new pg.Pool({
+  const pool=new pg.Pool({
     connectionString: normalizeDatabaseUrl(config.SCHOOL_DATABASE_URL),
     max: config.DB_POOL_MAX,
-    application_name: 'revolt-x-school',
-    // Every pooled connection must resolve unqualified School tables inside the
-    // dedicated School schema. A one-off `SET search_path` only affects whichever
-    // connection the pool happens to lend for that query and caused intermittent
-    // `relation "school_profiles" does not exist` errors in production.
-    options: `-c search_path=${schoolSearchPath}`
+    application_name: 'revolt-x-school'
   });
+  // Configure every physical PostgreSQL connection after it opens instead of sending
+  // search_path as a startup parameter. Neon/PgBouncer rejects custom startup options,
+  // while Railway/PostgreSQL accepts them. Issuing SET here keeps unqualified School
+  // tables in the dedicated schema on both providers and avoids intermittent
+  // `relation "school_profiles" does not exist` failures when the pool rotates clients.
+  pool.on('connect',client=>{
+    void client.query(`SET search_path TO ${schoolSearchPath}`).catch(error=>{
+      pool.emit('error',error,client);
+    });
+  });
+  return pool;
 }
 
 export async function ensureSchoolSchema(db: pg.Pool) {
@@ -43,7 +49,7 @@ export async function migrateSchool(db: pg.Pool) {
   for(const file of files){
     const existing=await db.query('SELECT 1 FROM schema_migrations WHERE version=$1',[file]);
     if(existing.rowCount) continue;
-    const sql=await readFile(join(dir,file),'utf8');
+    const sql=await readFile(join(process.cwd(),'migrations',file),'utf8');
     const client=await db.connect();
     try{
       await client.query('BEGIN');
