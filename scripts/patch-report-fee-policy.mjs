@@ -37,6 +37,12 @@ server=replaceOnce(server,
   "    released:newlyReleased.length,\n    alreadyReleased:pool.rows.length-newlyReleased.length,\n    communications:communicationCount,",
   "    released:newlyReleased.length,\n    withheldForFees:feeBlockedStudentIds.size,\n    alreadyReleased:pool.rows.filter((x:any)=>Boolean(x.released_at)).length,\n    communications:communicationCount,",
   'release response');
+
+server=replaceOnce(server,
+  "        (rc.workflow_status='approved' AND rc.released_at IS NOT NULL) report_released",
+  "        (rc.workflow_status='approved' AND (rc.released_at IS NOT NULL OR report_delivery_withheld_for_fees($1,ts.student_id))) report_released",
+  'promotion readiness for fee-withheld reports');
+
 writeFileSync(serverPath,server);
 
 const uiPath='apps/school/src/ui.ts';
