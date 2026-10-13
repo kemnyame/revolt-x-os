@@ -16,15 +16,16 @@ export async function probeSchoolSignInService(config: SchoolConfig, fetchCore: 
   }
 }
 
-/** An interactive sign-in wakes the public health endpoint from the user's client.
- * Some sleeping hosts reject service-origin requests before Core can receive them.
- * The public request contains no staff credentials, cookies, or access tokens.
- * Its response is deliberately opaque: readiness is verified through School.
- * There is no periodic keep-alive or alternate authentication service. */
+/**
+ * The browser performs a best-effort wake/readiness check before sign-in, but it must
+ * never block credential submission. The School backend owns the authoritative Core
+ * connection and already performs bounded retries before returning a real sign-in error.
+ * This prevents a transient or opaque browser health probe from producing a false
+ * "sign-in service could not start" error while Core is actually available.
+ */
 export const schoolSignInStartupScript = String.raw`
 (function(){
   var pending=null;
-  function unavailable(){var error=Error('The sign-in service could not start. Your entries are still here. Please try signing in again.');error.status=503;return error}
   function pause(milliseconds){return new Promise(function(resolve){setTimeout(resolve,milliseconds)})}
   async function read(url,timeout,external){
     var controller=typeof AbortController==='function'?new AbortController():null;
@@ -47,23 +48,26 @@ export const schoolSignInStartupScript = String.raw`
     }catch(error){return null}
   }
   async function start(progress){
-    var deadline=Date.now()+90000;
-    var status=await read('/api/system/core-status',15000,false),core=status.body&&status.body.core;
-    if(status.ok&&core&&core.healthy===true)return;
+    // Keep this check short. If the browser cannot prove readiness, continue to the
+    // real School login endpoint, whose server-side Core call already retries safely.
+    var status=await read('/api/system/core-status',6000,false),core=status.body&&status.body.core;
+    if(status.ok&&core&&core.healthy===true){if(progress)progress('Signing in…');return}
+
     var url=core&&publicHealthUrl(core.url);
-    if(!url)throw unavailable();
-    if(progress)progress('Starting sign-in. This can take up to a minute. Please wait…');
-    for(var attempt=0;attempt<6&&Date.now()<deadline;attempt++){
-      await read(url,Math.max(1,Math.min(15000,deadline-Date.now())),true);
-      if(Date.now()>=deadline)break;
-      // Confirm the original School-to-Core connection before sending a password.
-      var verified=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
+    if(progress)progress('Connecting securely…');
+    if(url){
+      await read(url,5000,true);
+      await pause(350);
+      var verified=await read('/api/system/core-status',6000,false);
       if(verified.ok&&verified.body&&verified.body.core&&verified.body.core.healthy===true){
-        if(progress)progress('Signing in…');return;
+        if(progress)progress('Signing in…');return
       }
-      if(attempt<5){var delay=[1000,2000,3000,5000,6000][attempt];if(Date.now()+delay>=deadline)break;await pause(delay)}
     }
-    throw unavailable();
+
+    // Do not throw here. Browser DNS/CORS/no-cors behaviour can make a health probe
+    // appear to fail even when the School server can reach Core. The authenticated
+    // POST that follows is the authoritative connectivity test.
+    if(progress)progress('Signing in…');
   }
   window.RevoltSchoolSignIn={ensureReady:function(progress){
     if(pending)return pending;
