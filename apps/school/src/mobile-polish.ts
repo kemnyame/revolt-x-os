@@ -31,9 +31,10 @@ function paintStatuses(root){
 function schoolFromLocation(){var parts=location.pathname.split('/').filter(Boolean);if(parts[0]==='s'&&parts[1]){try{return decodeURIComponent(parts[1]).trim()}catch(e){return parts[1]}}return(new URLSearchParams(location.search).get('school')||'').trim()}
 async function identifyAdminReset(){
  if(!/admin-password-reset/.test(location.pathname))return;
- var q=new URLSearchParams(location.search),admin=(q.get('admin')||'').trim(),school=schoolFromLocation();if(!admin||!school)return;
+ var q=new URLSearchParams(location.search),admin=(q.get('admin')||'').trim(),token=(q.get('token')||'').trim(),school=schoolFromLocation();if(!school||(!admin&&!token))return;
  try{
-  var context=await json('/api/auth/admin-login-context?'+new URLSearchParams({schoolId:school,adminUserId:admin}));
+  var context=admin?await json('/api/auth/admin-login-context?'+new URLSearchParams({schoolId:school,adminUserId:admin})):await json('/api/auth/admin-reset-context?'+new URLSearchParams({schoolId:school,token:token}));
+  if(!admin&&context.administrator&&context.administrator.id){admin=context.administrator.id;q.set('admin',admin);history.replaceState(null,'',location.pathname+'?'+q.toString())}
   var form=document.querySelector('.form-wrap');if(!form||form.querySelector('.rx-admin-reset-target'))return;
   var target=document.createElement('div');target.className='rx-admin-reset-target';target.innerHTML='<b>'+esc(context.administrator.name||context.administrator.email)+'</b>'+esc(context.school.name)+' · '+esc(context.administrator.email);var label=form.querySelector('label');if(label)form.insertBefore(target,label);else form.appendChild(target);
   var heading=form.querySelector('h2');if(heading&&context.administrator.name)heading.textContent='Reset '+context.administrator.name+'’s password';
