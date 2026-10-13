@@ -2459,7 +2459,7 @@ async function academicYearPromotionEvidence(queryDb:any,organisationId:string,a
     term_evidence AS (
       SELECT ts.*,
         (ts.subject_count>0 AND ts.complete_subjects=ts.subject_count) academic_complete,
-        (rc.workflow_status='approved' AND rc.released_at IS NOT NULL) report_released
+        (rc.workflow_status='approved' AND (rc.released_at IS NOT NULL OR report_delivery_withheld_for_fees($1,ts.student_id))) report_released
       FROM term_summary ts
       LEFT JOIN report_comments rc ON rc.organisation_id=$1 AND rc.student_id=ts.student_id AND rc.term_id=ts.term_id
     )
