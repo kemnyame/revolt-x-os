@@ -5,6 +5,8 @@ import type { SchoolConfig } from './config.js';
 
 export type SchoolDb = pg.Pool | pg.PoolClient;
 
+const schoolSearchPath='revolt_x_school,public';
+
 function normalizeDatabaseUrl(value:string){
   try{
     const url=new URL(value);
@@ -20,7 +22,12 @@ export function createSchoolDb(config: SchoolConfig) {
   return new pg.Pool({
     connectionString: normalizeDatabaseUrl(config.SCHOOL_DATABASE_URL),
     max: config.DB_POOL_MAX,
-    application_name: 'revolt-x-school'
+    application_name: 'revolt-x-school',
+    // Every pooled connection must resolve unqualified School tables inside the
+    // dedicated School schema. A one-off `SET search_path` only affects whichever
+    // connection the pool happens to lend for that query and caused intermittent
+    // `relation "school_profiles" does not exist` errors in production.
+    options: `-c search_path=${schoolSearchPath}`
   });
 }
 
@@ -29,7 +36,7 @@ export async function ensureSchoolSchema(db: pg.Pool) {
 }
 
 export async function migrateSchool(db: pg.Pool) {
-  await db.query('SET search_path TO revolt_x_school, public');
+  await db.query(`SET search_path TO ${schoolSearchPath}`);
   await db.query('CREATE TABLE IF NOT EXISTS schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
   const dir=join(process.cwd(),'migrations');
   const files=(await readdir(dir)).filter(f=>f.endsWith('.sql')).sort();
@@ -40,7 +47,7 @@ export async function migrateSchool(db: pg.Pool) {
     const client=await db.connect();
     try{
       await client.query('BEGIN');
-      await client.query('SET LOCAL search_path TO revolt_x_school, public');
+      await client.query(`SET LOCAL search_path TO ${schoolSearchPath}`);
       await client.query(sql);
       await client.query('INSERT INTO schema_migrations(version) VALUES($1)',[file]);
       await client.query('COMMIT');
@@ -70,7 +77,7 @@ export async function tx<T>(db:SchoolDb,fn:(client:pg.PoolClient)=>Promise<T>):P
   const client=await (db as pg.Pool).connect();
   try{
     await client.query('BEGIN');
-    await client.query('SET LOCAL search_path TO revolt_x_school, public');
+    await client.query(`SET LOCAL search_path TO ${schoolSearchPath}`);
     const value=await fn(client);
     await client.query('COMMIT');
     return value;
