@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Script } from 'node:vm';
 import { createRequire } from 'node:module';
+import { authenticateCoreSchoolLogin } from './core-school-login.js';
 import { Transform } from 'node:stream';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
@@ -1904,18 +1905,10 @@ async function handleSchoolAdminLogin(request:any,reply:any){
     password:z.string().min(1).max(200)
   }).parse(request.body);
 
-  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const authRes=await fetch(base+'/v1/internal/school/authenticate-admin',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({schoolId:b.schoolId,email:b.email,password:b.password,adminUserId:b.adminUserId}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-
-  if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
-  const user=await authRes.json().catch(()=>null) as any;
-  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||user?.message||'Invalid School Administrator credentials');
+  const user=await authenticateCoreSchoolLogin(config,'admin',{
+    schoolId:b.schoolId,email:b.email,password:b.password,adminUserId:b.adminUserId
+  });
 
   let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
   if(!school){
@@ -1994,18 +1987,10 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     password:z.string().min(1).max(200)
   }).parse(request.body);
 
-  if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
   const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const authRes=await fetch(base+'/v1/internal/school/authenticate-staff',{
-    method:'POST',
-    headers:{...coreServiceHeaders(),'content-type':'application/json'},
-    body:JSON.stringify({schoolId:b.schoolId,staffId:b.staffId,password:b.password}),
-    signal:AbortSignal.timeout(20000)
-  }).catch(()=>null);
-
-  if(!authRes)throw fail(503,'Core Revolt-X OS could not be reached');
-  const user=await authRes.json().catch(()=>null) as any;
-  if(!authRes.ok)throw fail(authRes.status,user?.error?.message||'Invalid school, Staff ID or password');
+  const user=await authenticateCoreSchoolLogin(config,'staff',{
+    schoolId:b.schoolId,staffId:b.staffId,password:b.password
+  });
 
   let school=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[user.organisation_id]);
   if(!school){
@@ -7997,7 +7982,8 @@ app.setErrorHandler(async(error:any,request,reply)=>{
   }else{
     request.log.warn({status,code:error.code??error.name??null,path:String(request.url).split('?')[0]},'School request rejected');
   }
-  reply.code(status>=400&&status<600?status:500).send({error:{message,errorId}});
+  if(Number.isFinite(error.retryAfterSeconds)&&error.retryAfterSeconds>0)reply.header('retry-after',String(Math.ceil(error.retryAfterSeconds)));
+  reply.code(status>=400&&status<600?status:500).send({error:{message,errorId,code:error.code}});
 });
 
 let shutting=false;

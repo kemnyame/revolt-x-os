@@ -15,7 +15,7 @@ const students=[{student_id:'student-1',first_name:'Kofi',last_name:'Asare',admi
 const response=(data,status=200)=>({ok:status>=200&&status<300,status,json:async()=>data,headers:{get:()=>null},clone(){return this}});
 const waitFor=async predicate=>{for(let i=0;i<80;i++){if(predicate())return;await new Promise(r=>setTimeout(r,5))}assert.fail('Mobile screen did not finish rendering')};
 
-function harness(role='teacher',handler){
+function harness(role='teacher',handler,options={}){
  const {document,window}=parseHTML(mobileExperienceFrontend(role));
  window.scrollTo=()=>{};window.HTMLElement.prototype.reportValidity=()=>true;
  // Linkedom omits the native select setter; reproduce its browser selection semantics.
@@ -41,13 +41,54 @@ function harness(role='teacher',handler){
   return response([]);
  };
  window.fetch=fetch;
- const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage({[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:'',replace(){}},URL,URLSearchParams,Set,setTimeout,clearTimeout,addEventListener:()=>{},FileReader:class{}});
+ const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage(options.sessions??{[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(options.saved),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:options.search||'',replace(){}},URL,URLSearchParams,Set,setTimeout,clearTimeout,addEventListener:()=>{},FileReader:class{}});
  vm.runInContext(mobileWorkflowScript+mobileExperienceScript,context);
  const click=id=>document.getElementById(id).click();
  const submit=id=>document.getElementById(id).onsubmit({preventDefault(){}});
  const change=(id,value)=>{const input=document.getElementById(id);input.value=value;input.dispatchEvent(new window.Event('input',{bubbles:true}));if(input.onchange)input.onchange.call(input)};
  return{document,window,context,writes,click,submit,change};
 }
+
+test('mobile teacher login resolves school UUIDs, keeps failed credentials, prevents duplicate requests and opens first password change',async()=>{
+ let attempts=0,finish;
+ const h=harness('teacher',async(path,opt)=>{
+  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha School',organisationId:'org-alpha'},{id:'beta',name:'Beta School',organisationId:'org-beta'}]);
+  if(path==='/api/auth/staff-id-login'){
+   attempts++;if(attempts===1)return new Promise(resolve=>finish=()=>resolve(response({error:{code:'SCHOOL_SIGN_IN_UNAVAILABLE',message:'The sign-in service is starting or unavailable. Please try again in a moment.'}},503)));
+   return response({accessToken:'rxs_fixture_fresh',school:{id:'alpha'},requiresPasswordChange:true});
+  }
+  if(path==='/api/auth/change-password')return response({changed:true,redirectTo:'/teacher'});
+ },{sessions:{},search:'?school=ORG-ALPHA',saved:{rx_school_id:'beta'}});
+ await waitFor(()=>h.document.getElementById('mLoginSchool')?.value==='alpha');
+ h.change('mLoginStaff','  STF-000001  ');h.change('mLoginPassword','FixtureStaff123!');
+ const pending=h.submit('mLoginForm');await h.submit('mLoginForm');assert.equal(attempts,1);assert.match(h.document.getElementById('mLoginSubmit').textContent,/Signing in/);
+ finish();await pending;
+ assert.equal(h.document.getElementById('mLoginSchool').value,'alpha');assert.equal(h.document.getElementById('mLoginStaff').value,'  STF-000001  ');assert.equal(h.document.getElementById('mLoginPassword').value,'FixtureStaff123!');
+ assert.equal(h.document.getElementById('mLoginSubmit').disabled,false);assert.match(h.document.getElementById('mError').textContent,/sign-in service is starting/);
+ assert.deepEqual(h.writes[0].body,{schoolId:'alpha',staffId:'STF-000001',password:'FixtureStaff123!'});
+ await h.submit('mLoginForm');await waitFor(()=>h.document.getElementById('mPasswordForm'));
+ assert.equal(h.context.sessionStorage.getItem('rx_teacher_token'),'rxs_fixture_fresh');assert.equal(h.context.localStorage.getItem('rx_school_id'),'alpha');
+ h.change('mNewPassword','FixturePersonal123!');h.change('mConfirmPassword','FixturePersonal123!');await h.submit('mPasswordForm');
+ await waitFor(()=>h.document.querySelector('[data-go="scores"]'));assert.deepEqual(h.writes.at(-1).body,{newPassword:'FixturePersonal123!'});
+});
+
+test('mobile resumes a required staff password change after the app is reopened',async()=>{
+ let contexts=0;
+ const h=harness('teacher',async(path)=>{
+  if(path==='/api/teacher/context'&&++contexts===1)return response({error:{code:'PASSWORD_CHANGE_REQUIRED',message:'Password change required before opening the School workspace'}},403);
+  if(path==='/api/auth/change-password')return response({changed:true});
+ });
+ await waitFor(()=>h.document.getElementById('mPasswordForm'));assert.equal(h.document.getElementById('mLoginForm'),null);
+ assert.equal(h.context.sessionStorage.getItem('rx_teacher_token'),'rxs_test');
+ h.change('mNewPassword','FixturePersonal123!');h.change('mConfirmPassword','FixturePersonal123!');await h.submit('mPasswordForm');
+ await waitFor(()=>h.document.querySelector('[data-go="scores"]'));
+});
+
+test('unavailable schools cannot submit a mobile staff login',async()=>{
+ const h=harness('teacher',async path=>path==='/api/auth/schools'?response([]):null,{sessions:{}});
+ await waitFor(()=>h.document.getElementById('mError')?.textContent.includes('No schools'));
+ assert.equal(h.document.getElementById('mLoginSubmit').disabled,true);await h.submit('mLoginForm');assert.equal(h.writes.length,0);
+});
 
 test('dedicated teacher UI exposes direct tasks and only assigned class subjects',async()=>{
  const h=harness();await waitFor(()=>h.document.querySelector('[data-go="scores"]'));

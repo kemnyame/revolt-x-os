@@ -22,3 +22,14 @@ it('expired reset tokens return their real reset error instead of a generic cred
   const r=await app.inject({method:'POST',url:'/v1/auth/password-reset/confirm',payload:{token:'test-only-reset-token-'.repeat(3),password:'PersonalResetPass123',purpose:'school_admin'}});
   expect(r.statusCode).toBe(401);expect(r.json().error.message).toContain('Reset link is invalid, expired');
 });
+
+it('Core request throttling retains HTTP 429 and a usable retry message instead of becoming an internal or credential error',async()=>{
+  const limited=await buildApp({db,config});
+  try{
+    limited.get('/fixture-login-rate-limit',{config:{rateLimit:{max:1,timeWindow:'1 minute'}}},async()=>({ready:true}));
+    expect((await limited.inject('/fixture-login-rate-limit')).statusCode).toBe(200);
+    const response=await limited.inject('/fixture-login-rate-limit');
+    expect(response.statusCode).toBe(429);expect(response.json()).toMatchObject({error:{code:'RATE_LIMITED'}});
+    expect(response.json().error.message).toContain('Try again');expect(Number(response.headers['retry-after'])).toBeGreaterThan(0);
+  }finally{await limited.close()}
+});

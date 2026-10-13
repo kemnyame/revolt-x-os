@@ -40,7 +40,7 @@ async function api(path,body,method,anonymous){
  if(body!=null){options.headers['content-type']='application/json';options.body=JSON.stringify(body)}
  if(state.token&&!anonymous)options.headers.authorization='Bearer '+state.token;
  var response=await fetch(path,options),data=await response.json().catch(function(){return null});
- if(!response.ok){var error=Error(data&&data.error&&data.error.message||'Unable to complete this action ('+response.status+').');error.status=response.status;throw error}
+ if(!response.ok){var error=Error(data&&data.error&&data.error.message||'Unable to complete this action ('+response.status+').');error.status=response.status;error.code=data&&data.error&&data.error.code;throw error}
  return data;
 }
 function closeSheet(){var after=closeSheet.after;closeSheet.after=null;E('mDialog').hidden=true;E('mSheet').innerHTML='';E('mApp').inert=false;document.body.style.overflow='';if(closeSheet.previous&&closeSheet.previous.isConnected)closeSheet.previous.focus();if(after)after()}
@@ -215,12 +215,44 @@ async function signature(seq){var signature=await api('/api/report-signatures/me
 async function signOut(){if(state.saving)return;try{await api(role==='teacher'?'/api/auth/logout':'/api/parent/logout',{})}catch(error){}sessionStorage.removeItem(role==='teacher'?'rx_teacher_token':'rx_parent_token');if(role==='teacher')sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');location.replace('/mobile/'+role)}
 async function login(message){
  state.ctx=null;state.me=null;E('mDock').hidden=true;E('mHeaderAction').hidden=true;
- layout('<div class="m-login-intro"><a href="/mobile" class="m-subtext">'+icon('back')+' Change account type</a><div class="m-avatar large" style="margin-top:26px">'+icon(role==='teacher'?'scores':'child')+'</div><h1>'+esc(role==='teacher'?'Teacher sign-in':'Welcome, parent.')+'</h1><p>'+esc(role==='teacher'?'Use your school Staff ID and password.':'Use your registered phone number and a linked child’s Student ID.')+'</p></div>'+(message?'<div class="m-notice warn">'+esc(message)+'</div>':'')+'<form id="mLoginForm" class="m-form m-card"><label for="mLoginSchool">School <span class="m-required">*</span></label><select id="mLoginSchool" required disabled>'+option('','Loading schools…')+'</select>'+(role==='teacher'?field('mLoginStaff','Staff ID','text','',true,'autocomplete="username" autocapitalize="none"')+field('mLoginPassword','Password','password','',true,'autocomplete="current-password"')+'<label class="m-checkbox"><input id="mShowPassword" type="checkbox">Show password</label>':field('mLoginPhone','Mobile number','tel','',true,'autocomplete="tel" inputmode="tel" placeholder="024… or +233…"')+field('mLoginStudent','Student ID','text','',true,'autocomplete="off"'))+'<button class="m-btn" type="submit">Sign in</button></form>');
+ layout('<div class="m-login-intro"><a href="/mobile" class="m-subtext">'+icon('back')+' Change account type</a><div class="m-avatar large" style="margin-top:26px">'+icon(role==='teacher'?'scores':'child')+'</div><h1>'+esc(role==='teacher'?'Teacher sign-in':'Welcome, parent.')+'</h1><p>'+esc(role==='teacher'?'Use your school Staff ID and password.':'Use your registered phone number and a linked child’s Student ID.')+'</p></div>'+(message?'<div class="m-notice warn">'+esc(message)+'</div>':'')+'<form id="mLoginForm" class="m-form m-card"><label for="mLoginSchool">School <span class="m-required">*</span></label><select id="mLoginSchool" required disabled>'+option('','Loading schools…')+'</select>'+(role==='teacher'?field('mLoginStaff','Staff ID','text','',true,'autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"')+field('mLoginPassword','Password','password','',true,'autocomplete="current-password"')+'<label class="m-checkbox"><input id="mShowPassword" type="checkbox">Show password</label>':field('mLoginPhone','Mobile number','tel','',true,'autocomplete="tel" inputmode="tel" placeholder="024… or +233…"')+field('mLoginStudent','Student ID','text','',true,'autocomplete="off"'))+'<button id="mLoginSubmit" class="m-btn" type="submit" aria-live="polite">Sign in</button></form>');
  if(E('mShowPassword'))E('mShowPassword').onchange=function(){E('mLoginPassword').type=this.checked?'text':'password'};
- try{var schools=await api('/api/auth/schools',null,null,true),savedSchool=new URLSearchParams(location.search).get('school')||localStorage.getItem('rx_school_id')||'';E('mLoginSchool').innerHTML=option('','Select your school')+schools.map(function(s){return option(s.id,s.name,s.id===savedSchool)}).join('');E('mLoginSchool').disabled=!schools.length;if(!schools.length)showError(Error('No schools are available for sign-in. Contact your school.'))}catch(error){showError(error);E('mLoginSchool').innerHTML=option('','Unable to load schools')}
- bindForm('mLoginForm',async function(){if(state.saving)return;setSaving(true);var success=false;try{var school=E('mLoginSchool').value,body=role==='teacher'?{schoolId:school,staffId:E('mLoginStaff').value.trim(),password:E('mLoginPassword').value}:{schoolSlug:school,phone:E('mLoginPhone').value.trim(),studentId:E('mLoginStudent').value.trim()};var result=await api(role==='teacher'?'/api/auth/staff-id-login':'/api/parent/login',body,null,true);state.token=role==='teacher'?result.accessToken:result.token;sessionStorage.setItem(role==='teacher'?'rx_teacher_token':'rx_parent_token',state.token);sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');if(role==='teacher')sessionStorage.setItem('rx_school_token',state.token);localStorage.setItem('rx_school_id',school);state.dirty=false;if(result.requiresPasswordChange){setSaving(false);return passwordChange()}success=true}catch(error){showError(error)}finally{setSaving(false)}if(success)await boot()});
+ try{
+  var schools=await api('/api/auth/schools',null,null,true);
+  var requested=new URLSearchParams(location.search).get('school')||'';
+  var preferred=(requested||localStorage.getItem('rx_school_id')||'').trim().toLowerCase();
+  var selected=schools.find(function(s){return String(s.id).toLowerCase()===preferred||String(s.organisationId||'').toLowerCase()===preferred});
+  E('mLoginSchool').innerHTML=option('','Select your school')+schools.map(function(s){return option(s.id,s.name,selected&&s.id===selected.id)}).join('');
+  E('mLoginSchool').disabled=!schools.length;E('mLoginSubmit').disabled=!schools.length;
+  if(!schools.length)showError(Error('No schools are available for sign-in. Contact your school.'));
+  else if(requested&&!selected)showError(Error('The school in this link is unavailable. Select your school to continue.'));
+ }catch(error){showError(error);E('mLoginSchool').innerHTML=option('','Unable to load schools');E('mLoginSubmit').disabled=true}
+ bindForm('mLoginForm',async function(){
+  if(state.saving)return;
+  var school=E('mLoginSchool').value;
+  if(!school){showError(Error('Select your school before signing in.'));E('mLoginSchool').focus();return}
+  var body=role==='teacher'?{schoolId:school,staffId:E('mLoginStaff').value.trim(),password:E('mLoginPassword').value}:{schoolSlug:school,phone:E('mLoginPhone').value.trim(),studentId:E('mLoginStudent').value.trim()};
+  if(role==='teacher'&&!body.staffId){showError(Error('Enter your Staff ID.'));E('mLoginStaff').focus();return}
+  if(role==='teacher'&&!body.password){showError(Error('Enter your password.'));E('mLoginPassword').focus();return}
+  var submit=E('mLoginSubmit');E('mError').hidden=true;submit.textContent='Signing in… Please wait.';
+  setSaving(true);var success=false;
+  try{
+   var result=await api(role==='teacher'?'/api/auth/staff-id-login':'/api/parent/login',body,null,true);
+   state.token=role==='teacher'?result.accessToken:result.token;
+   sessionStorage.setItem(role==='teacher'?'rx_teacher_token':'rx_parent_token',state.token);
+   sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');
+   if(role==='teacher')sessionStorage.setItem('rx_school_token',state.token);
+   localStorage.setItem('rx_school_id',result.school&&result.school.id||school);
+   state.dirty=false;
+   if(result.requiresPasswordChange){setSaving(false);return passwordChange()}
+   success=true;
+  }catch(error){showError(error)}
+  finally{setSaving(false);if(submit.isConnected)submit.textContent='Sign in'}
+  if(success)await boot();
+ });
 }
-function passwordChange(){layout(heading('Set your password','Choose a password of 12 to 128 characters.')+'<form id="mPasswordForm" class="m-card m-form">'+field('mNewPassword','New password','password','',true,'minlength="12" maxlength="128" autocomplete="new-password"')+field('mConfirmPassword','Confirm password','password','',true,'minlength="12" maxlength="128" autocomplete="new-password"')+'<button type="submit" class="m-btn">Save password</button></form>');bindForm('mPasswordForm',async function(){if(E('mNewPassword').value!==E('mConfirmPassword').value)throw Error('The passwords do not match.');var body={newPassword:E('mNewPassword').value};if(state.saving)return;setSaving(true);var success=false;try{var result=await api('/api/auth/change-password',body);state.dirty=false;if(result.requiresSignIn){state.token='';sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');setSaving(false);return login('Password changed. Sign in with your new password.')}success=true}catch(error){showError(error)}finally{setSaving(false)}if(success)await boot()})}
+
+function passwordChange(){layout(heading('Set your password','Use 12 to 128 characters, including an uppercase letter, a lowercase letter and a number.')+'<form id="mPasswordForm" class="m-card m-form">'+field('mNewPassword','New password','password','',true,'minlength="12" maxlength="128" autocomplete="new-password"')+field('mConfirmPassword','Confirm password','password','',true,'minlength="12" maxlength="128" autocomplete="new-password"')+'<button type="submit" class="m-btn">Save password</button></form>');bindForm('mPasswordForm',async function(){if(E('mNewPassword').value!==E('mConfirmPassword').value)throw Error('The passwords do not match.');var body={newPassword:E('mNewPassword').value};if(state.saving)return;setSaving(true);var success=false;try{var result=await api('/api/auth/change-password',body);state.dirty=false;if(result.requiresSignIn){state.token='';sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');setSaving(false);return login('Password changed. Sign in with your new password.')}success=true}catch(error){showError(error)}finally{setSaving(false)}if(success)await boot()})}
 async function boot(){
  if(!state.token)return login(new URLSearchParams(location.search).get('expired')==='1'?'Your session expired. Sign in again.':'');
  loading();
@@ -228,7 +260,7 @@ async function boot(){
   if(role==='teacher'){state.ctx=await api('/api/teacher/context');var data=await Promise.all([can('academic.view')?api('/api/teacher/classes'):[],can('academic.view')?api('/api/terms'):[]]);state.classes=data[0];state.terms=data[1];E('mSchoolName').textContent=state.ctx.school.school_name}
   else{state.me=await api('/api/parent/me');var childId=sessionStorage.getItem('rx_mobile_child');state.child=state.me.students.find(function(c){return c.id===childId})||state.me.students[0]||null;E('mSchoolName').textContent=state.me.school.school_name}
   E('mHeaderAction').hidden=false;await go('home',null,true);
- }catch(error){if(error.status===403){state.token='';await login('This app is for teacher and parent accounts. '+error.message)}else if(error.status!==401){layout(heading('Your school is taking a moment',error.message)+button('mBootRetry','Try again')+button('mBootLogin','Return to sign-in','ghost'));E('mBootRetry').onclick=boot;E('mBootLogin').onclick=function(){state.token='';login()}}}
+ }catch(error){if(role==='teacher'&&error.status===403&&error.code==='PASSWORD_CHANGE_REQUIRED'){passwordChange()}else if(error.status===403){state.token='';sessionStorage.removeItem(role==='teacher'?'rx_teacher_token':'rx_parent_token');if(role==='teacher')sessionStorage.removeItem('rx_school_token');await login(error.message)}else if(error.status!==401){layout(heading('Your school is taking a moment',error.message)+button('mBootRetry','Try again')+button('mBootLogin','Return to sign-in','ghost'));E('mBootRetry').onclick=boot;E('mBootLogin').onclick=function(){state.token='';login()}}}
 }
 document.addEventListener('click',function(event){var target=event.target.closest('[data-go]');if(target){event.preventDefault();go(target.dataset.go)}if(event.target.closest('#mSwitchChild'))chooseChild()});
 E('mHeaderAction').onclick=function(){go('inbox')};
