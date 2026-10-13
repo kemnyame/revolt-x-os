@@ -1,3 +1,5 @@
+import { registerSchoolClassCatalogue } from './class-catalogue.js';
+import { schoolRecordId } from './record-id.js';
 import { setSessionDeadline, schoolSessionLoginPath } from './session-ui.js';
 import 'dotenv/config';
 import Fastify from 'fastify';
@@ -411,7 +413,7 @@ function requiredCommercialModule(path:string){
 
 app.post('/api/internal/license-sync',async request=>{
   requireCoreServiceRequest(request);
-  const b=z.object({organisationId:z.string().uuid(),entitlement:z.any()}).parse(request.body);
+  const b=z.object({organisationId:schoolRecordId,entitlement:z.any()}).parse(request.body);
   const licence=await persistLicence(b.organisationId,b.entitlement,'core_os_push');
   await db.query('INSERT INTO school_provisioning_events(organisation_id,event_type,status,details) VALUES($1,\'license.synced\',\'completed\',$2)',[b.organisationId,JSON.stringify({status:licence.status,plan:licence.plan})]);
   return{ok:true,licence:licenceWithWarning(licence)};
@@ -420,9 +422,9 @@ app.post('/api/internal/license-sync',async request=>{
 app.post('/api/internal/sync-staff',async request=>{
   requireCoreServiceRequest(request);
   const b=z.object({
-    organisationId:z.string().uuid(),
+    organisationId:schoolRecordId,
     members:z.array(z.object({
-      osUserId:z.string().uuid(),
+      osUserId:schoolRecordId,
       firstName:z.string().min(1).max(100),
       lastName:z.string().min(1).max(100),
       email:z.string().email().nullable().optional(),
@@ -475,9 +477,9 @@ app.post('/api/internal/sync-staff',async request=>{
 app.post('/api/internal/provision',async request=>{
   requireCoreServiceRequest(request);
   const b=z.object({
-    organisationId:z.string().uuid(),tenantSlug:z.string().min(2).max(100),schoolName:z.string().min(2).max(240),
-    schoolType:z.string().max(80).nullable().optional(),adminUserId:z.string().uuid(),adminEmail:z.string().email(),
-    adminFirstName:z.string().min(1).max(100),adminLastName:z.string().min(1).max(100),previousAdminUserId:z.string().uuid().nullable().optional(),
+    organisationId:schoolRecordId,tenantSlug:z.string().min(2).max(100),schoolName:z.string().min(2).max(240),
+    schoolType:z.string().max(80).nullable().optional(),adminUserId:schoolRecordId,adminEmail:z.string().email(),
+    adminFirstName:z.string().min(1).max(100),adminLastName:z.string().min(1).max(100),previousAdminUserId:schoolRecordId.nullable().optional(),
     phone:z.string().max(60).nullable().optional(),address:z.string().max(2000).nullable().optional(),entitlement:z.any()
   }).parse(request.body);
 
@@ -593,7 +595,7 @@ async function safeValue(sql:string,params:any[]=[]){
 
 app.get('/api/internal/report-summary',async request=>{
   requireCoreServiceRequest(request);
-  const q=z.object({organisationId:z.string().uuid()}).parse(request.query);
+  const q=z.object({organisationId:schoolRecordId}).parse(request.query);
   const org=q.organisationId;
   const [
     profile,students,staff,admissions,attendance,academics,fees,payments,finance,expenses,
@@ -671,7 +673,7 @@ app.get('/api/internal/report-summary',async request=>{
 
 app.get('/api/internal/backup-snapshot',async request=>{
   requireCoreServiceRequest(request);
-  const q=z.object({organisationId:z.string().uuid()}).parse(request.query);
+  const q=z.object({organisationId:schoolRecordId}).parse(request.query);
   const org=q.organisationId;
   const profile=await maybeOne<any>(db,'SELECT organisation_id,tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[org]);
   if(!profile)throw fail(404,'School tenant not found');
@@ -1894,7 +1896,7 @@ app.get('/api/auth/schools',async()=>{
 async function handleSchoolAdminLogin(request:any,reply:any){
   const b=z.object({
     schoolId:schoolIdentifier,
-    adminUserId:z.string().uuid().optional(),
+    adminUserId:schoolRecordId.optional(),
     email:z.string().trim().toLowerCase().email(),
     password:z.string().min(1).max(200)
   }).parse(request.body);
@@ -2342,7 +2344,7 @@ app.get('/api/dashboard',async request=>{
     activeYear(a.core.organisation_id).catch(()=>null),
     activeTerm(a.core.organisation_id).catch(()=>null),
     metric('students',"SELECT count(*) value FROM students WHERE organisation_id=$1 AND status='active'"),
-    metric('classes',"SELECT count(*) value FROM classrooms WHERE organisation_id=$1 AND is_active=true"),
+    metric('classes',"SELECT count(*) value FROM classrooms WHERE organisation_id=$1 AND is_active=true AND academic_year_id=(SELECT id FROM academic_years WHERE organisation_id=$1 ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,start_date DESC LIMIT 1)"),
     metric('subjects',"SELECT count(*) value FROM subjects WHERE organisation_id=$1 AND is_active=true"),
     metric('staff',"SELECT count(*) value FROM school_memberships WHERE organisation_id=$1 AND status='active'"),
     metric('present attendance',"SELECT count(*) value FROM attendance_records WHERE organisation_id=$1 AND attendance_date=current_date AND status='present'"),
@@ -2585,7 +2587,7 @@ async function autoRolloverReleasedReports(client:any,organisationId:string,from
 
 app.post('/api/academic-years/:id/activate',async request=>{
   const a=await authorize(request,db,config,'academic.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const result=await tx(db,async c=>{
     const target=await one<any>(c,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const source=await maybeOne<any>(c,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' AND id<>$2 ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id,id]);
@@ -2604,7 +2606,7 @@ app.post('/api/academic-years/:id/activate',async request=>{
   return result;
 });
 
-app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
+app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:schoolRecordId.optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
 
 app.post('/api/terms',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
@@ -2613,7 +2615,7 @@ app.post('/api/terms',async(request,reply)=>{
 });
 
 app.post('/api/terms/:id/activate',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   return tx(db,async c=>{const target=await one<any>(c,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await c.query("UPDATE terms SET status='closed' WHERE organisation_id=$1 AND academic_year_id=$2 AND status='active' AND id<>$3",[a.core.organisation_id,target.academic_year_id,id]);return one(c,"UPDATE terms SET status='active' WHERE id=$1 RETURNING *",[id])});
 });
 
@@ -2630,14 +2632,9 @@ app.post('/api/grade-levels',async(request,reply)=>{
     throw error;
   }
 });
-app.get('/api/classes',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT c.*,g.code grade_code,g.name grade_name,
-  (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=c.id AND e.status='active') student_count,
-  (SELECT count(*)::int FROM class_subjects cs WHERE cs.classroom_id=c.id AND cs.is_active=true) subject_count
-  FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
-  WHERE c.organisation_id=$1 AND ($2::uuid IS NULL OR c.academic_year_id=$2)
-  ORDER BY g.level_order,c.name`,[a.core.organisation_id,q.academicYearId??null])).rows});
+await registerSchoolClassCatalogue(app,{db,config,authorize});
 app.post('/api/classes',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:z.string().uuid(),gradeLevelId:z.string().uuid(),name:z.string().trim().min(2).max(120),stream:z.string().trim().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:z.string().uuid().optional()}).parse(request.body);
+  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:schoolRecordId,gradeLevelId:schoolRecordId,name:z.string().trim().min(2).max(120),stream:z.string().trim().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:schoolRecordId.optional()}).parse(request.body);
   const cleanName=b.name.trim(),cleanStream=b.stream?.trim()||null;
   const duplicate=await maybeOne<any>(db,`SELECT id FROM classrooms
     WHERE organisation_id=$1 AND academic_year_id=$2
@@ -2656,7 +2653,7 @@ app.post('/api/subjects',async(request,reply)=>{
 
 app.get('/api/class-subjects',async request=>{
   const a=await authorize(request,db,config,'academic.view');
-  const q=z.object({academicYearId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({academicYearId:schoolRecordId.optional(),classroomId:schoolRecordId.optional()}).parse(request.query);
   return (await db.query(`SELECT cs.*,c.name classroom_name,c.class_teacher_os_user_id,g.name grade_name,g.code grade_code,
       s.code subject_code,s.name subject_name,s.stage,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ta.id,'teacherOsUserId',ta.teacher_os_user_id,'termId',ta.term_id,'active',ta.is_active) ORDER BY ta.created_at)
@@ -2674,7 +2671,7 @@ app.get('/api/class-subjects',async request=>{
 });
 app.post('/api/class-subjects',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.edit');
-  const b=z.object({academicYearId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid()}).parse(request.body);
+  const b=z.object({academicYearId:schoolRecordId,classroomId:schoolRecordId,subjectId:schoolRecordId}).parse(request.body);
   const cls=await one<any>(db,'SELECT c.id,g.stage FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id WHERE c.id=$1 AND c.organisation_id=$2 AND c.academic_year_id=$3',[b.classroomId,a.core.organisation_id,b.academicYearId]);
   const subject=await one<any>(db,'SELECT id,stage FROM subjects WHERE id=$1 AND organisation_id=$2 AND is_active=true',[b.subjectId,a.core.organisation_id]);
   if(subject.stage!=='both'&&subject.stage!==cls.stage)throw fail(400,'This subject is not configured for the class stage');
@@ -2688,9 +2685,9 @@ app.post('/api/class-subjects',async(request,reply)=>{
 app.post('/api/class-subjects/bulk',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.edit');
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    classroomId:z.string().uuid(),
-    subjectIds:z.array(z.string().uuid()).min(1).max(30)
+    academicYearId:schoolRecordId,
+    classroomId:schoolRecordId,
+    subjectIds:z.array(schoolRecordId).min(1).max(30)
   }).parse(request.body);
 
   const cls=await one<any>(db,`SELECT c.id,c.name,g.stage
@@ -2730,16 +2727,16 @@ app.post('/api/class-subjects/bulk',async(request,reply)=>{
 
 app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
-  const {classroomId}=z.object({classroomId:z.string().uuid()}).parse(request.params);
+  const {classroomId}=z.object({classroomId:schoolRecordId}).parse(request.params);
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    termId:z.string().uuid().nullable().optional(),
-    classTeacherOsUserId:z.string().uuid().nullable().optional(),
+    academicYearId:schoolRecordId,
+    termId:schoolRecordId.nullable().optional(),
+    classTeacherOsUserId:schoolRecordId.nullable().optional(),
     subjects:z.array(z.object({
-      subjectId:z.string().uuid(),
+      subjectId:schoolRecordId,
       weeklyPeriods:z.number().int().min(1).max(20),
       creditHours:z.number().min(0.25).max(20),
-      teacherOsUserId:z.string().uuid().nullable().optional()
+      teacherOsUserId:schoolRecordId.nullable().optional()
     })).max(40)
   }).parse(request.body);
 
@@ -2879,12 +2876,12 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
 app.post('/api/teacher-assignments/bulk',async request=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    termId:z.string().uuid().nullable().optional(),
-    teacherOsUserId:z.string().uuid(),
+    academicYearId:schoolRecordId,
+    termId:schoolRecordId.nullable().optional(),
+    teacherOsUserId:schoolRecordId,
     mode:z.enum(['class_teacher','all_subjects','subject_across_classes']),
-    classroomIds:z.array(z.string().uuid()).min(1).max(60),
-    subjectId:z.string().uuid().nullable().optional()
+    classroomIds:z.array(schoolRecordId).min(1).max(60),
+    subjectId:schoolRecordId.nullable().optional()
   }).parse(request.body);
 
   await one<any>(db,`SELECT sm.os_user_id FROM school_memberships sm
@@ -2963,7 +2960,7 @@ app.post('/api/teacher-assignments/bulk',async request=>{
 
 app.patch('/api/class-subjects/:id',async request=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     weeklyPeriods:z.number().int().min(1).max(20).optional(),
     creditHours:z.number().min(0.25).max(20).optional()
@@ -2986,7 +2983,7 @@ app.patch('/api/class-subjects/:id',async request=>{
   return row;
 });
 app.delete('/api/class-subjects/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM class_subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const used=await one<any>(db,`SELECT
     (SELECT count(*)::int FROM assessments WHERE classroom_id=$1 AND subject_id=$2) assessments,
@@ -3004,8 +3001,8 @@ app.get('/api/student-onboarding/admission-candidates',async request=>{
 });
 app.post('/api/student-onboarding/admission-candidates/:id/enrol',async(request,reply)=>{
   const a=await authorize(request,db,config,'students.create');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({classroomId:z.string().uuid(),admissionNo:z.string().trim().min(1).max(60).optional()}).parse(request.body);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
+  const b=z.object({classroomId:schoolRecordId,admissionNo:z.string().trim().min(1).max(60).optional()}).parse(request.body);
   const result=await tx(db,async client=>{
     const application=await one<any>(client,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
     if(application.status!=='approved')throw fail(409,'Only approved admission applications can be enrolled');
@@ -3034,7 +3031,7 @@ app.get('/api/students/directory',async request=>{
   const q=z.object({
     q:z.string().trim().max(100).optional(),
     status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional(),
-    classroomId:z.string().uuid().optional(),
+    classroomId:schoolRecordId.optional(),
     page:z.coerce.number().int().min(1).max(100000).default(1),
     pageSize:z.coerce.number().int().min(20).max(200).default(100)
   }).parse(request.query);
@@ -3077,7 +3074,7 @@ app.get('/api/students/directory',async request=>{
 });
 
 app.get('/api/students',async request=>{
-  const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:z.string().uuid().optional(),status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
+  const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:schoolRecordId.optional(),status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
   return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
 });
 app.post('/api/students',async(request,reply)=>{
@@ -3122,11 +3119,11 @@ app.post('/api/students',async(request,reply)=>{
   });
   return reply.code(201).send(result);
 });
-app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.profile.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
+app.get('/api/students/:id',async request=>{const a=await authorize(request,db,config,'students.profile.view');const {id}=z.object({id:schoolRecordId}).parse(request.params);const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');const guardians=(await db.query(`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE sg.student_id=$1 ORDER BY sg.is_primary DESC,g.last_name`,[id])).rows;const enrolments=(await db.query(`SELECT e.*,c.name classroom_name,g.name grade_name,y.name academic_year FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id JOIN academic_years y ON y.id=e.academic_year_id WHERE e.student_id=$1 ORDER BY y.start_date DESC`,[id])).rows;return{...student,guardians,enrolments}});
 
 app.get('/api/students/:id/360',async request=>{
   const a=await authorize(request,db,config,'students.360.view');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const student=await maybeOne<any>(db,`SELECT s.*,e.id enrolment_id,e.academic_year_id,c.id classroom_id,c.name classroom_name,c.class_teacher_os_user_id,
       g.id grade_level_id,g.code grade_code,g.name grade_name,y.name academic_year
     FROM students s
@@ -3223,7 +3220,7 @@ app.get('/api/students/:id/360',async request=>{
 });
 app.patch('/api/students/:id',async request=>{
   const a=await authorize(request,db,config,'students.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     firstName:z.string().min(1).max(100).optional(),middleName:z.string().max(100).nullable().optional(),
     lastName:z.string().min(1).max(100).optional(),sex:z.enum(['male','female']).nullable().optional(),
@@ -3249,11 +3246,11 @@ app.patch('/api/students/:id',async request=>{
 
 app.post('/api/students/:id/status',async request=>{
   const a=await authorize(request,db,config,'students.status');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']),
     reason:z.string().trim().max(2000).optional(),
-    classroomId:z.string().uuid().optional()
+    classroomId:schoolRecordId.optional()
   }).superRefine((v,ctx)=>{
     if(v.status!=='active'&&(!v.reason||v.reason.trim().length<3)){
       ctx.addIssue({code:z.ZodIssueCode.custom,path:['reason'],message:'Give a reason for changing the student from active status'});
@@ -3314,12 +3311,12 @@ app.post('/api/students/:id/status',async request=>{
   return result;
 });
 app.post('/api/students/:id/guardians',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({firstName:z.string().min(1).max(100),lastName:z.string().min(1).max(100),phone:z.string().min(5).max(60),email:z.string().email().optional(),address:z.string().max(2000).optional(),relationship:z.string().min(2).max(60),isPrimary:z.boolean().default(false)}).parse(request.body);
+  const a=await authorize(request,db,config,'students.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);const b=z.object({firstName:z.string().min(1).max(100),lastName:z.string().min(1).max(100),phone:z.string().min(5).max(60),email:z.string().email().optional(),address:z.string().max(2000).optional(),relationship:z.string().min(2).max(60),isPrimary:z.boolean().default(false)}).parse(request.body);
   const row=await tx(db,async c=>{const g=await one<any>(c,'INSERT INTO guardians(organisation_id,first_name,last_name,phone,email,address) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[a.core.organisation_id,b.firstName,b.lastName,b.phone,b.email??null,b.address??null]);if(b.isPrimary)await c.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[id]);await c.query('INSERT INTO student_guardians(student_id,guardian_id,relationship,is_primary) VALUES($1,$2,$3,$4)',[id,g.id,b.relationship,b.isPrimary]);return g});await audit(a.core.organisation_id,a.core.id,'guardian.linked','student',id,{guardianId:row.id});return reply.code(201).send(row);
 });
 app.post('/api/enrolments',async(request,reply)=>{
   const a=await authorize(request,db,config,'students.edit');
-  const b=z.object({studentId:z.string().uuid(),academicYearId:z.string().uuid(),classroomId:z.string().uuid()}).parse(request.body);
+  const b=z.object({studentId:schoolRecordId,academicYearId:schoolRecordId,classroomId:schoolRecordId}).parse(request.body);
   const result=await tx(db,async client=>{
     const row=await one<any>(client,`INSERT INTO enrolments(organisation_id,student_id,academic_year_id,classroom_id)
       VALUES($1,$2,$3,$4)
@@ -3334,18 +3331,18 @@ app.post('/api/enrolments',async(request,reply)=>{
 });
 
 app.get('/api/attendance',async request=>{
-  const a=await authorize(request,db,config,'attendance.view');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null,q.date);
+  const a=await authorize(request,db,config,'attendance.view');const q=z.object({classroomId:schoolRecordId,date:z.string().date()}).parse(request.query);await ensureTeacherScope(a,q.classroomId,null,q.date);
   return (await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,COALESCE(ar.status,'unmarked') attendance_status,ar.note FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN attendance_records ar ON ar.student_id=s.id AND ar.classroom_id=e.classroom_id AND ar.attendance_date=$3 WHERE e.organisation_id=$1 AND e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,q.classroomId,q.date])).rows;
 });
 app.post('/api/attendance/mark',async request=>{
-  const a=await authorize(request,db,config,'attendance.mark');const b=z.object({classroomId:z.string().uuid(),date:z.string().date(),records:z.array(z.object({studentId:z.string().uuid(),status:z.enum(['present','absent','late','excused']),note:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);await ensureTeacherScope(a,b.classroomId,null,b.date);
+  const a=await authorize(request,db,config,'attendance.mark');const b=z.object({classroomId:schoolRecordId,date:z.string().date(),records:z.array(z.object({studentId:schoolRecordId,status:z.enum(['present','absent','late','excused']),note:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);await ensureTeacherScope(a,b.classroomId,null,b.date);
   await tx(db,async c=>{for(const r of b.records)await c.query(`INSERT INTO attendance_records(organisation_id,student_id,classroom_id,attendance_date,status,note,marked_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(student_id,classroom_id,attendance_date) DO UPDATE SET status=EXCLUDED.status,note=EXCLUDED.note,marked_by_os_user_id=EXCLUDED.marked_by_os_user_id,updated_at=now()`,[a.core.organisation_id,r.studentId,b.classroomId,b.date,r.status,r.note??null,a.core.id])});await audit(a.core.organisation_id,a.core.id,'attendance.marked','classroom',b.classroomId,{date:b.date,count:b.records.length});return{saved:b.records.length};
 });
 
 
 app.get('/api/assessment-categories',async request=>{
   const a=await authorize(request,db,config,'assessment.view');
-  const q=z.object({academicYearId:z.string().uuid().optional(),termId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({academicYearId:schoolRecordId.optional(),termId:schoolRecordId.optional()}).parse(request.query);
   const rows=(await db.query(`SELECT ac.*,
       (SELECT count(*)::int FROM assessments a WHERE a.category_id=ac.id) exercise_count
     FROM assessment_categories ac
@@ -3359,8 +3356,8 @@ app.get('/api/assessment-categories',async request=>{
 app.post('/api/assessment-categories',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    termId:z.string().uuid(),
+    academicYearId:schoolRecordId,
+    termId:schoolRecordId,
     code:z.string().min(1).max(40),
     name:z.string().min(2).max(120),
     defaultMaxScore:z.number().positive(),
@@ -3380,7 +3377,7 @@ app.post('/api/assessment-categories',async(request,reply)=>{
 });
 app.patch('/api/assessment-categories/:id',async request=>{
   const a=await authorize(request,db,config,'assessment.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     name:z.string().min(2).max(120).optional(),
     defaultMaxScore:z.number().positive().optional(),
@@ -3408,7 +3405,7 @@ app.patch('/api/assessment-categories/:id',async request=>{
 });
 app.delete('/api/assessment-categories/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.delete');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const used=await one<any>(db,'SELECT count(*)::int n FROM assessments WHERE category_id=$1',[id]);
   if(Number(used.n)>0)throw fail(409,'This assessment category already has exercises. Disable it instead of deleting it.');
   await one<any>(db,'DELETE FROM assessment_categories WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);
@@ -3419,8 +3416,8 @@ app.delete('/api/assessment-categories/:id',async(request,reply)=>{
 app.get('/api/assessments',async request=>{
   const a=await authorize(request,db,config,'assessment.view');
   const q=z.object({
-    termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional(),subjectId:z.string().uuid().optional(),
-    categoryId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()
+    termId:schoolRecordId.optional(),classroomId:schoolRecordId.optional(),subjectId:schoolRecordId.optional(),
+    categoryId:schoolRecordId.optional(),teacherOsUserId:schoolRecordId.optional()
   }).parse(request.query);
   let rows=(await db.query(`SELECT a.*,s.name subject_name,c.name classroom_name,t.name term_name,
       ac.name category_name,ac.code category_code,ac.weight_percent category_weight,ac.default_max_score,
@@ -3453,10 +3450,10 @@ app.get('/api/assessments',async request=>{
 app.post('/api/assessments',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
-    categoryId:z.string().uuid().optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),assessmentComponent:z.enum(['continuous','end_term_exam']).optional(),
+    academicYearId:schoolRecordId,termId:schoolRecordId,classroomId:schoolRecordId,subjectId:schoolRecordId,
+    categoryId:schoolRecordId.optional(),assessmentType:z.enum(['classwork','homework','project','test','exam','other']).optional(),assessmentComponent:z.enum(['continuous','end_term_exam']).optional(),
     name:z.string().min(2).max(160),maxScore:z.number().positive().optional(),assessmentDate:z.string().date().optional(),
-    teacherOsUserId:z.string().uuid().optional()
+    teacherOsUserId:schoolRecordId.optional()
   }).parse(request.body);
   const creatorRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   const teacherPortal=creatorRole?.portal_mode==='teacher';
@@ -3514,10 +3511,10 @@ app.post('/api/assessments',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.get('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
+  const a=await authorize(request,db,config,'assessment.view');const {id}=z.object({id:schoolRecordId}).parse(request.params);const ass=await maybeOne<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!ass)throw fail(404,'Assessment not found');await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');const rows=(await db.query(`SELECT s.id student_id,s.admission_no,s.first_name,s.last_name,sc.score,sc.comment FROM enrolments e JOIN students s ON s.id=e.student_id LEFT JOIN assessment_scores sc ON sc.student_id=s.id AND sc.assessment_id=$1 WHERE e.classroom_id=$2 AND e.status='active' ORDER BY s.last_name,s.first_name`,[id,ass.classroom_id])).rows;return{assessment:ass,students:rows};
 });
 app.post('/api/assessments/:id/scores',async request=>{
-  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:z.string().uuid(),score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}.`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
+  const a=await authorize(request,db,config,'assessment.score');const {id}=z.object({id:schoolRecordId}).parse(request.params);const b=z.object({scores:z.array(z.object({studentId:schoolRecordId,score:z.number().min(0),comment:z.string().max(500).optional()})).min(1).max(200)}).parse(request.body);const ass=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await ensureTeacherScope(a,ass.classroom_id,ass.subject_id);const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);if(roleProfile?.portal_mode==='teacher'&&ass.teacher_os_user_id!==a.core.id)throw fail(403,'This assessment is assigned to another teacher');for(const s of b.scores)if(Number(s.score)>Number(ass.max_score))throw fail(400,`Score cannot exceed ${ass.max_score}.`);await tx(db,async c=>{for(const s of b.scores)await c.query(`INSERT INTO assessment_scores(assessment_id,student_id,score,comment) VALUES($1,$2,$3,$4) ON CONFLICT(assessment_id,student_id) DO UPDATE SET score=EXCLUDED.score,comment=EXCLUDED.comment,updated_at=now()`,[id,s.studentId,s.score,s.comment??null])});await audit(a.core.organisation_id,a.core.id,'assessment.scores_saved','assessment',id,{count:b.scores.length});return{saved:b.scores.length};
 });
 
 async function buildAcademicStatement(organisationId:string,studentId:string){
@@ -3561,7 +3558,7 @@ async function buildAcademicStatement(organisationId:string,studentId:string){
 
 app.get('/api/academic-statements/:studentId',async request=>{
   const a=await authorize(request,db,config,'academic_statement.view');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
   return buildAcademicStatement(a.core.organisation_id,studentId);
 });
 app.get('/api/academic-statement-requests',async request=>{
@@ -3577,7 +3574,7 @@ app.get('/api/academic-statement-requests',async request=>{
 });
 app.post('/api/academic-statement-requests',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic_statement.issue');
-  const b=z.object({studentId:z.string().uuid(),purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
+  const b=z.object({studentId:schoolRecordId,purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
   await one<any>(db,'SELECT id FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
   const row=await one<any>(db,`INSERT INTO academic_statement_requests(
     organisation_id,student_id,requested_by_type,purpose,note,status
@@ -3587,7 +3584,7 @@ app.post('/api/academic-statement-requests',async(request,reply)=>{
 });
 app.patch('/api/academic-statement-requests/:id',async request=>{
   const a=await authorize(request,db,config,'academic_statement.issue');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({status:z.enum(['processing','approved','declined']),schoolNote:z.string().max(2000).nullable().optional()}).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const reference=b.status==='approved'?(current.statement_reference||('RXAS-'+new Date().getUTCFullYear()+'-'+randomBytes(4).toString('hex').toUpperCase())):current.statement_reference;
@@ -3615,13 +3612,13 @@ app.patch('/api/academic-statement-requests/:id',async request=>{
 });
 
 app.get('/api/parent/students/:id/academic-statement-requests',async request=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const g=await guardianAuth(request);const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await ensureGuardianStudent(g.guardian_id,id);
   return (await db.query(`SELECT * FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3
     ORDER BY requested_at DESC`,[g.organisation_id,id,g.guardian_id])).rows;
 });
 app.post('/api/parent/students/:id/academic-statement-requests',async(request,reply)=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const g=await guardianAuth(request);const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await ensureGuardianStudent(g.guardian_id,id);
   const b=z.object({purpose:z.enum(['continuation','transfer','scholarship','personal','other']).default('continuation'),note:z.string().max(2000).optional()}).parse(request.body);
   const existing=await maybeOne<any>(db,`SELECT id FROM academic_statement_requests WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3 AND status IN('requested','processing')`,
@@ -3633,7 +3630,7 @@ app.post('/api/parent/students/:id/academic-statement-requests',async(request,re
   return reply.code(201).send(row);
 });
 app.get('/api/parent/academic-statements/:requestId',async request=>{
-  const g=await guardianAuth(request);const {requestId}=z.object({requestId:z.string().uuid()}).parse(request.params);
+  const g=await guardianAuth(request);const {requestId}=z.object({requestId:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2 AND guardian_id=$3 AND status='approved'`,
     [requestId,g.organisation_id,g.guardian_id]);
   const statement=await buildAcademicStatement(g.organisation_id,row.student_id);
@@ -3653,7 +3650,7 @@ app.post('/api/student/academic-statement-requests',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.get('/api/student/academic-statements/:requestId',async request=>{
-  const s=await studentAuth(request);const {requestId}=z.object({requestId:z.string().uuid()}).parse(request.params);
+  const s=await studentAuth(request);const {requestId}=z.object({requestId:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`SELECT * FROM academic_statement_requests WHERE id=$1 AND organisation_id=$2 AND student_id=$3 AND status='approved'`,
     [requestId,s.organisation_id,s.student_id]);
   const statement=await buildAcademicStatement(s.organisation_id,s.student_id);
@@ -3662,8 +3659,8 @@ app.get('/api/student/academic-statements/:requestId',async request=>{
 
 app.get('/api/report-cards/:studentId',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
-  const q=z.object({termId:z.string().uuid()}).parse(request.query);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
+  const q=z.object({termId:schoolRecordId}).parse(request.query);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[studentId,a.core.organisation_id]);
   const term=await one<any>(db,`SELECT t.*,y.name academic_year,y.start_date academic_year_start,y.end_date academic_year_end
     FROM terms t JOIN academic_years y ON y.id=t.academic_year_id
@@ -3747,13 +3744,13 @@ app.get('/api/report-cards/:studentId',async request=>{
   };
 });
 
-app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config,'fees.view');const q=z.object({academicYearId:z.string().uuid().optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
+app.get('/api/fee-items',async request=>{const a=await authorize(request,db,config,'fees.view');const q=z.object({academicYearId:schoolRecordId.optional()}).parse(request.query);return (await db.query(`SELECT f.*,g.name grade_name,t.name term_name FROM fee_items f LEFT JOIN grade_levels g ON g.id=f.grade_level_id LEFT JOIN terms t ON t.id=f.term_id WHERE f.organisation_id=$1 AND ($2::uuid IS NULL OR f.academic_year_id=$2) ORDER BY f.created_at DESC`,[a.core.organisation_id,q.academicYearId??null])).rows});
 app.post('/api/fee-items',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),
+    academicYearId:schoolRecordId,termId:schoolRecordId.optional(),gradeLevelId:schoolRecordId.optional(),
     name:z.string().min(2).max(160),amount:z.number().min(0),mandatory:z.boolean().default(true),
-    incomeAccountId:z.string().uuid().optional()
+    incomeAccountId:schoolRecordId.optional()
   }).parse(request.body);
   let incomeAccountId=b.incomeAccountId??null;
   if(incomeAccountId){
@@ -3773,8 +3770,8 @@ app.post('/api/fee-items',async(request,reply)=>{
 app.post('/api/fees/create',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),gradeLevelId:z.string().uuid().optional(),
-    classroomId:z.string().uuid().optional(),name:z.string().trim().min(2).max(160),amount:z.number().positive(),
+    academicYearId:schoolRecordId,termId:schoolRecordId.optional(),gradeLevelId:schoolRecordId.optional(),
+    classroomId:schoolRecordId.optional(),name:z.string().trim().min(2).max(160),amount:z.number().positive(),
     mandatory:z.boolean().default(true)
   }).parse(request.body);
   await one<any>(db,'SELECT id FROM academic_years WHERE id=$1 AND organisation_id=$2',[b.academicYearId,a.core.organisation_id]);
@@ -3805,7 +3802,7 @@ app.post('/api/fees/create',async(request,reply)=>{
 
 app.post('/api/fees/assign',async request=>{
   const a=await authorize(request,db,config,'fees.create');
-  const b=z.object({feeItemId:z.string().uuid(),studentId:z.string().uuid().optional(),classroomId:z.string().uuid().optional()})
+  const b=z.object({feeItemId:schoolRecordId,studentId:schoolRecordId.optional(),classroomId:schoolRecordId.optional()})
     .refine(v=>v.studentId||v.classroomId,{message:'studentId or classroomId is required'}).parse(request.body);
   const result=await tx(db,async client=>{
     const fee=await one<any>(client,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[b.feeItemId,a.core.organisation_id]);
@@ -3826,18 +3823,18 @@ app.post('/api/fees/assign',async request=>{
   return{assigned:result.assigned};
 });
 app.get('/api/fees/student/:studentId',async request=>{
-  const a=await authorize(request,db,config,'fees.view');const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
+  const a=await authorize(request,db,config,'fees.view');const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);const items=(await db.query(`SELECT sf.*,f.name fee_name,f.amount original_amount,COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0) paid FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id WHERE sf.organisation_id=$1 AND sf.student_id=$2 ORDER BY sf.created_at DESC`,[a.core.organisation_id,studentId])).rows;const payments=(await db.query('SELECT * FROM payments WHERE organisation_id=$1 AND student_id=$2 ORDER BY paid_at DESC',[a.core.organisation_id,studentId])).rows;return{items,payments};
 });
 app.post('/api/payments',async(request,reply)=>{
   const a=await authorize(request,db,config,'fees.record');
   const b=z.object({
-    studentId:z.string().uuid(),
-    studentFeeId:z.string().uuid().optional(),
+    studentId:schoolRecordId,
+    studentFeeId:schoolRecordId.optional(),
     amount:z.number().positive(),
     paymentMethod:z.enum(['cash','mobile_money','bank','card','other']),
     reference:z.string().max(120).optional(),
     note:z.string().max(500).optional(),
-    incomeAccountId:z.string().uuid().optional()
+    incomeAccountId:schoolRecordId.optional()
   }).parse(request.body);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[b.studentId,a.core.organisation_id]);
   const row=await tx(db,async client=>{
@@ -3978,12 +3975,12 @@ async function buildAutoTimetablePlan(organisationId:string,academicYearId:strin
 }
 app.post('/api/timetable/auto-schedule/preview',async request=>{
   const a=await authorize(request,db,config,'timetable.manage');
-  const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional()}).parse(request.body);
+  const b=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional()}).parse(request.body);
   return buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
 });
 app.post('/api/timetable/auto-schedule/apply',async request=>{
   const a=await authorize(request,db,config,'timetable.manage');
-  const b=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional()}).parse(request.body);
+  const b=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional()}).parse(request.body);
   const plan=await buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
   if(!plan.suggestions.length)return{created:0,unscheduled:plan.unscheduled};
   await tx(db,async client=>{
@@ -4001,7 +3998,7 @@ app.post('/api/timetable/auto-schedule/apply',async request=>{
 
 app.get('/api/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({classroomId:schoolRecordId.optional(),termId:schoolRecordId.optional(),academicYearId:schoolRecordId.optional(),teacherOsUserId:schoolRecordId.optional()}).parse(request.query);
   const rows=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
@@ -4015,7 +4012,7 @@ app.get('/api/timetable',async request=>{
 });
 app.get('/api/timetable/export.csv',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({classroomId:schoolRecordId.optional(),termId:schoolRecordId.optional(),academicYearId:schoolRecordId.optional(),teacherOsUserId:schoolRecordId.optional()}).parse(request.query);
   const rows=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name,t.name term_name,y.name academic_year
     FROM timetable_entries tt JOIN classrooms c ON c.id=tt.classroom_id JOIN subjects s ON s.id=tt.subject_id
     JOIN academic_years y ON y.id=tt.academic_year_id LEFT JOIN terms t ON t.id=tt.term_id
@@ -4036,8 +4033,8 @@ app.get('/api/timetable/export.csv',async(request,reply)=>{
 app.post('/api/timetable',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.manage');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),classroomId:z.string().uuid(),
-    subjectId:z.string().uuid(),teacherOsUserId:z.string().uuid().optional(),dayOfWeek:z.number().int().min(1).max(5),
+    academicYearId:schoolRecordId,termId:schoolRecordId.optional(),classroomId:schoolRecordId,
+    subjectId:schoolRecordId,teacherOsUserId:schoolRecordId.optional(),dayOfWeek:z.number().int().min(1).max(5),
     startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),room:z.string().max(80).optional()
   }).parse(request.body);
   if(b.endTime<=b.startTime)throw fail(400,'End time must be after start time');
@@ -4085,10 +4082,10 @@ app.post('/api/timetable',async(request,reply)=>{
 app.post('/api/timetable/auto-schedule',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.auto_schedule');
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    termId:z.string().uuid().nullable().optional(),
-    teacherOsUserId:z.string().uuid().nullable().optional(),
-    classroomId:z.string().uuid().nullable().optional(),
+    academicYearId:schoolRecordId,
+    termId:schoolRecordId.nullable().optional(),
+    teacherOsUserId:schoolRecordId.nullable().optional(),
+    classroomId:schoolRecordId.nullable().optional(),
     regenerateAuto:z.boolean().default(true),
     dryRun:z.boolean().default(false)
   }).parse(request.body);
@@ -4405,7 +4402,7 @@ app.post('/api/staff/teachers',async(request,reply)=>{
 app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   const a=await authorize(request,db,config,'staff.password_reset');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
-  const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
+  const {membershipId}=z.object({membershipId:schoolRecordId}).parse(request.params);
   const users=await fetchCoreUsers(a.core.organisation_id);
   const coreUser=users.find((u:any)=>u.membership_id===membershipId);
   if(!coreUser)throw fail(404,'School user was not found');
@@ -4442,7 +4439,7 @@ app.get('/api/staff/module-memberships',async request=>{
 });
 app.post('/api/staff/module-memberships',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.edit');
-  const b=z.object({osUserId:z.string().uuid(),role:z.string().min(1).max(40),status:z.enum(['active','suspended']).default('active')}).parse(request.body);
+  const b=z.object({osUserId:schoolRecordId,role:z.string().min(1).max(40),status:z.enum(['active','suspended']).default('active')}).parse(request.body);
   await one<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,b.role]);
   const row=await one<any>(db,`INSERT INTO school_memberships(organisation_id,os_user_id,role,status)
     VALUES($1,$2,$3,$4)
@@ -4454,7 +4451,7 @@ app.post('/api/staff/module-memberships',async(request,reply)=>{
 
 app.patch('/api/academic-years/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({name:z.string().min(4).max(40).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
@@ -4464,7 +4461,7 @@ app.patch('/api/academic-years/:id',async request=>{
   return row;
 });
 app.delete('/api/academic-years/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const y=await one<any>(db,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(y.status==='active')throw fail(409,'Close or activate another academic year before deleting this one');
   const count=await one<any>(db,'SELECT count(*)::int n FROM enrolments WHERE academic_year_id=$1',[id]);
@@ -4476,7 +4473,7 @@ app.delete('/api/academic-years/:id',async(request,reply)=>{
 
 
 app.patch('/api/terms/:id',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     startDate:z.string().date().optional(),endDate:z.string().date().optional(),
     nextTermBegins:z.string().date().nullable().optional()
@@ -4497,15 +4494,15 @@ app.delete('/api/terms/:id',async(request,reply)=>{
 });
 
 app.patch('/api/grade-levels/:id',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({name:z.string().min(2).max(80).optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const row=await one<any>(db,'UPDATE grade_levels SET name=COALESCE($1,name),is_active=COALESCE($2,is_active) WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.name??null,b.isActive??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'grade_level.updated','grade_level',id);return row;
 });
 
 app.patch('/api/classes/:id',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:z.string().uuid().nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
+  const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:schoolRecordId.nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const before=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(Object.hasOwn(b,'classTeacherOsUserId')&&b.classTeacherOsUserId){
     const other=await maybeOne<any>(db,`SELECT name FROM classrooms
@@ -4520,7 +4517,7 @@ app.patch('/api/classes/:id',async request=>{
   return row;
 });
 app.delete('/api/classes/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const count=await one<any>(db,'SELECT count(*)::int n FROM enrolments WHERE classroom_id=$1',[id]);
   if(count.n>0)throw fail(409,'Move or remove enrolled students before deleting this class');
@@ -4529,20 +4526,20 @@ app.delete('/api/classes/:id',async(request,reply)=>{
 });
 
 app.patch('/api/subjects/:id',async request=>{
-  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({code:z.string().min(1).max(30).optional(),name:z.string().min(2).max(120).optional(),stage:z.enum(['primary','jhs','both']).optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const row=await one<any>(db,'UPDATE subjects SET code=COALESCE($1,code),name=COALESCE($2,name),stage=COALESCE($3,stage),is_active=COALESCE($4,is_active) WHERE id=$5 AND organisation_id=$6 RETURNING *',[b.code?.toUpperCase()??null,b.name??null,b.stage??null,b.isActive??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'subject.updated','subject',id);return row;
 });
 app.delete('/api/subjects/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'academic.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await db.query('DELETE FROM subjects WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'subject.deleted','subject',id,{name:row.name});return reply.code(204).send();
 });
 
 app.delete('/api/students/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'students.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const student=await one<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await tx(db,async c=>{
     const guardians=(await c.query('SELECT guardian_id FROM student_guardians WHERE student_id=$1',[id])).rows.map((x:any)=>x.guardian_id);
@@ -4552,7 +4549,7 @@ app.delete('/api/students/:id',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'student.deleted','student',id,{admissionNo:student.admission_no,name:`${student.first_name} ${student.last_name}`});return reply.code(204).send();
 });
 app.patch('/api/students/:studentId/guardians/:guardianId',async request=>{
-  const a=await authorize(request,db,config,'students.edit');const p=z.object({studentId:z.string().uuid(),guardianId:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'students.edit');const p=z.object({studentId:schoolRecordId,guardianId:schoolRecordId}).parse(request.params);
   const b=z.object({firstName:z.string().min(1).max(100).optional(),lastName:z.string().min(1).max(100).optional(),phone:z.string().min(5).max(60).optional(),email:z.string().email().nullable().optional(),address:z.string().max(2000).nullable().optional(),relationship:z.string().min(2).max(60).optional(),isPrimary:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const linked=await maybeOne<any>(db,'SELECT 1 FROM student_guardians WHERE student_id=$1 AND guardian_id=$2',[p.studentId,p.guardianId]);if(!linked)throw fail(404,'Guardian link not found');
   if(b.isPrimary===true)await db.query('UPDATE student_guardians SET is_primary=false WHERE student_id=$1',[p.studentId]);
@@ -4562,30 +4559,30 @@ app.patch('/api/students/:studentId/guardians/:guardianId',async request=>{
   return one<any>(db,`SELECT g.*,sg.relationship,sg.is_primary FROM guardians g JOIN student_guardians sg ON sg.guardian_id=g.id WHERE g.id=$1 AND sg.student_id=$2`,[p.guardianId,p.studentId]);
 });
 app.delete('/api/students/:studentId/guardians/:guardianId',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.delete');const p=z.object({studentId:z.string().uuid(),guardianId:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'students.delete');const p=z.object({studentId:schoolRecordId,guardianId:schoolRecordId}).parse(request.params);
   await db.query('DELETE FROM student_guardians WHERE student_id=$1 AND guardian_id=$2',[p.studentId,p.guardianId]);
   await db.query('DELETE FROM guardians g WHERE g.id=$1 AND g.organisation_id=$2 AND NOT EXISTS(SELECT 1 FROM student_guardians sg WHERE sg.guardian_id=g.id)',[p.guardianId,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'guardian.unlinked','guardian',p.guardianId,{studentId:p.studentId});return reply.code(204).send();
 });
 app.delete('/api/enrolments/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'students.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'students.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'DELETE FROM enrolments WHERE id=$1 AND organisation_id=$2 RETURNING *',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'enrolment.deleted','enrolment',id,{studentId:row.student_id});return reply.code(204).send();
 });
 
 app.delete('/api/attendance',async(request,reply)=>{
-  const a=await authorize(request,db,config,'attendance.mark');const q=z.object({classroomId:z.string().uuid(),date:z.string().date()}).parse(request.query);
+  const a=await authorize(request,db,config,'attendance.mark');const q=z.object({classroomId:schoolRecordId,date:z.string().date()}).parse(request.query);
   const result=await db.query('DELETE FROM attendance_records WHERE organisation_id=$1 AND classroom_id=$2 AND attendance_date=$3',[a.core.organisation_id,q.classroomId,q.date]);
   await audit(a.core.organisation_id,a.core.id,'attendance.cleared','classroom',q.classroomId,{date:q.date,count:result.rowCount??0});return reply.code(200).send({deleted:result.rowCount??0});
 });
 
 app.patch('/api/assessments/:id',async request=>{
   const a=await authorize(request,db,config,'assessment.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
-    name:z.string().min(2).max(160).optional(),categoryId:z.string().uuid().optional(),
+    name:z.string().min(2).max(160).optional(),categoryId:schoolRecordId.optional(),
     maxScore:z.number().positive().optional(),assessmentDate:z.string().date().nullable().optional(),
-    teacherOsUserId:z.string().uuid().optional()
+    teacherOsUserId:schoolRecordId.optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
@@ -4621,7 +4618,7 @@ app.patch('/api/assessments/:id',async request=>{
 });
 app.delete('/api/assessments/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'assessment.delete');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM assessments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,row.classroom_id,row.subject_id);
   const assessmentRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
@@ -4632,13 +4629,13 @@ app.delete('/api/assessments/:id',async(request,reply)=>{
 });
 
 app.patch('/api/fee-items/:id',async request=>{
-  const a=await authorize(request,db,config,'fees.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'fees.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({name:z.string().min(2).max(160).optional(),amount:z.number().min(0).optional(),mandatory:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const row=await one<any>(db,'UPDATE fee_items SET name=COALESCE($1,name),amount=COALESCE($2,amount),mandatory=COALESCE($3,mandatory) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.amount??null,b.mandatory??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'fee_item.updated','fee_item',id);return row;
 });
 app.delete('/api/fee-items/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'fees.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'fees.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM fee_items WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const paid=await one<any>(db,'SELECT count(*)::int n FROM payments p JOIN student_fees sf ON sf.id=p.student_fee_id WHERE sf.fee_item_id=$1 AND p.voided_at IS NULL',[id]);
   if(paid.n>0)throw fail(409,'This fee has payments and cannot be deleted');
@@ -4646,15 +4643,15 @@ app.delete('/api/fee-items/:id',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'fee_item.deleted','fee_item',id,{name:row.name});return reply.code(204).send();
 });
 app.get('/api/fees/open-items',async request=>{
-  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:z.string().uuid().optional()}).parse(request.query);
+  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:schoolRecordId.optional()}).parse(request.query);
   return (await db.query(`SELECT sf.id student_fee_id,sf.student_id,s.admission_no,s.first_name,s.last_name,f.name fee_name,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid,((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0)) balance,sf.status FROM student_fees sf JOIN students s ON s.id=sf.student_id JOIN fee_items f ON f.id=sf.fee_item_id LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.organisation_id=$1 AND ($2::uuid IS NULL OR sf.student_id=$2) GROUP BY sf.id,s.id,f.id HAVING ((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0))>0 ORDER BY s.last_name,s.first_name,f.name`,[a.core.organisation_id,q.studentId??null])).rows;
 });
 app.get('/api/payments',async request=>{
-  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:z.string().uuid().optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
+  const a=await authorize(request,db,config,'fees.view');const q=z.object({studentId:schoolRecordId.optional(),limit:z.coerce.number().int().min(1).max(200).default(100)}).parse(request.query);
   return (await db.query(`SELECT p.*,s.admission_no,s.first_name,s.last_name,f.name fee_name FROM payments p JOIN students s ON s.id=p.student_id LEFT JOIN student_fees sf ON sf.id=p.student_fee_id LEFT JOIN fee_items f ON f.id=sf.fee_item_id WHERE p.organisation_id=$1 AND ($2::uuid IS NULL OR p.student_id=$2) ORDER BY p.paid_at DESC LIMIT $3`,[a.core.organisation_id,q.studentId??null,q.limit])).rows;
 });
 app.post('/api/payments/:id/void',async request=>{
-  const a=await authorize(request,db,config,'fees.void');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().min(2).max(500)}).parse(request.body);
+  const a=await authorize(request,db,config,'fees.void');const {id}=z.object({id:schoolRecordId}).parse(request.params);const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().min(2).max(500)}).parse(request.body);
   const row=await tx(db,async client=>{
     const current=await one<any>(client,'SELECT * FROM payments WHERE id=$1 AND organisation_id=$2 AND voided_at IS NULL FOR UPDATE',[id,a.core.organisation_id]);
     if(String(current.reference||'').trim().toLowerCase()!==String(b.originalReference).trim().toLowerCase())throw fail(409,'Original transaction reference does not match this payment');
@@ -4669,9 +4666,9 @@ app.post('/api/payments/:id/void',async request=>{
 
 app.patch('/api/timetable/:id',async request=>{
   const a=await authorize(request,db,config,'timetable.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
-    subjectId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().nullable().optional(),
+    subjectId:schoolRecordId.optional(),teacherOsUserId:schoolRecordId.nullable().optional(),
     dayOfWeek:z.number().int().min(1).max(5).optional(),startTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),
     endTime:z.string().regex(/^\d{2}:\d{2}$/).optional(),room:z.string().max(80).nullable().optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
@@ -4725,13 +4722,13 @@ app.patch('/api/timetable/:id',async request=>{
   return row;
 });
 app.delete('/api/timetable/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'timetable.manage');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await one<any>(db,'DELETE FROM timetable_entries WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'timetable.deleted','timetable_entry',id);return reply.code(204).send();
 });
 
 app.patch('/api/staff/module-memberships/:id',async request=>{
   const a=await authorize(request,db,config,'staff.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({role:z.string().min(1).max(40).optional(),status:z.enum(['active','suspended']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   if(b.role)await one<any>(db,'SELECT 1 FROM school_roles WHERE organisation_id=$1 AND key=$2 AND is_active=true',[a.core.organisation_id,b.role]);
   const row=await one<any>(db,'UPDATE school_memberships SET role=COALESCE($1,role),status=COALESCE($2,status),updated_at=now() WHERE id=$3 AND organisation_id=$4 RETURNING *',[b.role??null,b.status??null,id,a.core.organisation_id]);
@@ -4739,7 +4736,7 @@ app.patch('/api/staff/module-memberships/:id',async request=>{
   return row;
 });
 app.delete('/api/staff/module-memberships/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'staff.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'staff.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'SELECT * FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(row.os_user_id===a.core.id)throw fail(409,'You cannot remove your own School access');
   await db.query('DELETE FROM school_memberships WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await audit(a.core.organisation_id,a.core.id,'school_staff.removed','school_membership',id,{osUserId:row.os_user_id});return reply.code(204).send();
@@ -4808,11 +4805,11 @@ app.get('/api/teacher-assignments',async request=>{
 app.post('/api/teacher-assignments',async(request,reply)=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
   const b=z.object({
-    academicYearId:z.string().uuid(),
-    termId:z.string().uuid().nullable().optional(),
-    classroomId:z.string().uuid(),
-    subjectId:z.string().uuid().nullable().optional(),
-    teacherOsUserId:z.string().uuid(),
+    academicYearId:schoolRecordId,
+    termId:schoolRecordId.nullable().optional(),
+    classroomId:schoolRecordId,
+    subjectId:schoolRecordId.nullable().optional(),
+    teacherOsUserId:schoolRecordId,
     replaceExisting:z.boolean().default(false)
   }).parse(request.body);
 
@@ -4879,7 +4876,7 @@ app.post('/api/teacher-assignments',async(request,reply)=>{
 });
 app.patch('/api/teacher-assignments/:id',async request=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({isActive:z.boolean()}).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const row=await one<any>(db,'UPDATE teacher_assignments SET is_active=$1 WHERE id=$2 AND organisation_id=$3 RETURNING *',[b.isActive,id,a.core.organisation_id]);
@@ -4898,7 +4895,7 @@ app.patch('/api/teacher-assignments/:id',async request=>{
 });
 app.delete('/api/teacher-assignments/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'teaching_assignments.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await db.query('DELETE FROM teacher_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(!current.subject_id){
@@ -4926,22 +4923,22 @@ app.post('/api/grading-bands',async(request,reply)=>{
   await audit(a.core.organisation_id,a.core.id,'grading_band.created','grading_band',row.id);return reply.code(201).send(row);
 });
 app.patch('/api/grading-bands/:id',async request=>{
-  const a=await authorize(request,db,config,'assessment.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'assessment.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({name:z.string().min(1).max(40).optional(),minPercentage:z.number().min(0).max(100).optional(),maxPercentage:z.number().min(0).max(100).optional(),remark:z.string().max(120).nullable().optional(),sortOrder:z.number().int().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM grading_bands WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const min=b.minPercentage??Number(current.min_percentage),max=b.maxPercentage??Number(current.max_percentage);if(max<min)throw fail(400,'Maximum percentage must be greater than or equal to minimum percentage');
   const row=await one<any>(db,`UPDATE grading_bands SET name=COALESCE($1,name),min_percentage=COALESCE($2,min_percentage),max_percentage=COALESCE($3,max_percentage),remark=CASE WHEN $4 THEN $5 ELSE remark END,sort_order=COALESCE($6,sort_order),is_active=COALESCE($7,is_active) WHERE id=$8 AND organisation_id=$9 RETURNING *`,[b.name??null,b.minPercentage??null,b.maxPercentage??null,Object.hasOwn(b,'remark'),b.remark??null,b.sortOrder??null,b.isActive??null,id,a.core.organisation_id]);return row;
 });
 app.delete('/api/grading-bands/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'assessment.delete');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'assessment.delete');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await one<any>(db,'DELETE FROM grading_bands WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);return reply.code(204).send();
 });
 
 app.get('/api/homework',async request=>{
   const a=await authorize(request,db,config,'homework.view');
   const q=z.object({
-    classroomId:z.string().uuid().optional(),termId:z.string().uuid().optional(),
-    status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:z.string().uuid().optional()
+    classroomId:schoolRecordId.optional(),termId:schoolRecordId.optional(),
+    status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:schoolRecordId.optional()
   }).parse(request.query);
   let rows=(await db.query(`SELECT h.*,c.name classroom_name,s.name subject_name,t.name term_name,
       (SELECT count(*)::int FROM enrolments e WHERE e.classroom_id=h.classroom_id AND e.status='active') student_count,
@@ -4975,9 +4972,9 @@ app.get('/api/homework',async request=>{
 app.post('/api/homework',async(request,reply)=>{
   const a=await authorize(request,db,config,'homework.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
+    academicYearId:schoolRecordId,termId:schoolRecordId,classroomId:schoolRecordId,subjectId:schoolRecordId,
     title:z.string().min(2).max(200),instructions:z.string().min(1).max(10000),dueAt:z.string().datetime().optional(),
-    maxScore:z.number().positive().optional(),teacherOsUserId:z.string().uuid().optional()
+    maxScore:z.number().positive().optional(),teacherOsUserId:schoolRecordId.optional()
   }).parse(request.body);
   const creatorRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   const teacherPortal=creatorRole?.portal_mode==='teacher';
@@ -5003,7 +5000,7 @@ app.post('/api/homework',async(request,reply)=>{
 });
 app.patch('/api/homework/:id',async request=>{
   const a=await authorize(request,db,config,'homework.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,current.classroom_id,current.subject_id);
   const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
@@ -5012,7 +5009,7 @@ app.patch('/api/homework/:id',async request=>{
   const b=z.object({
     title:z.string().min(2).max(200).optional(),instructions:z.string().min(1).max(10000).optional(),
     dueAt:z.string().datetime().nullable().optional(),maxScore:z.number().positive().nullable().optional(),
-    status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:z.string().uuid().optional()
+    status:z.enum(['draft','published','closed']).optional(),teacherOsUserId:schoolRecordId.optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
   if(teacherPortal&&b.teacherOsUserId&&b.teacherOsUserId!==a.core.id)throw fail(403,'Teachers cannot reassign homework');
   if(b.teacherOsUserId&&b.teacherOsUserId!==current.teacher_os_user_id){
@@ -5031,7 +5028,7 @@ app.patch('/api/homework/:id',async request=>{
 });
 app.post('/api/homework/:id/publish',async request=>{
   const a=await authorize(request,db,config,'homework.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const h=await one<any>(db,`SELECT h.*,c.name classroom_name,s.name subject_name,sp.school_name
     FROM homework_assignments h JOIN classrooms c ON c.id=h.classroom_id JOIN subjects s ON s.id=h.subject_id
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
@@ -5069,7 +5066,7 @@ app.post('/api/homework/:id/publish',async request=>{
 });
 app.get('/api/homework/:id/submissions',async request=>{
   const a=await authorize(request,db,config,'homework.view');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
   const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
@@ -5080,7 +5077,7 @@ app.get('/api/homework/:id/submissions',async request=>{
 });
 app.post('/api/homework/:id/submissions',async request=>{
   const a=await authorize(request,db,config,'homework.score');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const h=await one<any>(db,`SELECT h.*,sub.name subject_name,c.name classroom_name,sp.school_name
     FROM homework_assignments h JOIN subjects sub ON sub.id=h.subject_id JOIN classrooms c ON c.id=h.classroom_id
     JOIN school_profiles sp ON sp.organisation_id=h.organisation_id
@@ -5089,7 +5086,7 @@ app.post('/api/homework/:id/submissions',async request=>{
   const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   if(homeworkRole?.portal_mode==='teacher'&&h.teacher_os_user_id!==a.core.id)throw fail(403,'This homework belongs to another teacher');
   const b=z.object({records:z.array(z.object({
-    studentId:z.string().uuid(),status:z.enum(['not_submitted','submitted','late','graded']),
+    studentId:schoolRecordId,status:z.enum(['not_submitted','submitted','late','graded']),
     score:z.number().min(0).nullable().optional(),teacherComment:z.string().max(1000).nullable().optional()
   })).min(1).max(200)}).parse(request.body);
   for(const r of b.records)if(r.score!=null&&h.max_score!=null&&r.score>Number(h.max_score))throw fail(400,`Homework score cannot exceed ${h.max_score}`);
@@ -5135,7 +5132,7 @@ app.post('/api/homework/:id/submissions',async request=>{
 });
 app.delete('/api/homework/:id',async(request,reply)=>{
   const a=await authorize(request,db,config,'homework.delete');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const h=await one<any>(db,'SELECT * FROM homework_assignments WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   await ensureTeacherScope(a,h.classroom_id,h.subject_id);
   const homeworkRole=await schoolRoleProfile(db,a.core.organisation_id,a.role);
@@ -5149,27 +5146,27 @@ app.get('/api/announcements',async request=>{
   const a=await authorize(request,db,config,'communications.view');return (await db.query(`SELECT a.*,c.name classroom_name FROM school_announcements a LEFT JOIN classrooms c ON c.id=a.classroom_id WHERE a.organisation_id=$1 ORDER BY a.created_at DESC`,[a.core.organisation_id])).rows;
 });
 app.post('/api/announcements',async(request,reply)=>{
-  const a=await authorize(request,db,config,'communications.manage');const b=z.object({audience:z.enum(['all','staff','parents','students','class']),classroomId:z.string().uuid().nullable().optional(),title:z.string().min(2).max(200),body:z.string().min(1).max(10000),status:z.enum(['draft','published']).default('draft')}).parse(request.body);
+  const a=await authorize(request,db,config,'communications.manage');const b=z.object({audience:z.enum(['all','staff','parents','students','class']),classroomId:schoolRecordId.nullable().optional(),title:z.string().min(2).max(200),body:z.string().min(1).max(10000),status:z.enum(['draft','published']).default('draft')}).parse(request.body);
   if(b.audience==='class'&&!b.classroomId)throw fail(400,'A classroom is required for class announcements');
   const row=await one<any>(db,`INSERT INTO school_announcements(organisation_id,audience,classroom_id,title,body,status,published_at,created_by_os_user_id) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $6='published' THEN now() ELSE NULL END,$7) RETURNING *`,[a.core.organisation_id,b.audience,b.classroomId??null,b.title,b.body,b.status,a.core.id]);await audit(a.core.organisation_id,a.core.id,'announcement.created','announcement',row.id);return reply.code(201).send(row);
 });
 app.patch('/api/announcements/:id',async request=>{
-  const a=await authorize(request,db,config,'communications.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);const b=z.object({audience:z.enum(['all','staff','parents','students','class']).optional(),classroomId:z.string().uuid().nullable().optional(),title:z.string().min(2).max(200).optional(),body:z.string().min(1).max(10000).optional(),status:z.enum(['draft','published','archived']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const a=await authorize(request,db,config,'communications.manage');const {id}=z.object({id:schoolRecordId}).parse(request.params);const b=z.object({audience:z.enum(['all','staff','parents','students','class']).optional(),classroomId:schoolRecordId.nullable().optional(),title:z.string().min(2).max(200).optional(),body:z.string().min(1).max(10000).optional(),status:z.enum(['draft','published','archived']).optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const row=await one<any>(db,`UPDATE school_announcements SET audience=COALESCE($1,audience),classroom_id=CASE WHEN $2 THEN $3 ELSE classroom_id END,title=COALESCE($4,title),body=COALESCE($5,body),status=COALESCE($6,status),published_at=CASE WHEN $6='published' AND published_at IS NULL THEN now() WHEN $6 IS NULL THEN published_at ELSE published_at END,updated_at=now() WHERE id=$7 AND organisation_id=$8 RETURNING *`,[b.audience??null,Object.hasOwn(b,'classroomId'),b.classroomId??null,b.title??null,b.body??null,b.status??null,id,a.core.organisation_id]);return row;
 });
-app.delete('/api/announcements/:id',async(request,reply)=>{const a=await authorize(request,db,config,'communications.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);await one<any>(db,'DELETE FROM school_announcements WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);return reply.code(204).send()});
+app.delete('/api/announcements/:id',async(request,reply)=>{const a=await authorize(request,db,config,'communications.manage');const {id}=z.object({id:schoolRecordId}).parse(request.params);await one<any>(db,'DELETE FROM school_announcements WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);return reply.code(204).send()});
 
 app.get('/api/report-comments/:studentId',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
-  const q=z.object({termId:z.string().uuid()}).parse(request.query);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
+  const q=z.object({termId:schoolRecordId}).parse(request.query);
   return (await maybeOne<any>(db,'SELECT * FROM report_comments WHERE organisation_id=$1 AND student_id=$2 AND term_id=$3',[a.core.organisation_id,studentId,q.termId]))??null;
 });
 app.put('/api/report-comments/:studentId',async request=>{
   const a=await authorize(request,db,config,'reports.edit');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
   const b=z.object({
-    termId:z.string().uuid(),
+    termId:schoolRecordId,
     classTeacherComment:z.string().max(4000).nullable().optional(),
     conduct:z.string().max(80).nullable().optional(),
     interest:z.string().max(1000).nullable().optional(),
@@ -5217,8 +5214,8 @@ app.put('/api/report-comments/:studentId',async request=>{
 });
 app.post('/api/report-comments/:studentId/submit',async request=>{
   const a=await authorize(request,db,config,'reports.submit');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
-  const b=z.object({termId:z.string().uuid()}).parse(request.body);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
+  const b=z.object({termId:schoolRecordId}).parse(request.body);
   const term=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const current=await one<any>(db,`SELECT c.id classroom_id
     FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
@@ -5282,7 +5279,7 @@ app.post('/api/report-comments/:studentId/submit',async request=>{
 app.get('/api/teacher/report-worklist',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   await ensureTeachingRole(a);
-  const q=z.object({termId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({termId:schoolRecordId.optional()}).parse(request.query);
   const term=q.termId
     ?await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id])
     :await activeTerm(a.core.organisation_id);
@@ -5430,7 +5427,7 @@ async function classReportReadinessDetails(organisationId:string,classroomId:str
 
 app.get('/api/teacher/report-pool',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
+  const q=z.object({classroomId:schoolRecordId,termId:schoolRecordId}).parse(request.query);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,q.classroomId,q.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can open the final report pool for this class');
   const pool=await classReportPool(a.core.organisation_id,q.classroomId,q.termId);
@@ -5449,7 +5446,7 @@ app.get('/api/teacher/report-pool',async request=>{
 
 app.get('/api/teacher/report-pool/readiness',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  const q=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.query);
+  const q=z.object({classroomId:schoolRecordId,termId:schoolRecordId}).parse(request.query);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,q.classroomId,q.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can review missing report grades for this class');
   return classReportReadinessDetails(a.core.organisation_id,q.classroomId,q.termId);
@@ -5457,7 +5454,7 @@ app.get('/api/teacher/report-pool/readiness',async request=>{
 
 app.post('/api/teacher/report-pool/remind-missing',async request=>{
   const a=await authorize(request,db,config,'reports.view');
-  const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const b=z.object({classroomId:schoolRecordId,termId:schoolRecordId}).parse(request.body);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can remind teachers about missing grades for this class');
 
@@ -5519,7 +5516,7 @@ app.post('/api/teacher/report-pool/remind-missing',async request=>{
 
 app.post('/api/teacher/report-pool/release',async request=>{
   const a=await authorize(request,db,config,'reports.release');
-  const b=z.object({classroomId:z.string().uuid(),termId:z.string().uuid()}).parse(request.body);
+  const b=z.object({classroomId:schoolRecordId,termId:schoolRecordId}).parse(request.body);
   const releaseTerm=await one<any>(db,'SELECT term_no FROM terms WHERE id=$1 AND organisation_id=$2',[b.termId,a.core.organisation_id]);
   const classTeacherId=await effectiveClassTeacher(a.core.organisation_id,b.classroomId,b.termId);
   if(a.role!=='school_admin'&&classTeacherId!==a.core.id)throw fail(403,'Only the Class Teacher can release the final report pool for this class');
@@ -5592,7 +5589,7 @@ app.post('/api/teacher/report-pool/release',async request=>{
 
 app.get('/api/report-review-queue',async request=>{
   const a=await authorize(request,db,config,'reports.approve');
-  const q=z.object({status:z.enum(['submitted','approved','returned']).optional(),termId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({status:z.enum(['submitted','approved','returned']).optional(),termId:schoolRecordId.optional()}).parse(request.query);
   let rows=(await db.query(`SELECT rc.*,s.admission_no,s.first_name,s.last_name,c.id classroom_id,c.name classroom_name,t.name term_name,y.name academic_year,
       c.class_teacher_os_user_id
     FROM report_comments rc
@@ -5611,9 +5608,9 @@ app.get('/api/report-review-queue',async request=>{
 });
 app.post('/api/report-comments/:studentId/review',async request=>{
   const a=await authorize(request,db,config,'reports.approve');
-  const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+  const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
   const b=z.object({
-    termId:z.string().uuid(),
+    termId:schoolRecordId,
     action:z.enum(['approve','return']),
     headteacherComment:z.string().max(4000).nullable().optional(),
     returnNote:z.string().max(2000).nullable().optional(),
@@ -5717,7 +5714,7 @@ app.put('/api/report-signatures/me',async request=>{
 });
 app.put('/api/report-signatures/:osUserId',async request=>{
   const a=await authorize(request,db,config,'staff.edit');
-  const {osUserId}=z.object({osUserId:z.string().uuid()}).parse(request.params);
+  const {osUserId}=z.object({osUserId:schoolRecordId}).parse(request.params);
   const b=z.object({signerRole:z.enum(['teacher','headteacher']),displayName:z.string().trim().min(2).max(200),signatureImageData:z.string().max(1500000).nullable().optional(),isActive:z.boolean().default(true)}).parse(request.body);
   if(b.signatureImageData&&!/^data:image\/(png|jpe?g|webp);base64,/i.test(b.signatureImageData))throw fail(400,'Signature must be a PNG, JPG or WebP image');
   await one<any>(db,"SELECT os_user_id FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2 AND status='active'",[a.core.organisation_id,osUserId]);
@@ -5737,7 +5734,7 @@ app.get('/api/report-reviewers',async request=>{
 });
 app.post('/api/report-reviewers',async(request,reply)=>{
   const a=await authorize(request,db,config,'staff.edit');
-  const b=z.object({classroomId:z.string().uuid(),reviewerOsUserId:z.string().uuid(),isActive:z.boolean().default(true)}).parse(request.body);
+  const b=z.object({classroomId:schoolRecordId,reviewerOsUserId:schoolRecordId,isActive:z.boolean().default(true)}).parse(request.body);
   const row=await one<any>(db,`INSERT INTO report_reviewer_assignments(organisation_id,classroom_id,reviewer_os_user_id,is_active)
     VALUES($1,$2,$3,$4) ON CONFLICT(organisation_id,classroom_id,reviewer_os_user_id)
     DO UPDATE SET is_active=EXCLUDED.is_active RETURNING *`,[a.core.organisation_id,b.classroomId,b.reviewerOsUserId,b.isActive]);
@@ -5748,9 +5745,9 @@ app.post('/api/report-reviewers',async(request,reply)=>{
 app.get('/api/promotions/preview',async request=>{
   const a=await authorize(request,db,config,'promotion.manage');
   const q=z.object({
-    fromAcademicYearId:z.string().uuid(),
-    toAcademicYearId:z.string().uuid(),
-    classroomId:z.string().uuid()
+    fromAcademicYearId:schoolRecordId,
+    toAcademicYearId:schoolRecordId,
+    classroomId:schoolRecordId
   }).parse(request.query);
   const classroom=await one<any>(db,`SELECT c.*,g.level_order,g.name grade_name,g.code grade_code
     FROM classrooms c JOIN grade_levels g ON g.id=c.grade_level_id
@@ -5788,12 +5785,12 @@ app.get('/api/promotions/preview',async request=>{
 app.post('/api/promotions/batch',async request=>{
   const a=await authorize(request,db,config,'promotion.manage');
   const b=z.object({
-    fromAcademicYearId:z.string().uuid(),
-    toAcademicYearId:z.string().uuid(),
-    fromClassroomId:z.string().uuid().optional(),
+    fromAcademicYearId:schoolRecordId,
+    toAcademicYearId:schoolRecordId,
+    fromClassroomId:schoolRecordId.optional(),
     records:z.array(z.object({
-      studentId:z.string().uuid(),
-      toClassroomId:z.string().uuid().nullable().optional(),
+      studentId:schoolRecordId,
+      toClassroomId:schoolRecordId.nullable().optional(),
       outcome:z.enum(['promoted','repeated','completed'])
     })).min(1).max(300)
   }).parse(request.body);
@@ -5938,7 +5935,7 @@ app.get('/api/parent/alerts',async request=>{
 });
 app.post('/api/parent/alerts/:id/read',async request=>{
   const g=await guardianAuth(request);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`
     UPDATE guardian_notifications
     SET read_at=COALESCE(read_at,now())
@@ -5948,7 +5945,7 @@ app.post('/api/parent/alerts/:id/read',async request=>{
   return{read:true,readAt:row.read_at};
 });
 app.get('/api/parent/students/:id/dashboard',async request=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);const student=await ensureGuardianStudent(g.guardian_id,id);
+  const g=await guardianAuth(request);const {id}=z.object({id:schoolRecordId}).parse(request.params);const student=await ensureGuardianStudent(g.guardian_id,id);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id JOIN grade_levels g ON g.id=c.grade_level_id WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[id]);
   Object.assign(student,current||{});
   const fee=await one<any>(db,`SELECT COALESCE(sum((sf.amount_due-sf.discount)-COALESCE((SELECT sum(p.amount) FROM payments p WHERE p.student_fee_id=sf.id AND p.voided_at IS NULL),0)),0) outstanding FROM student_fees sf WHERE sf.organisation_id=$1 AND sf.student_id=$2`,[g.organisation_id,id]);
@@ -5958,7 +5955,7 @@ app.get('/api/parent/students/:id/dashboard',async request=>{
   return{student,fees:fee,attendance,homework,announcements};
 });
 app.get('/api/parent/students/:id/fees',async request=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);await ensureGuardianStudent(g.guardian_id,id);
+  const g=await guardianAuth(request);const {id}=z.object({id:schoolRecordId}).parse(request.params);await ensureGuardianStudent(g.guardian_id,id);
   const items=(await db.query(`SELECT sf.id,f.name fee_name,(sf.amount_due-sf.discount) due,COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0) paid,((sf.amount_due-sf.discount)-COALESCE(sum(p.amount) FILTER(WHERE p.voided_at IS NULL),0)) balance,sf.status FROM student_fees sf JOIN fee_items f ON f.id=sf.fee_item_id LEFT JOIN payments p ON p.student_fee_id=sf.id WHERE sf.organisation_id=$1 AND sf.student_id=$2 GROUP BY sf.id,f.id ORDER BY sf.created_at DESC`,[g.organisation_id,id])).rows;
   const payments=(await db.query('SELECT id,amount,payment_method,reference,paid_at,note FROM payments WHERE organisation_id=$1 AND student_id=$2 AND voided_at IS NULL ORDER BY paid_at DESC',[g.organisation_id,id])).rows;return{items,payments};
 });
@@ -6018,13 +6015,13 @@ async function buildGuardianReleasedReport(g:any,id:string){
 
 app.get('/api/parent/students/:id/latest-report',async request=>{
   const g=await guardianAuth(request);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   return buildGuardianReleasedReport(g,id);
 });
 
 app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
   const g=await guardianAuth(request);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const report:any=await buildGuardianReleasedReport(g,id);
   if(!report.available)throw fail(404,'No released report card is available');
 
@@ -6226,7 +6223,7 @@ app.get('/api/parent/students/:id/report-card.pdf',async(request,reply)=>{
 });
 
 app.get('/api/payments/:id/receipt',async request=>{
-  const a=await authorize(request,db,config,'fees.view');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'fees.view');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const payment=await one<any>(db,`SELECT p.*,s.admission_no,s.first_name,s.middle_name,s.last_name,f.name fee_name,
       sp.school_name,sp.short_name,sp.motto,sp.phone school_phone,sp.email school_email,sp.address school_address,sp.currency,sp.logo_url,
       fr.receipt_no finance_receipt_no,fr.reference finance_reference,je.entry_no journal_entry_no
@@ -6252,6 +6249,7 @@ app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
   await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
+  const teachingYear=await activeYear(a.core.organisation_id);
   return (await db.query(`
     WITH effective_class_teacher AS (
       SELECT c.id classroom_id,COALESCE(
@@ -6263,7 +6261,7 @@ app.get('/api/teacher/classes',async request=>{
            ORDER BY ta.created_at DESC LIMIT 1),
         c.class_teacher_os_user_id
       ) teacher_os_user_id
-      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true AND c.academic_year_id=$4
     ),
     teaching_scope AS (
       SELECT c.id classroom_id,NULL::uuid subject_id,'class_teacher'::text assignment_type,true is_class_teacher
@@ -6273,7 +6271,7 @@ app.get('/api/teacher/classes',async request=>{
       UNION ALL
       SELECT ta.classroom_id,ta.subject_id,'subject_teacher'::text assignment_type,false is_class_teacher
       FROM teacher_assignments ta
-      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.academic_year_id=$4 AND ta.subject_id IS NOT NULL
         AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT DISTINCT c.id classroom_id,c.name classroom_name,g.name grade_name,ts.subject_id,s.name subject_name,
@@ -6284,12 +6282,13 @@ app.get('/api/teacher/classes',async request=>{
     JOIN grade_levels g ON g.id=c.grade_level_id
     LEFT JOIN subjects s ON s.id=ts.subject_id
     WHERE c.organisation_id=$1 AND c.is_active=true
-    ORDER BY c.name,ts.is_class_teacher DESC,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
+    ORDER BY c.name,ts.is_class_teacher DESC,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null,teachingYear?.id??null])).rows;
 });
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
   await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
+  const teachingYear=await activeYear(a.core.organisation_id);
   return (await db.query(`
     WITH effective_class_teacher AS (
       SELECT c.id classroom_id,COALESCE(
@@ -6301,13 +6300,13 @@ app.get('/api/teacher/students',async request=>{
            ORDER BY ta.created_at DESC LIMIT 1),
         c.class_teacher_os_user_id
       ) teacher_os_user_id
-      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true AND c.academic_year_id=$4
     ),
     scoped_classes AS (
       SELECT ect.classroom_id FROM effective_class_teacher ect WHERE ect.teacher_os_user_id=$2
       UNION
       SELECT ta.classroom_id FROM teacher_assignments ta
-      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.academic_year_id=$4
         AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT DISTINCT s.id,s.admission_no,s.first_name,s.last_name,s.status,c.id classroom_id,c.name classroom_name,g.name grade_name,
@@ -6319,12 +6318,13 @@ app.get('/api/teacher/students',async request=>{
     JOIN effective_class_teacher ect ON ect.classroom_id=c.id
     JOIN grade_levels g ON g.id=c.grade_level_id
     WHERE e.organisation_id=$1
-    ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id,term?.id??null])).rows;
+    ORDER BY c.name,s.last_name,s.first_name`,[a.core.organisation_id,a.core.id,term?.id??null,teachingYear?.id??null])).rows;
 });
 app.get('/api/teacher/dashboard',async request=>{
   const a=await authorize(request,db,config,'reports.view');
   await ensureTeachingRole(a);
   const term=await activeTerm(a.core.organisation_id);
+  const teachingYear=await activeYear(a.core.organisation_id);
   const scope=await db.query(`
     WITH effective_class_teacher AS (
       SELECT c.id classroom_id,COALESCE(
@@ -6336,7 +6336,7 @@ app.get('/api/teacher/dashboard',async request=>{
            ORDER BY ta.created_at DESC LIMIT 1),
         c.class_teacher_os_user_id
       ) teacher_os_user_id
-      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true
+      FROM classrooms c WHERE c.organisation_id=$1 AND c.is_active=true AND c.academic_year_id=$4
     ),
     assignments AS (
       SELECT ect.classroom_id,NULL::uuid subject_id,true is_class_teacher
@@ -6344,14 +6344,14 @@ app.get('/api/teacher/dashboard',async request=>{
       UNION ALL
       SELECT ta.classroom_id,ta.subject_id,false
       FROM teacher_assignments ta
-      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.subject_id IS NOT NULL
+      WHERE ta.organisation_id=$1 AND ta.teacher_os_user_id=$2 AND ta.is_active=true AND ta.academic_year_id=$4 AND ta.subject_id IS NOT NULL
         AND (ta.term_id IS NULL OR ta.term_id IS NOT DISTINCT FROM $3::uuid)
     )
     SELECT count(DISTINCT classroom_id)::int assigned_classes,
       count(DISTINCT subject_id) FILTER(WHERE subject_id IS NOT NULL)::int subject_assignments,
       count(DISTINCT classroom_id) FILTER(WHERE is_class_teacher)::int class_teacher_classes,
       array_agg(DISTINCT classroom_id) classroom_ids
-    FROM assignments`,[a.core.organisation_id,a.core.id,term?.id??null]);
+    FROM assignments`,[a.core.organisation_id,a.core.id,term?.id??null,teachingYear?.id??null]);
   const row=scope.rows[0]||{};
   const classIds=(row.classroom_ids||[]).filter(Boolean);
   const notices=await one<any>(db,`SELECT count(*)::int total,count(*) FILTER(WHERE read_at IS NULL)::int unread
@@ -6387,7 +6387,7 @@ app.get('/api/notifications',async request=>{
 });
 app.post('/api/notifications/:id/read',async request=>{
   const a=await authorize(request,db,config);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   return one<any>(db,'UPDATE staff_notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND organisation_id=$2 AND recipient_os_user_id=$3 RETURNING *',[id,a.core.organisation_id,a.core.id]);
 });
 app.post('/api/notifications/read-all',async request=>{
@@ -6407,7 +6407,7 @@ app.get('/api/teacher/notifications',async request=>{
 });
 app.post('/api/teacher/notifications/:id/read',async request=>{
   const a=await authorize(request,db,config);await ensureTeachingRole(a);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   return one<any>(db,'UPDATE staff_notifications SET read_at=COALESCE(read_at,now()) WHERE id=$1 AND organisation_id=$2 AND recipient_os_user_id=$3 RETURNING *',[id,a.core.organisation_id,a.core.id]);
 });
 app.post('/api/teacher/notifications/read-all',async request=>{
@@ -6417,7 +6417,7 @@ app.post('/api/teacher/notifications/read-all',async request=>{
 });
 
 app.post('/api/students/:id/portal-reset',async request=>{
-  const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'portals.manage');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const student=await maybeOne<any>(db,'SELECT * FROM students WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);if(!student)throw fail(404,'Student not found');
   const pin=String(randomInt(100000,1000000));
   await db.query(`INSERT INTO student_portal_access(student_id,pin_hash,is_active) VALUES($1,$2,true)
@@ -6585,7 +6585,7 @@ app.post('/api/admissions/internal',async(request,reply)=>{
 });
 app.get('/api/admissions/:id',async request=>{
   const a=await authorize(request,db,config,'admissions.view');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const application=await one<any>(db,`SELECT aa.*,gl.name requested_grade_name
     FROM admission_applications aa LEFT JOIN grade_levels gl ON gl.organisation_id=aa.organisation_id AND gl.code=aa.requested_grade_code
     WHERE aa.id=$1 AND aa.organisation_id=$2`,[id,a.core.organisation_id]);
@@ -6595,7 +6595,7 @@ app.get('/api/admissions/:id',async request=>{
 });
 app.patch('/api/admissions/:id/details',async request=>{
   const a=await authorize(request,db,config,'admissions.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({firstName:z.string().trim().min(1).max(100).optional(),middleName:z.string().trim().max(100).nullable().optional(),lastName:z.string().trim().min(1).max(100).optional(),sex:z.enum(['male','female']).nullable().optional(),dateOfBirth:z.string().date().nullable().optional(),requestedGradeCode:z.string().trim().min(1).max(20).optional(),previousSchool:z.string().trim().max(240).nullable().optional(),guardianFirstName:z.string().trim().min(1).max(100).optional(),guardianLastName:z.string().trim().min(1).max(100).optional(),guardianPhone:z.string().trim().min(5).max(60).optional(),guardianAltPhone:z.string().trim().max(60).nullable().optional(),guardianEmail:z.string().email().nullable().optional(),guardianRelationship:z.string().trim().min(2).max(60).optional(),address:z.string().trim().max(4000).nullable().optional(),emergencyContactName:z.string().trim().max(200).nullable().optional(),emergencyContactPhone:z.string().trim().max(60).nullable().optional(),notes:z.string().trim().max(5000).nullable().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(current.status==='enrolled')throw fail(409,'An enrolled application cannot be edited');
@@ -6613,7 +6613,7 @@ app.patch('/api/admissions/:id/details',async request=>{
 });
 app.patch('/api/admissions/:id',async request=>{
   const a=await authorize(request,db,config,'admissions.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({
     firstName:z.string().trim().min(1).max(100).optional(),
     middleName:z.string().trim().max(100).nullable().optional(),
@@ -6639,7 +6639,7 @@ app.patch('/api/admissions/:id',async request=>{
     notes:z.string().trim().max(5000).nullable().optional(),
     status:z.enum(['submitted','under_review','approved','waitlisted','declined']).optional(),
     reviewNote:z.string().max(5000).nullable().optional(),
-    assignedReviewerOsUserId:z.string().uuid().nullable().optional()
+    assignedReviewerOsUserId:schoolRecordId.nullable().optional()
   }).refine(v=>Object.keys(v).length>0,{message:'Enter at least one application change'}).parse(request.body);
 
   const current=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
@@ -6693,7 +6693,7 @@ app.patch('/api/admissions/:id',async request=>{
 });
 app.post('/api/admissions/:id/contact',async(request,reply)=>{
   const a=await authorize(request,db,config,'communications.send');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({method:z.enum(['call','email','sms','whatsapp']),subject:z.string().max(300).optional(),message:z.string().max(5000).optional(),note:z.string().max(2000).optional()}).parse(request.body);
   const application=await one<any>(db,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   const recipient=b.method==='email'?application.guardian_email:application.guardian_phone;
@@ -6716,8 +6716,8 @@ app.post('/api/admissions/:id/contact',async(request,reply)=>{
 });
 app.post('/api/admissions/:id/enrol',async(request,reply)=>{
   const a=await authorize(request,db,config,'admissions.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-  const b=z.object({admissionNo:z.string().min(1).max(60).optional(),classroomId:z.string().uuid()}).parse(request.body);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
+  const b=z.object({admissionNo:z.string().min(1).max(60).optional(),classroomId:schoolRecordId}).parse(request.body);
   const result=await tx(db,async client=>{
     const appRow=await one<any>(client,'SELECT * FROM admission_applications WHERE id=$1 AND organisation_id=$2 FOR UPDATE',[id,a.core.organisation_id]);
     if(appRow.status!=='approved')throw fail(409,'Approve the application before enrolling the student');
@@ -6919,7 +6919,7 @@ app.put('/api/roles/:role/capabilities',async request=>{
 app.get('/api/teacher/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
   await ensureTeachingRole(a);
-  const q=z.object({termId:z.string().uuid().optional(),academicYearId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({termId:schoolRecordId.optional(),academicYearId:schoolRecordId.optional()}).parse(request.query);
   const currentTerm=q.termId
     ?await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[q.termId,a.core.organisation_id])
     :await activeTerm(a.core.organisation_id);
@@ -6946,7 +6946,7 @@ app.get('/api/student/timetable',async request=>{
     ORDER BY tt.day_of_week,tt.start_time`,[s.organisation_id,current.classroom_id,current.academic_year_id])).rows;
 });
 app.get('/api/parent/students/:id/timetable',async request=>{
-  const g=await guardianAuth(request);const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const g=await guardianAuth(request);const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await ensureGuardianStudent(g.guardian_id,id);
   const current=await maybeOne<any>(db,`SELECT c.id classroom_id,e.academic_year_id FROM enrolments e JOIN classrooms c ON c.id=e.classroom_id
     WHERE e.student_id=$1 AND e.status='active' ORDER BY e.enrolled_at DESC LIMIT 1`,[id]);
@@ -6960,7 +6960,7 @@ app.get('/api/parent/students/:id/timetable',async request=>{
 
 app.get('/api/timetable/settings',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.optional()}).parse(request.query);
   const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2
     AND term_id IS NOT DISTINCT FROM $3::uuid LIMIT 1`,[a.core.organisation_id,q.academicYearId,q.termId??null]);
   const breaks=(await db.query(`SELECT * FROM timetable_breaks WHERE organisation_id=$1 AND academic_year_id=$2
@@ -6971,7 +6971,7 @@ app.get('/api/timetable/settings',async request=>{
 app.put('/api/timetable/settings',async request=>{
   const a=await authorize(request,db,config,'timetable.configure');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),
+    academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional(),
     schoolDayStart:z.string().regex(/^\d{2}:\d{2}$/),schoolDayEnd:z.string().regex(/^\d{2}:\d{2}$/),
     defaultPeriodMinutes:z.number().int().min(15).max(180),minimumBreakMinutes:z.number().int().min(0).max(180),
     maxTeacherPeriodsPerDay:z.number().int().min(1).max(20)
@@ -6990,7 +6990,7 @@ app.put('/api/timetable/settings',async request=>{
 app.post('/api/timetable/breaks',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.configure');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),dayOfWeek:z.number().int().min(1).max(5).nullable().optional(),
+    academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional(),dayOfWeek:z.number().int().min(1).max(5).nullable().optional(),
     label:z.string().min(2).max(100),startTime:z.string().regex(/^\d{2}:\d{2}$/),endTime:z.string().regex(/^\d{2}:\d{2}$/),
     breakType:z.enum(['break','lunch','assembly','other']).default('break')
   }).parse(request.body);
@@ -7003,14 +7003,14 @@ app.post('/api/timetable/breaks',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.delete('/api/timetable/breaks/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'DELETE FROM timetable_breaks WHERE id=$1 AND organisation_id=$2 RETURNING id',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'timetable.break_deleted','timetable_break',row.id);
   return reply.code(204).send();
 });
 app.get('/api/timetable/unavailability',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional(),teacherOsUserId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.optional(),teacherOsUserId:schoolRecordId.optional()}).parse(request.query);
   return (await db.query(`SELECT * FROM timetable_teacher_unavailability
     WHERE organisation_id=$1 AND academic_year_id=$2
       AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
@@ -7021,7 +7021,7 @@ app.get('/api/timetable/unavailability',async request=>{
 app.post('/api/timetable/unavailability',async(request,reply)=>{
   const a=await authorize(request,db,config,'timetable.configure');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid().nullable().optional(),teacherOsUserId:z.string().uuid(),
+    academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional(),teacherOsUserId:schoolRecordId,
     dayOfWeek:z.number().int().min(1).max(5),startTime:z.string().regex(/^\d{2}:\d{2}$/),
     endTime:z.string().regex(/^\d{2}:\d{2}$/),reason:z.string().max(300).optional()
   }).parse(request.body);
@@ -7036,7 +7036,7 @@ app.post('/api/timetable/unavailability',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.delete('/api/timetable/unavailability/:id',async(request,reply)=>{
-  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'timetable.configure');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,'DELETE FROM timetable_teacher_unavailability WHERE id=$1 AND organisation_id=$2 RETURNING *',[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'timetable.teacher_unavailability_deleted','timetable_teacher_unavailability',id,{teacherOsUserId:row.teacher_os_user_id});
   return reply.code(204).send();
@@ -7044,7 +7044,7 @@ app.delete('/api/timetable/unavailability/:id',async(request,reply)=>{
 
 app.get('/api/timetable/schedule-analysis',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
-  const q=z.object({academicYearId:z.string().uuid(),termId:z.string().uuid().optional()}).parse(request.query);
+  const q=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.optional()}).parse(request.query);
   const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings WHERE organisation_id=$1 AND academic_year_id=$2 AND term_id IS NOT DISTINCT FROM $3::uuid`,
     [a.core.organisation_id,q.academicYearId,q.termId??null]);
   const entries=(await db.query(`SELECT tt.*,c.name classroom_name,s.name subject_name FROM timetable_entries tt
@@ -7086,8 +7086,8 @@ app.get('/api/timetable/schedule-analysis',async request=>{
 app.get('/api/lesson-notes',async request=>{
   const a=await authorize(request,db,config,'lesson_notes.view');
   const q=z.object({
-    termId:z.string().uuid().optional(),classroomId:z.string().uuid().optional(),subjectId:z.string().uuid().optional(),
-    teacherOsUserId:z.string().uuid().optional(),status:z.enum(['draft','submitted','approved','returned','taught']).optional(),q:z.string().max(100).optional()
+    termId:schoolRecordId.optional(),classroomId:schoolRecordId.optional(),subjectId:schoolRecordId.optional(),
+    teacherOsUserId:schoolRecordId.optional(),status:z.enum(['draft','submitted','approved','returned','taught']).optional(),q:z.string().max(100).optional()
   }).parse(request.query);
   const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   const roleCapabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
@@ -7112,7 +7112,7 @@ app.get('/api/lesson-notes',async request=>{
 app.post('/api/lesson-notes',async(request,reply)=>{
   const a=await authorize(request,db,config,'lesson_notes.create');
   const b=z.object({
-    academicYearId:z.string().uuid(),termId:z.string().uuid(),classroomId:z.string().uuid(),subjectId:z.string().uuid(),
+    academicYearId:schoolRecordId,termId:schoolRecordId,classroomId:schoolRecordId,subjectId:schoolRecordId,
     weekNo:z.number().int().min(1).max(30).optional(),lessonDate:z.string().date().optional(),title:z.string().min(2).max(240),
     strand:z.string().max(240).optional(),subStrand:z.string().max(240).optional(),learningObjectives:z.string().max(10000).optional(),
     teachingLearningResources:z.string().max(10000).optional(),introductionActivity:z.string().max(10000).optional(),
@@ -7133,7 +7133,7 @@ app.post('/api/lesson-notes',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 app.patch('/api/lesson-notes/:id',async request=>{
-  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only edit your own lesson notes');
   if(!['draft','returned'].includes(current.status))throw fail(409,'Only draft or returned lesson notes can be edited');
@@ -7156,7 +7156,7 @@ app.patch('/api/lesson-notes/:id',async request=>{
   return row;
 });
 app.post('/api/lesson-notes/:id/submit',async request=>{
-  const a=await authorize(request,db,config,'lesson_notes.submit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'lesson_notes.submit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only submit your own lesson notes');
   if(!['draft','returned'].includes(current.status))throw fail(409,'Only draft or returned lesson notes can be submitted');
@@ -7177,7 +7177,7 @@ app.post('/api/lesson-notes/:id/submit',async request=>{
   return row;
 });
 app.post('/api/lesson-notes/:id/review',async request=>{
-  const a=await authorize(request,db,config,'lesson_notes.review');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'lesson_notes.review');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({action:z.enum(['approve','return']),note:z.string().max(4000).nullable().optional()}).parse(request.body);
   const current=await one<any>(db,"SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2 AND status='submitted'",[id,a.core.organisation_id]);
   if(current.teacher_os_user_id===a.core.id)throw fail(403,'You cannot approve or return your own lesson note');
@@ -7197,7 +7197,7 @@ app.post('/api/lesson-notes/:id/review',async request=>{
   return row;
 });
 app.post('/api/lesson-notes/:id/teaching-log',async request=>{
-  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const a=await authorize(request,db,config,'lesson_notes.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({teachingLog:z.string().min(1).max(10000),teacherReflection:z.string().max(10000).nullable().optional()}).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(a.role==='teacher'&&current.teacher_os_user_id!==a.core.id)throw fail(403,'You can only update your own teaching log');
@@ -7210,7 +7210,7 @@ app.post('/api/lesson-notes/:id/teaching-log',async request=>{
 
 app.get('/api/lesson-notes/:id/attachments',async request=>{
   const a=await authorize(request,db,config,'lesson_notes.view');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const note=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(a.role==='teacher'&&note.teacher_os_user_id!==a.core.id)throw fail(403,'You can only view attachments for your own lesson notes');
   return (await db.query(`SELECT id,lesson_note_id,file_name,mime_type,file_size,uploaded_by_os_user_id,created_at
@@ -7219,7 +7219,7 @@ app.get('/api/lesson-notes/:id/attachments',async request=>{
 });
 app.post('/api/lesson-notes/:id/attachments',async(request,reply)=>{
   const a=await authorize(request,db,config,'lesson_notes.edit');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const note=await one<any>(db,'SELECT * FROM lesson_notes WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(note.teacher_os_user_id!==a.core.id&&a.role!=='school_admin')throw fail(403,'Only the lesson-note owner can upload attachments');
   if(!['draft','returned'].includes(note.status))throw fail(409,'Attachments can only be changed while the lesson note is draft or returned');
@@ -7248,7 +7248,7 @@ app.post('/api/lesson-notes/:id/attachments',async(request,reply)=>{
 });
 app.get('/api/lesson-note-attachments/:attachmentId/download',async(request,reply)=>{
   const a=await authorize(request,db,config,'lesson_notes.view');
-  const {attachmentId}=z.object({attachmentId:z.string().uuid()}).parse(request.params);
+  const {attachmentId}=z.object({attachmentId:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`SELECT lna.*,ln.teacher_os_user_id FROM lesson_note_attachments lna
     JOIN lesson_notes ln ON ln.id=lna.lesson_note_id
     WHERE lna.id=$1 AND lna.organisation_id=$2`,[attachmentId,a.core.organisation_id]);
@@ -7262,7 +7262,7 @@ app.get('/api/lesson-note-attachments/:attachmentId/download',async(request,repl
 });
 app.delete('/api/lesson-note-attachments/:attachmentId',async(request,reply)=>{
   const a=await authorize(request,db,config,'lesson_notes.edit');
-  const {attachmentId}=z.object({attachmentId:z.string().uuid()}).parse(request.params);
+  const {attachmentId}=z.object({attachmentId:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`SELECT lna.id,lna.file_name,ln.id lesson_note_id,ln.teacher_os_user_id,ln.status
     FROM lesson_note_attachments lna JOIN lesson_notes ln ON ln.id=lna.lesson_note_id
     WHERE lna.id=$1 AND lna.organisation_id=$2`,[attachmentId,a.core.organisation_id]);
@@ -7392,7 +7392,7 @@ app.put('/api/communications/rules',async request=>{
 });
 app.post('/api/communications/outbox/:id/retry',async request=>{
   const a=await authorize(request,db,config,'communications.send');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const current=await one<any>(db,'SELECT * FROM communication_outbox WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(current.status==='sent'||current.status==='sending')return current;
   const delivery=await dispatchCommunicationOutbox(db,config,id,a.core.organisation_id,true);
@@ -7467,9 +7467,9 @@ app.get('/api/fees/payment-requests',async request=>{
 app.post('/api/fees/payment-requests',async(request,reply)=>{
   const a=await authorize(request,db,config,'payments.initiate');
   const b=z.object({
-    studentId:z.string().uuid(),
-    studentFeeId:z.string().uuid().optional(),
-    guardianId:z.string().uuid().optional(),
+    studentId:schoolRecordId,
+    studentFeeId:schoolRecordId.optional(),
+    guardianId:schoolRecordId.optional(),
     amount:z.number().positive(),
     note:z.string().max(1000).optional(),
     expiresAt:z.string().datetime().optional()
@@ -7510,7 +7510,7 @@ app.post('/api/fees/payment-requests',async(request,reply)=>{
 });
 app.post('/api/fees/payment-requests/:id/cancel',async request=>{
   const a=await authorize(request,db,config,'payments.initiate');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const row=await one<any>(db,`UPDATE fee_payment_requests SET status='cancelled',updated_at=now()
     WHERE id=$1 AND organisation_id=$2 AND status='open' RETURNING *`,[id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'fee_payment_request.cancelled','fee_payment_request',id);
@@ -7541,9 +7541,9 @@ app.post('/api/payment-intents',async(request,reply)=>{
   const a=await authorize(request,db,config,'payments.initiate');
   if(!providerStatus(config).payments.configured)throw fail(503,'Online payment provider is not configured');
   const b=z.object({
-    studentId:z.string().uuid(),
-    studentFeeId:z.string().uuid().optional(),
-    guardianId:z.string().uuid().optional(),
+    studentId:schoolRecordId,
+    studentFeeId:schoolRecordId.optional(),
+    guardianId:schoolRecordId.optional(),
     amount:z.number().positive(),
     method:z.enum(['card','mobile_money','paystack'])
   }).parse(request.body);
@@ -7581,7 +7581,7 @@ app.post('/api/payment-intents',async(request,reply)=>{
 
 app.get('/api/parent/students/:id/payment-requests',async request=>{
   const g=await guardianAuth(request);
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   await ensureGuardianStudent(g.guardian_id,id);
   await db.query("UPDATE fee_payment_requests SET status='expired',updated_at=now() WHERE organisation_id=$1 AND student_id=$2 AND guardian_id=$3 AND status='open' AND expires_at IS NOT NULL AND expires_at<=now()",[g.organisation_id,id,g.guardian_id]);
   return (await db.query(`SELECT pr.*,f.name fee_name
@@ -7594,9 +7594,9 @@ app.post('/api/parent/payment-intents',async(request,reply)=>{
   const g=await guardianAuth(request);
   if(!providerStatus(config).payments.configured)throw fail(503,'Online payment is not yet configured by the school');
   const b=z.object({
-    studentId:z.string().uuid(),
-    studentFeeId:z.string().uuid().optional(),
-    paymentRequestId:z.string().uuid().optional(),
+    studentId:schoolRecordId,
+    studentFeeId:schoolRecordId.optional(),
+    paymentRequestId:schoolRecordId.optional(),
     amount:z.number().positive(),
     method:z.enum(['card','mobile_money','paystack'])
   }).parse(request.body);
@@ -7912,7 +7912,7 @@ app.get('/api/system/errors',async request=>{
 });
 app.patch('/api/system/errors/:id',async request=>{
   const a=await authorize(request,db,config,'system.errors.manage');
-  const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+  const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({resolved:z.boolean(),resolutionNote:z.string().max(4000).optional()}).parse(request.body);
   const row=await one<any>(db,`UPDATE system_errors SET resolved_at=CASE WHEN $1 THEN now() ELSE NULL END,
     resolved_by_os_user_id=CASE WHEN $1 THEN $2::uuid ELSE NULL END,resolution_note=$3

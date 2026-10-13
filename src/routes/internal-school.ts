@@ -1,3 +1,4 @@
+import { databaseRecordId } from '../core/record-id.js';
 import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -22,13 +23,13 @@ function requireSchoolService(request:FastifyRequest,config:Config){
 }
 
 const scopeSchema=z.object({
-  organisationId:z.string().uuid()
+  organisationId:databaseRecordId
 });
 
 export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:Db;config:Config}){
   app.get('/v1/internal/school/admin-login-context',async(request,reply)=>{
     requireSchoolService(request,config);reply.header('cache-control','no-store');
-    const q=z.object({schoolId:z.string().trim().min(1).max(120),adminUserId:z.string().uuid()}).parse(request.query);
+    const q=z.object({schoolId:z.string().trim().min(1).max(120),adminUserId:databaseRecordId}).parse(request.query);
     return schoolAdministratorContext(db,q.schoolId,q.adminUserId);
   });
   app.get('/v1/internal/school/preview-context',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
@@ -171,7 +172,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     requireSchoolService(request,config);
     const b=z.object({
       schoolId:z.string().trim().min(1).max(120),
-      adminUserId:z.string().uuid().optional(),
+      adminUserId:databaseRecordId.optional(),
       email:z.string().trim().toLowerCase().email(),
       password:z.string().min(1).max(200)
     }).parse(request.body);
@@ -290,7 +291,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     requireSchoolService(request,config);
     const b=z.object({
       schoolId:z.string().trim().min(1).max(120),
-      userId:z.string().uuid(),
+      userId:databaseRecordId,
       keepSessionHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),
       newPassword:z.string().min(12).max(200)
         .regex(/[A-Z]/,'Password must contain an uppercase letter')
@@ -340,8 +341,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
   app.post('/v1/internal/school/users',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async(request,reply)=>{
     requireSchoolService(request,config);
     const b=z.object({
-      organisationId:z.string().uuid(),
-      actorUserId:z.string().uuid(),
+      organisationId:databaseRecordId,
+      actorUserId:databaseRecordId,
       email:z.string().trim().toLowerCase().email().optional(),
       firstName:z.string().min(1).max(100),
       lastName:z.string().min(1).max(100),
@@ -421,10 +422,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
   app.patch('/v1/internal/school/users/:membershipId',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
-    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({
-      organisationId:z.string().uuid(),
-      actorUserId:z.string().uuid(),
+      organisationId:databaseRecordId,
+      actorUserId:databaseRecordId,
       firstName:z.string().trim().min(1).max(100).optional(),
       lastName:z.string().trim().min(1).max(100).optional(),
       email:z.string().trim().toLowerCase().email().nullable().optional(),
@@ -468,8 +469,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
   app.post('/v1/internal/school/users/:membershipId/unlock',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
-    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
-    const b=z.object({organisationId:z.string().uuid(),actorUserId:z.string().uuid()}).parse(request.body);
+    const p=z.object({membershipId:databaseRecordId}).parse(request.params);
+    const b=z.object({organisationId:databaseRecordId,actorUserId:databaseRecordId}).parse(request.body);
     return transaction(db,async q=>{
       const before=await one<any>(q,`SELECT m.*,u.status user_status FROM organisation_memberships m
         JOIN users u ON u.id=m.user_id WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,
@@ -487,10 +488,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
   app.post('/v1/internal/school/users/:membershipId/password-setup',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
-    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({
-      organisationId:z.string().uuid(),
-      actorUserId:z.string().uuid()
+      organisationId:databaseRecordId,
+      actorUserId:databaseRecordId
     }).parse(request.body);
 
     return transaction(db,async c=>{
@@ -530,10 +531,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
   app.post('/v1/internal/school/users/:membershipId/password-reset',{config:{rateLimit:{max:120,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
-    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({
-      organisationId:z.string().uuid(),
-      actorUserId:z.string().uuid(),
+      organisationId:databaseRecordId,
+      actorUserId:databaseRecordId,
       temporaryPassword:z.string().min(12).max(200)
         .regex(/[A-Z]/,'Password must contain an uppercase letter')
         .regex(/[a-z]/,'Password must contain a lowercase letter')
@@ -564,10 +565,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
   app.patch('/v1/internal/school/users/:membershipId/status',{config:{rateLimit:{max:300,timeWindow:'1 minute'}}},async request=>{
     requireSchoolService(request,config);
-    const p=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({
-      organisationId:z.string().uuid(),
-      actorUserId:z.string().uuid(),
+      organisationId:databaseRecordId,
+      actorUserId:databaseRecordId,
       status:z.enum(['active','suspended'])
     }).parse(request.body);
 

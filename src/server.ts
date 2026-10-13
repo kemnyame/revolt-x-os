@@ -1,3 +1,4 @@
+import { repairGraceDemoTeachers } from './auth/grace-demo-teachers.js';
 import 'dotenv/config';
 import { loadConfig } from './config.js';
 import { createDb, ensureOsSchema } from './db/index.js';
@@ -35,6 +36,8 @@ process.once('SIGINT', () => {
 try {
   await ensureOsSchema(db);
   await migrate(db);
+  const linkedDemoTeachers=await repairGraceDemoTeachers(db);
+  if(linkedDemoTeachers)console.log(`Linked ${linkedDemoTeachers} existing Grace Prep demonstration teacher profiles to Core accounts.`);
   const bootstrapped=await bootstrapSchoolStaffPasswords(db,config.SCHOOL_DEFAULT_STAFF_PASSWORD);
   if(bootstrapped)console.log(`Applied the temporary School password policy to ${bootstrapped} legacy staff account(s).`);
   const resetOwners=await applyOwnerPasswordPolicy(db,String(config.OWNER_PASSWORD_RESET||''),userId=>revokeLinkedSchoolSessions(db,config,userId));

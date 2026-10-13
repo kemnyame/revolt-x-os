@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import { z } from 'zod';
 
 export async function registerSchoolRemediationRoutes(app:any,deps:any){
@@ -6,10 +7,10 @@ export async function registerSchoolRemediationRoutes(app:any,deps:any){
   app.post('/api/promotions/manual',async(request:any)=>{
     const a=await authorize(request,db,config,'promotion.manage');
     const b=z.object({
-      studentId:z.string().uuid(),
-      fromAcademicYearId:z.string().uuid(),
-      toAcademicYearId:z.string().uuid(),
-      toClassroomId:z.string().uuid().nullable().optional(),
+      studentId:schoolRecordId,
+      fromAcademicYearId:schoolRecordId,
+      toAcademicYearId:schoolRecordId,
+      toClassroomId:schoolRecordId.nullable().optional(),
       outcome:z.enum(['promoted','repeated','completed']),
       reason:z.string().trim().min(5).max(1000)
     }).parse(request.body);

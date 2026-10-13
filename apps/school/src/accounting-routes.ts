@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -291,7 +292,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/accounting/end-of-day/:id',async request=>{
     const a=await authorize(request,db,config,'finance.report');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const run=await one<any>(db,'SELECT * FROM finance_eod_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const reports=(await db.query(`
       SELECT id,report_key,report_name,payload,created_at FROM finance_eod_reports WHERE eod_run_id=$1 ORDER BY report_name
@@ -366,7 +367,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/accounting/receipts/:id/reverse',async request=>{
     const a=await authorize(request,db,config,'finance.reverse');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().trim().min(3).max(1200)}).parse(request.body);
     const result=await tx(db,async(client:any)=>{
       const receipt=await one<any>(client,`
@@ -458,10 +459,10 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.patch('/api/accounting/payment-methods/:id',async request=>{
     const a=await authorize(request,db,config,'finance.payment_setup');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({
       label:z.string().trim().min(2).max(120).optional(),
-      settlementAccountId:z.string().uuid().optional(),
+      settlementAccountId:schoolRecordId.optional(),
       provider:z.string().trim().max(60).nullable().optional(),
       enabled:z.boolean().optional(),
       allowManualReceipt:z.boolean().optional()
@@ -534,8 +535,8 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.patch('/api/accounting/fee-setup/:id',async request=>{
     const a=await authorize(request,db,config,'finance.payment_setup');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-    const b=z.object({incomeAccountId:z.string().uuid()}).parse(request.body);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
+    const b=z.object({incomeAccountId:schoolRecordId}).parse(request.body);
     await assertAccount(db,a.core.organisation_id,b.incomeAccountId,'income');
     const row=await one<any>(db,'UPDATE fee_items SET income_account_id=$1 WHERE id=$2 AND organisation_id=$3 RETURNING *',
       [b.incomeAccountId,id,a.core.organisation_id]);
@@ -577,7 +578,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/accounting/students/:studentId',async request=>{
     const a=await authorize(request,db,config,'finance.view');
-    const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+    const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
     const student=await one<any>(db,`
       SELECT s.*,
         (SELECT c.name FROM enrolments en JOIN classrooms c ON c.id=en.classroom_id
@@ -630,7 +631,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/accounting/students/:studentId/statement',async request=>{
     const a=await authorize(request,db,config,'finance.view');
-    const {studentId}=z.object({studentId:z.string().uuid()}).parse(request.params);
+    const {studentId}=z.object({studentId:schoolRecordId}).parse(request.params);
     const student=await one<any>(db,`
       SELECT s.id,s.admission_no,s.first_name,s.middle_name,s.last_name,
         (SELECT c.name FROM enrolments en JOIN classrooms c ON c.id=en.classroom_id
@@ -701,7 +702,7 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/accounting/receipts/:id',async request=>{
     const a=await authorize(request,db,config,'finance.view');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const receipt=await one<any>(db,`
       SELECT r.*,s.admission_no,s.first_name,s.middle_name,s.last_name,
         pm.label payment_method_label,pm.method_key,fa.code settlement_account_code,fa.name settlement_account_name,
@@ -733,15 +734,15 @@ export async function registerAccountingRoutes(app:FastifyInstance,d:Deps){
   app.post('/api/accounting/receipts',async(request,reply)=>{
     const a=await authorize(request,db,config,'finance.receive_student_payment');
     const b=z.object({
-      studentId:z.string().uuid(),
-      paymentMethodId:z.string().uuid(),
+      studentId:schoolRecordId,
+      paymentMethodId:schoolRecordId,
       note:z.string().trim().max(1200).optional(),
       paidAt:z.string().datetime().optional(),
       amountReceived:z.number().positive(),
-      directIncomeAccountId:z.string().uuid().optional(),
+      directIncomeAccountId:schoolRecordId.optional(),
       directIncomeAmount:z.number().min(0).default(0),
       allocations:z.array(z.object({
-        studentFeeId:z.string().uuid(),
+        studentFeeId:schoolRecordId,
         amount:z.number().positive()
       })).max(50).default([])
     }).superRefine((v,ctx)=>{
