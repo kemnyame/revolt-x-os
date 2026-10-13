@@ -9,8 +9,8 @@ public class SecurityRulesTest {
         check(SecurityRules.isMobilePage(SecurityRules.ORIGIN + "/mobile/parent"));
         check(!SecurityRules.isMobilePage(SecurityRules.ORIGIN + "/admin-login"));
         check(!SecurityRules.isMobilePage(SecurityRules.ORIGIN + "/student"));
-        check(SecurityRules.isSchoolUrl("https://revolt-x-school-production.up.railway.app:443/admin-login?school=grace-prep-school"));
-        for (String input : new String[]{"http://revolt-x-school-production.up.railway.app/mobile", "https://revolt-x-school-production.up.railway.app.attacker.test/", "https://attacker.test@revolt-x-school-production.up.railway.app/", "https://revolt-x-school-production.up.railway.app:444/", "javascript:alert(1)", "file:///private", "content://private", "https://revolt-x-school-production.up.railway.app\\@evil.test", "not a URL"}) check(!SecurityRules.isSchoolUrl(input));
+        check(SecurityRules.isSchoolUrl("https://revolt-x-school.onrender.com:443/admin-login?school=grace-prep-school"));
+        for (String input : new String[]{"http://revolt-x-school.onrender.com/mobile", "https://revolt-x-school.onrender.com.attacker.test/", "https://attacker.test@revolt-x-school.onrender.com/", "https://revolt-x-school.onrender.com:444/", "javascript:alert(1)", "file:///private", "content://private", "https://revolt-x-school.onrender.com\\@evil.test", "not a URL"}) check(!SecurityRules.isSchoolUrl(input));
         check(SecurityRules.isExternalUrl("https://checkout.paystack.com/example"));
         check(SecurityRules.isExternalUrl("mailto:school@example.test"));
         check(!SecurityRules.isExternalUrl("file:///private"));
