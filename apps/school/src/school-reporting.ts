@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import type {SchoolDb} from './db.js';
@@ -8,7 +9,7 @@ const date=z.string().regex(/^\d{4}-\d{2}-\d{2}$/,'Use YYYY-MM-DD for the report
 export function registerSchoolReportingRoutes(app:FastifyInstance,options:{db:SchoolDb;requireCoreServiceRequest:(request:any)=>void}){
   app.get('/api/internal/admin-activity',async request=>{
     options.requireCoreServiceRequest(request);
-    const q=z.object({organisationId:z.string().uuid(),from:date.optional(),to:date.optional(),limit:z.coerce.number().int().min(1).max(10000).default(200)})
+    const q=z.object({organisationId:schoolRecordId,from:date.optional(),to:date.optional(),limit:z.coerce.number().int().min(1).max(10000).default(200)})
       .refine(v=>!v.from||!v.to||v.from<=v.to,{path:['to'],message:'The end date must be on or after the start date.'}).parse(request.query);
     const school=await maybeOne(options.db,'SELECT school_name,tenant_slug FROM school_profiles WHERE organisation_id=$1',[q.organisationId]);
     if(!school)throw Object.assign(new Error('School tenant was not found'),{statusCode:404});

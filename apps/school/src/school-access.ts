@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {sendOsPasswordReset} from './os-password-email.js';
@@ -89,7 +90,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
 }) {
   app.get('/api/auth/admin-login-context',async(request,reply)=>{
     reply.header('cache-control','no-store');
-    const query=z.object({schoolId:schoolIdentifier,adminUserId:z.string().uuid()}).parse(request.query);
+    const query=z.object({schoolId:schoolIdentifier,adminUserId:schoolRecordId}).parse(request.query);
     if(!options.config.CORE_SERVICE_KEY)throw Object.assign(new Error('Core service authentication is not configured'),{statusCode:503});
     const q=new URLSearchParams(query);
     const response=await(options.fetchCore??fetch)(options.config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/admin-login-context?'+q,{
@@ -135,7 +136,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
   });
   app.post('/api/internal/revoke-user-sessions', async request => {
     options.requireCoreServiceRequest(request);
-    const body = z.object({ userId: z.string().uuid(), keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),organisationId:z.string().uuid().optional() }).parse(request.body);
+    const body = z.object({ userId: schoolRecordId, keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),organisationId:schoolRecordId.optional() }).parse(request.body);
     return { revoked: await revokeSchoolUserSessions(options.db, body.userId, body.keepSessionHash,body.organisationId) };
   });
 

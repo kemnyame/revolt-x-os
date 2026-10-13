@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import { z } from 'zod';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url);
@@ -36,7 +37,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.post('/api/academic-periods/:type/:id/lock',async(request:any)=>{
     const a=await authorize(request,db,deps.config,'academic.manage');
-    const p=z.object({type:z.enum(['year','term']),id:z.string().uuid()}).parse(request.params);
+    const p=z.object({type:z.enum(['year','term']),id:schoolRecordId}).parse(request.params);
     const b=z.object({locked:z.boolean(),reason:z.string().trim().min(3).max(500).optional()}).parse(request.body);
     const table=p.type==='year'?'academic_years':'terms';
     const row=await one(db,`UPDATE ${table} SET is_locked=$1,locked_at=CASE WHEN $1 THEN now() ELSE NULL END,
@@ -83,7 +84,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.patch('/api/payroll/components/:id',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({name:z.string().trim().min(2).max(160).optional(),calculationType:z.enum(['fixed','percent_basic']).optional(),defaultValue:z.number().min(0).optional(),ratePercent:z.number().min(0).max(100).optional(),taxable:z.boolean().optional(),statutory:z.boolean().optional(),isActive:z.boolean().optional()}).parse(request.body);
     const current=await one(db,'SELECT * FROM payroll_components WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const next={name:b.name??current.name,calculationType:b.calculationType??current.calculation_type,defaultValue:b.defaultValue??Number(current.default_value),ratePercent:b.ratePercent??Number(current.rate_percent),taxable:b.taxable??current.taxable,statutory:b.statutory??current.statutory,isActive:b.isActive??current.is_active};
@@ -114,7 +115,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.patch('/api/payroll/grades/:id',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({name:z.string().trim().min(2).max(160).optional(),baseSalary:z.number().min(0).optional(),currency:z.string().trim().min(3).max(10).optional(),isActive:z.boolean().optional()}).parse(request.body);
     const current=await one(db,'SELECT * FROM payroll_grades WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const row=await one(db,`UPDATE payroll_grades SET name=$1,base_salary=$2,currency=$3,is_active=$4,updated_at=now()
@@ -124,8 +125,8 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.put('/api/payroll/grades/:id/components',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
-    const b=z.object({components:z.array(z.object({componentId:z.string().uuid(),valueOverride:z.number().min(0).nullable().optional(),rateOverride:z.number().min(0).max(100).nullable().optional()})).max(100)}).parse(request.body);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
+    const b=z.object({components:z.array(z.object({componentId:schoolRecordId,valueOverride:z.number().min(0).nullable().optional(),rateOverride:z.number().min(0).max(100).nullable().optional()})).max(100)}).parse(request.body);
     await one(db,'SELECT id FROM payroll_grades WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     await tx(db,async(client:any)=>{await client.query('DELETE FROM payroll_grade_components WHERE grade_id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);for(const c of b.components)await client.query(`INSERT INTO payroll_grade_components(organisation_id,grade_id,component_id,value_override,rate_override,created_by_os_user_id)
       VALUES($1,$2,$3,$4,$5,$6)`,[a.core.organisation_id,id,c.componentId,c.valueOverride??null,c.rateOverride??null,a.core.id])});
@@ -134,8 +135,8 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.put('/api/hr/staff/:userId/grade',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {userId}=z.object({userId:z.string().uuid()}).parse(request.params);
-    const b=z.object({gradeId:z.string().uuid().nullable()}).parse(request.body);
+    const {userId}=z.object({userId:schoolRecordId}).parse(request.params);
+    const b=z.object({gradeId:schoolRecordId.nullable()}).parse(request.body);
     if(b.gradeId)await one(db,'SELECT id FROM payroll_grades WHERE id=$1 AND organisation_id=$2 AND is_active=true',[b.gradeId,a.core.organisation_id]);
     const row=await one(db,'UPDATE staff_payroll_profiles SET grade_id=$1,updated_by_os_user_id=$2,updated_at=now() WHERE organisation_id=$3 AND os_user_id=$4 RETURNING *',[b.gradeId,a.core.id,a.core.organisation_id,userId]);
     await audit(a.core.organisation_id,a.core.id,'payroll.staff_grade_assigned','staff_payroll_profile',row.id,{staff:userId,gradeId:b.gradeId});return row;
@@ -143,7 +144,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.put('/api/hr/staff/:userId/emolument',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {userId}=z.object({userId:z.string().uuid()}).parse(request.params);
+    const {userId}=z.object({userId:schoolRecordId}).parse(request.params);
     const b=z.object({baseSalary:z.number().min(0),currency:z.string().trim().min(3).max(10).default('GHS'),bankName:z.string().max(160).nullable().optional(),bankAccountName:z.string().max(180).nullable().optional(),bankAccountNumber:z.string().max(100).nullable().optional(),mobileMoneyNumber:z.string().max(80).nullable().optional(),mobileMoneyNetwork:z.string().max(40).nullable().optional(),isActive:z.boolean().default(true)}).parse(request.body);
     const member=await maybeOne(db,'SELECT 1 FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2',[a.core.organisation_id,userId]);
     if(!member)throw fail(404,'Staff member is not assigned to this School');
@@ -158,8 +159,8 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.put('/api/hr/staff/:userId/components',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {userId}=z.object({userId:z.string().uuid()}).parse(request.params);
-    const b=z.object({components:z.array(z.object({componentId:z.string().uuid(),valueOverride:z.number().min(0).nullable().optional(),rateOverride:z.number().min(0).max(100).nullable().optional(),isActive:z.boolean().default(true)})).max(100)}).parse(request.body);
+    const {userId}=z.object({userId:schoolRecordId}).parse(request.params);
+    const b=z.object({components:z.array(z.object({componentId:schoolRecordId,valueOverride:z.number().min(0).nullable().optional(),rateOverride:z.number().min(0).max(100).nullable().optional(),isActive:z.boolean().default(true)})).max(100)}).parse(request.body);
     await tx(db,async(client:any)=>{
       await client.query('DELETE FROM staff_payroll_component_assignments WHERE organisation_id=$1 AND os_user_id=$2',[a.core.organisation_id,userId]);
       for(const c of b.components)await client.query(`INSERT INTO staff_payroll_component_assignments(organisation_id,os_user_id,component_id,value_override,rate_override,is_active,created_by_os_user_id)
@@ -238,7 +239,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.get('/api/payroll/runs/:id',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.view');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const run=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const items=(await db.query('SELECT * FROM payroll_run_items WHERE payroll_run_id=$1 AND organisation_id=$2 ORDER BY staff_name',[id,a.core.organisation_id])).rows;
     const ids=items.map((x:any)=>x.id);const components=ids.length?(await db.query('SELECT * FROM payroll_run_item_components WHERE payroll_run_item_id=ANY($1::uuid[]) ORDER BY component_type,name',[ids])).rows:[];
@@ -257,7 +258,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.post('/api/payroll/runs/:id/submit',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const current=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     if(current.status!=='draft')throw fail(409,'Only a draft payroll can be submitted to Finance');
     // Submission is a review hand-off only. No accounting entry is posted until Finance approves.
@@ -268,7 +269,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.post('/api/payroll/runs/:id/approve',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.process');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const current=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     if(current.status!=='submitted_to_finance')throw fail(409,'Payroll must be submitted to Finance before approval');
     const updated=await tx(db,async(client:any)=>{
@@ -285,7 +286,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.post('/api/payroll/runs/:id/pay',async(request:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.process');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);const current=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);const current=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     if(current.status!=='approved_for_payment')throw fail(409,'Payroll must be approved by Finance before it can be marked paid');
     const updated=await tx(db,async(client:any)=>{const journal=await createJournal(client,a.core.organisation_id,a.core.id,`Payroll payment ${current.period_year}-${String(current.period_month).padStart(2,'0')}`,'payroll_payment',id,[{code:'2050',debit:Number(current.net_total),description:'Settle payroll payable'},{code:'1010',credit:Number(current.net_total),description:'Salary payment from bank'}]);return one(client,`UPDATE payroll_runs SET status='paid',paid_by_os_user_id=$1,paid_at=now(),payment_journal_entry_id=$2,updated_at=now() WHERE id=$3 RETURNING *`,[a.core.id,journal.id,id]);});
     await audit(a.core.organisation_id,a.core.id,'payroll.paid','payroll_run',id,{net:updated.net_total});return updated;
@@ -293,7 +294,7 @@ export async function registerHrPayrollRoutes(app:any,deps:any){
 
   app.get('/api/payroll/runs/:id/export',async(request:any,reply:any)=>{
     const a=await authorize(request,db,deps.config);await requireRole(a,'payroll.view');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const q=z.object({format:z.enum(['pdf','excel']).default('pdf')}).parse(request.query);
     const run=await one(db,'SELECT * FROM payroll_runs WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const items=(await db.query('SELECT * FROM payroll_run_items WHERE payroll_run_id=$1 AND organisation_id=$2 ORDER BY staff_name',[id,a.core.organisation_id])).rows;

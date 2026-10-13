@@ -81,16 +81,19 @@ function rxSetupOption(v,t){return '<option value="'+esc(v)+'">'+esc(t)+'</optio
 function rxSetupRows(items,empty,cols){if(!items||!items.length)return '<div class="empty">'+esc(empty)+'</div>';return '<div class="table"><table><thead><tr>'+cols.map(function(c){return '<th>'+esc(c.label)+'</th>'}).join('')+'</tr></thead><tbody>'+items.map(function(item){return '<tr>'+cols.map(function(c){return '<td>'+esc(typeof c.value==='function'?c.value(item):item[c.value])+'</td>'}).join('')+'</tr>'}).join('')+'</tbody></table></div>'}
 function rxArray(v){if(Array.isArray(v))return v;try{return JSON.parse(v||'[]')}catch(e){return[]}}
 function rxUserLabel(users,id){var u=(users||[]).find(function(x){return x.id===id||x.os_user_id===id});return u?([u.first_name||u.firstName,u.last_name||u.lastName].filter(Boolean).join(' ')||u.email||id):id}
+var rxSetupCatalogueBusy=false;
 async function ensureSchoolSetupCatalogSections(){
-  var content=E('content');if(!content||E('rxSetupCatalogue'))return;var heading=(content.querySelector('h1')||{}).textContent||'';var hasGrade=Array.from(content.querySelectorAll('h2')).some(function(h){return /grade/i.test(h.textContent||'')});if(!/setup/i.test(heading)&&!hasGrade)return;
-  var data=await Promise.all([raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/subjects'),raw('/api/class-subjects').catch(function(){return[]}),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/staff/module-memberships').catch(function(){return[]})]).catch(function(){return null});if(!data)return;
-  var years=data[0]||[],grades=data[1]||[],classes=data[2]||[],subjects=data[3]||[],classSubjects=data[4]||[],users=data[5]||[],memberships=data[6]||[];
+  var content=E('content');if(!content||E('rxSetupCatalogue'))return;var heading=(content.querySelector('h1')||{}).textContent||'';var hasGrade=Array.from(content.querySelectorAll('h2')).some(function(h){return /grade/i.test(h.textContent||'')});if(!/setup/i.test(heading)&&!hasGrade)return;if(rxSetupCatalogueBusy)return;rxSetupCatalogueBusy=true;try{
+  var data=await Promise.all([raw('/api/academic-years'),raw('/api/grade-levels'),raw('/api/classes?includeAllYears=true'),raw('/api/subjects'),raw('/api/class-subjects').catch(function(){return[]}),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/staff/module-memberships').catch(function(){return[]})]).catch(function(){return null});if(!data)return;
+  var years=data[0]||[],grades=data[1]||[],allClasses=data[2]||[],subjects=data[3]||[],allClassSubjects=data[4]||[],users=data[5]||[],memberships=data[6]||[];var selectedSetupYear=sessionStorage.getItem('rx_setup_year')||(years.find(function(y){return y.status==='active'})||years[0]||{}).id||'';if(!years.some(function(y){return y.id===selectedSetupYear}))selectedSetupYear=(years.find(function(y){return y.status==='active'})||years[0]||{}).id||'';var classes=allClasses.filter(function(c){return c.academic_year_id===selectedSetupYear}),classSubjects=allClassSubjects.filter(function(c){return c.academic_year_id===selectedSetupYear});if(E('rxSetupCatalogue')||(content.querySelector('h1')||{}).textContent!==heading)return;
   var teachers=memberships.filter(function(m){return m.status==='active'&&(m.can_teach||m.portal_mode==='teacher'||m.role==='teacher')}).map(function(m){return{value:m.os_user_id,label:rxUserLabel(users,m.os_user_id)+' - '+(m.role_name||m.role||'Teacher')}});
-  var html='<div id="rxSetupCatalogue"><div class="section"><h2>Classes</h2><button id="addClass" class="ghost">Add class</button></div><div class="panel">'+rxSetupRows(classes,'No classes created yet',[{label:'Class',value:'name'},{label:'Grade',value:function(r){return r.grade_name||r.grade_code||''}},{label:'Students',value:function(r){return r.student_count==null?'0':r.student_count}},{label:'Subjects',value:function(r){return r.subject_count==null?'0':r.subject_count}}])+'</div><div class="section"><h2>Subjects</h2><button id="addSubject" class="ghost">Add subject</button></div><div class="panel">'+rxSetupRows(subjects,'No subjects created yet',[{label:'Code',value:'code'},{label:'Subject',value:'name'},{label:'Stage',value:'stage'},{label:'Status',value:function(r){return r.is_active?'active':'inactive'}}])+'</div><div class="section"><div><h2>Subject Teachers</h2><p class="muted">Add a subject to a class and assign the teacher in one step.</p></div><button id="assignSubjectTeacher" class="ghost">Assign subject teacher</button></div><div class="panel">'+rxSetupRows(classSubjects,'No class subjects assigned yet',[{label:'Class',value:'classroom_name'},{label:'Subject',value:'subject_name'},{label:'Teacher',value:function(r){var a=rxArray(r.teacher_assignments).find(function(x){return x.active!==false});return a?rxUserLabel(users,a.teacherOsUserId||a.teacher_os_user_id):'Not assigned'}},{label:'Students',value:function(r){return r.student_count==null?'0':r.student_count}}])+'</div></div>';
+  var html='<div id="rxSetupCatalogue"><div class="panel"><label>Academic year</label><select id="rxSetupYear">'+years.map(function(y){return '<option value="'+esc(y.id)+'"'+(y.id===selectedSetupYear?' selected':'')+'>'+esc(y.name)+(y.status==='active'?' • current':'')+'</option>'}).join('')+'</select><p class="muted">Classes and teacher assignments belong to the selected academic year.</p></div><div class="section"><h2>Classes</h2><button id="addClass" class="ghost">Add class</button></div><div class="panel">'+rxSetupRows(classes,'No classes created yet',[{label:'Class',value:'name'},{label:'Grade',value:function(r){return r.grade_name||r.grade_code||''}},{label:'Students',value:function(r){return r.student_count==null?'0':r.student_count}},{label:'Subjects',value:function(r){return r.subject_count==null?'0':r.subject_count}}])+'</div><div class="section"><h2>Subjects</h2><button id="addSubject" class="ghost">Add subject</button></div><div class="panel">'+rxSetupRows(subjects,'No subjects created yet',[{label:'Code',value:'code'},{label:'Subject',value:'name'},{label:'Stage',value:'stage'},{label:'Status',value:function(r){return r.is_active?'active':'inactive'}}])+'</div><div class="section"><div><h2>Subject Teachers</h2><p class="muted">Add a subject to a class and assign the teacher in one step.</p></div><button id="assignSubjectTeacher" class="ghost">Assign subject teacher</button></div><div class="panel">'+rxSetupRows(classSubjects,'No class subjects assigned yet',[{label:'Class',value:'classroom_name'},{label:'Subject',value:'subject_name'},{label:'Teacher',value:function(r){var a=rxArray(r.teacher_assignments).find(function(x){return x.active!==false});return a?rxUserLabel(users,a.teacherOsUserId||a.teacher_os_user_id):'Not assigned'}},{label:'Students',value:function(r){return r.student_count==null?'0':r.student_count}}])+'</div></div>';
   var gradeSection=Array.from(content.querySelectorAll('.section h2')).find(function(h){return /grade/i.test(h.textContent||'')});var insertAfter=gradeSection&&gradeSection.parentElement&&gradeSection.parentElement.nextElementSibling?gradeSection.parentElement.nextElementSibling:(content.querySelector('.panel')||content.firstChild);if(insertAfter&&insertAfter.insertAdjacentHTML)insertAfter.insertAdjacentHTML('afterend',html);else content.insertAdjacentHTML('beforeend',html);
+  if(E('rxSetupYear'))E('rxSetupYear').onchange=async function(){sessionStorage.setItem('rx_setup_year',this.value);E('rxSetupCatalogue').remove();await ensureSchoolSetupCatalogSections()};
   if(E('addSubject'))if(E('addSubject'))E('addSubject').onclick=function(){form('New subject',[{key:'code',label:'Code e.g. ENG, MATH, SCI',required:true},{key:'name',label:'Subject name e.g. English Language',required:true},{key:'stage',label:'Stage',type:'select',required:true,options:[{value:'both',label:'Both Primary and JHS'},{value:'primary',label:'Primary only'},{value:'jhs',label:'JHS only'}]}],{stage:'both'},function(v){return raw('/api/subjects',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,stage:v.stage})})})};
   if(E('addClass'))if(E('addClass'))E('addClass').onclick=function(){form('New class',[{key:'academicYearId',label:'Academic year',type:'select',required:true,options:years.map(function(y){return{value:y.id,label:y.name+(y.status==='active'?' - active':'')}})},{key:'gradeLevelId',label:'Grade level',type:'select',required:true,options:grades.map(function(g){return{value:g.id,label:g.name+' ('+g.code+')'}})},{key:'name',label:'Class name e.g. Primary 1 A',required:true},{key:'stream',label:'Stream / Arm e.g. A, B',required:false},{key:'capacity',label:'Capacity',type:'number',required:false}],{academicYearId:(years.find(function(y){return y.status==='active'})||years[0]||{}).id||''},function(v){return raw('/api/classes',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,gradeLevelId:v.gradeLevelId,name:v.name,stream:v.stream||undefined,capacity:v.capacity?Number(v.capacity):undefined})})})};
-  if(E('assignSubjectTeacher'))if(E('assignSubjectTeacher'))E('assignSubjectTeacher').onclick=function(){if(!teachers.length){alert('Create or activate a teacher under Access Management before assigning a subject teacher.');return}form('Assign subject teacher',[{key:'academicYearId',label:'Academic year',type:'select',required:true,options:years.map(function(y){return{value:y.id,label:y.name+(y.status==='active'?' - active':'')}})},{key:'classroomId',label:'Class',type:'select',required:true,options:classes.filter(function(c){return c.is_active!==false}).map(function(c){return{value:c.id,label:c.name+' - '+(c.grade_name||c.grade_code||'')}})},{key:'subjectId',label:'Subject',type:'select',required:true,options:subjects.filter(function(s){return s.is_active!==false}).map(function(s){return{value:s.id,label:s.name+' ('+s.code+')'}})},{key:'teacherOsUserId',label:'Subject teacher',type:'select',required:true,options:teachers}],{academicYearId:(years.find(function(y){return y.status==='active'})||years[0]||{}).id||''},async function(v){await raw('/api/class-subjects',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,classroomId:v.classroomId,subjectId:v.subjectId})});return raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,classroomId:v.classroomId,subjectId:v.subjectId,teacherOsUserId:v.teacherOsUserId,replaceExisting:true})})})};
+  if(E('assignSubjectTeacher'))if(E('assignSubjectTeacher'))E('assignSubjectTeacher').onclick=function(){if(!teachers.length){alert('Create or activate a teacher under Access Management before assigning a subject teacher.');return}form('Assign subject teacher',[{key:'academicYearId',label:'Academic year',type:'select',required:true,options:years.filter(function(y){return y.id===selectedSetupYear}).map(function(y){return{value:y.id,label:y.name}})},{key:'classroomId',label:'Class',type:'select',required:true,options:classes.filter(function(c){return c.is_active!==false}).map(function(c){return{value:c.id,label:c.name+' - '+(c.grade_name||c.grade_code||'')}})},{key:'subjectId',label:'Subject',type:'select',required:true,options:subjects.filter(function(s){return s.is_active!==false}).map(function(s){return{value:s.id,label:s.name+' ('+s.code+')'}})},{key:'teacherOsUserId',label:'Subject teacher',type:'select',required:true,options:teachers}],{academicYearId:selectedSetupYear},async function(v){await raw('/api/class-subjects',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,classroomId:v.classroomId,subjectId:v.subjectId})});return raw('/api/teacher-assignments',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId,classroomId:v.classroomId,subjectId:v.subjectId,teacherOsUserId:v.teacherOsUserId,replaceExisting:true})})})};
+}finally{rxSetupCatalogueBusy=false}
 }
 var rxAdmissionPanelBusy=false,rxLastAdmissionId=null;document.addEventListener('click',function(e){var b=e.target&&e.target.closest?e.target.closest('[data-open-admission]'):null;if(b)rxLastAdmissionId=b.dataset.openAdmission},true);
 async function ensureApprovedAdmissionEnrolmentPanel(){var content=E('content');if(!content||E('approvedAdmissionPanel')||rxAdmissionPanelBusy)return;var h=(content.querySelector('h1')||{}).textContent||'';if(!/student/i.test(h)||/statement/i.test(h))return;rxAdmissionPanelBusy=true;try{var data=await Promise.all([raw('/api/student-onboarding/admission-candidates'),raw('/api/classes')]);var applications=data[0]||[],classes=data[1]||[];var panel=document.createElement('div');panel.id='approvedAdmissionPanel';panel.className='panel';var rows=applications.length?applications.map(function(a){var defaultAdmission=String(a.application_no||'').replace(/^ADM/i,'STU');var classOptions=classes.map(function(c){var label=(c.name||'Class')+' - '+(c.grade_name||c.grade_code||'');return rxSetupOption(c.id,label)}).join('');return '<div class="admission-enrol-row" data-application-id="'+esc(a.id)+'" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:9px"><b>'+esc([a.first_name,a.middle_name,a.last_name].filter(Boolean).join(' '))+'</b> <span class="badge">approved</span><div class="muted">Application: '+esc(a.application_no)+' | Requested grade: '+esc(a.requested_grade_name||a.requested_grade_code||'')+' | Guardian: '+esc(a.guardian_first_name+' '+a.guardian_last_name)+' / '+esc(a.guardian_phone)+'</div><div class="row" style="margin-top:8px"><label>Student ID / Admission No.<input class="rx-enrol-admission-no" value="'+esc(defaultAdmission)+'"></label><label>Class for enrolment<select class="rx-enrol-class">'+classOptions+'</select></label><button class="primary rx-enrol-admission" type="button">Enrol student</button></div></div>'}).join(''):'<div class="empty">No approved admission application is waiting for enrolment.</div>';panel.innerHTML='<div class="section compact"><div><h2>Approved Admissions Ready for Enrolment</h2><p class="muted">Approved admission records appear here. Click Enrol student to reuse the captured details and avoid duplicate student entry.</p></div></div>'+rows;var anchor=content.querySelector('.panel');content.insertBefore(panel,anchor||content.firstChild)}catch(e){}finally{rxAdmissionPanelBusy=false}}
@@ -415,7 +418,7 @@ async function page(p){
    if(E('content'))E('content').onclick=function(e){var id=e.target.dataset.openAdmission;if(id)openAdmission(id)}
  }
  else if(p==='students'){
-   var sr=await Promise.all([raw('/api/classes'),raw('/api/academic-years')]),studentClasses=sr[0],studentYears=sr[1];
+   var sr=await Promise.all([raw('/api/classes?includeAllYears=true'),raw('/api/academic-years')]),studentClasses=sr[0],studentYears=sr[1];
    var studentPage=1,studentPageSize=100,studentDirectory={rows:[],total:0,page:1,pages:1},studentLoadSeq=0;
    function studentActions(r){
      var out='';
@@ -500,7 +503,7 @@ async function page(p){
  else if(p==='studentdetail'){
    var studentMatch=location.pathname.match(/^\\/students\\/([^/?#]+)/),studentId=selectedStudentId||(studentMatch&&studentMatch[1]?decodeURIComponent(studentMatch[1]):'');
    if(!studentId){location.assign('/?page=students');return}
-   var dr=await Promise.all([raw('/api/students/'+studentId+'/360'),raw('/api/classes'),raw('/api/academic-years')]),x=dr[0],studentClasses=dr[1],studentYears=dr[2],st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[];
+   var dr=await Promise.all([raw('/api/students/'+studentId+'/360'),raw('/api/classes?includeAllYears=true'),raw('/api/academic-years')]),x=dr[0],studentClasses=dr[1],studentYears=dr[2],st=x.student,g=x.guardians||[],en=x.enrolments||[],history=x.statusHistory||[];
    E('pageTitle').textContent='Student Profile';
    function detailClassOptions(){return studentClasses.filter(function(c){return c.is_active}).map(function(c){var y=studentYears.find(function(v){return v.id===c.academic_year_id});return{value:c.id,label:c.name+(y?' • '+y.name:'')}})}
    function guardianTable(){
@@ -563,7 +566,7 @@ async function page(p){
  else if(p==='assignments'){
    var directoryError=null;
    var rr=await Promise.all([
-     raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels'),raw('/api/classes'),
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels'),raw('/api/classes?includeAllYears=true'),
      raw('/api/subjects'),raw('/api/class-subjects'),raw('/api/teacher-assignments'),
      raw('/api/staff/core-users').catch(function(e){directoryError=e;return[]}),
      raw('/api/staff/module-memberships')
@@ -735,7 +738,7 @@ else if(p==='attendance'){
  }
  else if(p==='assessments'){
    var rr=await Promise.all([
-     raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes'),raw('/api/subjects'),raw('/api/assessments'),
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes?includeAllYears=true'),raw('/api/subjects'),raw('/api/assessments'),
      raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/teacher-assignments').catch(function(){return[]}),raw('/api/class-subjects')
    ]);
    var years=rr[0],terms=rr[1],classes=rr[2],subs=rr[3],as=rr[4],coreUsers=rr[5],teacherAssignments=rr[6],classSubjects=rr[7];
@@ -794,7 +797,7 @@ else if(p==='attendance'){
  }
  else if(p==='homework'){
    var rr=await Promise.all([
-     raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes'),raw('/api/subjects'),raw('/api/homework'),
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes?includeAllYears=true'),raw('/api/subjects'),raw('/api/homework'),
      raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/teacher-assignments').catch(function(){return[]}),raw('/api/class-subjects')
    ]);
    var years=rr[0],terms=rr[1],classes=rr[2],subs=rr[3],hw=rr[4],coreUsers=rr[5],teacherAssignments=rr[6],classSubjects=rr[7];
@@ -865,7 +868,7 @@ else if(p==='attendance'){
    }
  }
  else if(p==='promotions'){
-   var rr=await Promise.all([raw('/api/academic-years'),raw('/api/classes'),raw('/api/promotions')]);var years=rr[0],classes=rr[1],history=rr[2],preview=null;
+   var rr=await Promise.all([raw('/api/academic-years'),raw('/api/classes?includeAllYears=true'),raw('/api/promotions')]);var years=rr[0],classes=rr[1],history=rr[2],preview=null;
    var active=years.find(function(y){return y.status==='active'})||years[0],activeStart=active?new Date(active.start_date).getTime():0,
        previous=years.filter(function(y){return active&&new Date(y.start_date).getTime()<activeStart}).sort(function(a,b){return new Date(b.start_date)-new Date(a.start_date)})[0],
        future=years.filter(function(y){return active&&new Date(y.start_date).getTime()>activeStart}).sort(function(a,b){return new Date(a.start_date)-new Date(b.start_date)})[0],
@@ -893,7 +896,7 @@ else if(p==='attendance'){
  }
  else if(p==='fees'){
    var rr=await Promise.all([
-     raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels'),raw('/api/classes'),raw('/api/fee-items'),
+     raw('/api/academic-years'),raw('/api/terms'),raw('/api/grade-levels'),raw('/api/classes?includeAllYears=true'),raw('/api/fee-items'),
      raw('/api/students'),raw('/api/fees/open-items'),raw('/api/payments?limit=100'),
      raw('/api/fees/payment-requests').catch(function(){return[]}),raw('/api/payment-intents').catch(function(){return[]}),
      raw('/api/payments/provider-status').catch(function(){return{payments:{configured:false,provider:'paystack',currency:'GHS'}}})
@@ -952,7 +955,7 @@ else if(p==='attendance'){
      raw('/api/finance/expenses?start='+yearStart+'&end='+today),raw('/api/finance/taxes'),raw('/api/finance/budgets'),
      raw('/api/finance/journals?start='+yearStart+'&end='+today),raw('/api/academic-years'),
      raw('/api/accounting/payment-methods'),raw('/api/accounting/fee-setup'),raw('/api/terms'),raw('/api/grade-levels'),
-     raw('/api/fees/payment-requests'),raw('/api/payment-intents'),raw('/api/classes'),
+     raw('/api/fees/payment-requests'),raw('/api/payment-intents'),raw('/api/classes?includeAllYears=true'),
      can('finance.reverse')?raw('/api/accounting/reversals?limit=150'):Promise.resolve({receipts:[],expenses:[],payments:[],history:[]}),
      raw('/api/accounting/end-of-day').catch(function(){return[]}),
      raw('/api/accounting/payment-balances').catch(function(){return[]})
@@ -1300,7 +1303,7 @@ else if(p==='attendance'){
    if(E('content'))E('content').onclick=function(e){var id=e.target.dataset.viewLeave;if(id)return loadLeaveDetail(id,false);id=e.target.dataset.reviewLeave;if(id)return loadLeaveDetail(id,true);id=e.target.dataset.cancelLeave;if(id)return confirmDo('Cancel this leave request and all planned relief periods?',function(){return raw('/api/leave/requests/'+id+'/cancel',{method:'POST',body:'{}'})})}
  }
  else if(p==='timetable'){
-   var rr=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes'),raw('/api/subjects'),raw('/api/timetable'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/staff/module-memberships').catch(function(){return[]})]);
+   var rr=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes?includeAllYears=true'),raw('/api/subjects'),raw('/api/timetable'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/staff/module-memberships').catch(function(){return[]})]);
    var years=rr[0],terms=rr[1],classes=rr[2],subs=rr[3],tt=rr[4],users=rr[5],memberships=rr[6];
    var activeYear=years.find(function(y){return y.status==='active'})||years[0],activeTerm=terms.find(function(t){return t.status==='active'})||null;
    var timetableYear=sessionStorage.getItem('rx_timetable_year')||(activeYear?activeYear.id:'');
@@ -1444,7 +1447,7 @@ else if(p==='attendance'){
    if(E('content'))E('content').onclick=function(e){var id=e.target.dataset.setSignature;if(!id)return;var role=e.target.dataset.role,u=eligible.find(function(x){return x.id===id}),sig=sigFor(id,role),data=sig&&sig.signature_image_data||null;modal('<h2>Configure Report Signature</h2><p class="muted">'+esc(u.first_name+' '+u.last_name)+' • '+esc(role)+'</p><label>Signature name</label><input id="adminSigName" value="'+esc(sig&&sig.display_name||u.first_name+' '+u.last_name)+'"><label>Signature image</label><input id="adminSigFile" type="file" accept="image/png,image/jpeg,image/webp"><div id="adminSigPreview">'+(data?'<img src="'+esc(data)+'" style="max-width:240px;max-height:90px;background:white;padding:8px">':'<span class="muted">No image uploaded. The staff name will still appear.</span>')+'</div><button id="saveAdminSig" class="primary" style="width:100%;margin-top:12px">Save Signature</button>');E('adminSigFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>900000)return toast('Signature image must be under 900 KB',true);var rd=new FileReader();rd.onload=function(){data=String(rd.result||'');E('adminSigPreview').innerHTML='<img src="'+esc(data)+'" style="max-width:240px;max-height:90px;background:white;padding:8px">'};rd.readAsDataURL(f)};if(E('saveAdminSig'))E('saveAdminSig').onclick=async function(){await raw('/api/report-signatures/'+id,{method:'PUT',body:JSON.stringify({signerRole:role,displayName:E('adminSigName').value,signatureImageData:data,isActive:true})});close();toast('Signature saved');page('signatures')}}
  }
  else if(p==='reports'){
-   var rr=await Promise.all([raw('/api/students'),raw('/api/terms'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/report-review-queue').catch(function(){return[]}),raw('/api/classes').catch(function(){return[]})]);
+   var rr=await Promise.all([raw('/api/students'),raw('/api/terms'),raw('/api/staff/core-users').catch(function(){return[]}),raw('/api/report-review-queue').catch(function(){return[]}),raw('/api/classes?includeAllYears=true').catch(function(){return[]})]);
    var students=rr[0],terms=rr[1],coreUsers=rr[2],queue=rr[3],reportClasses=rr[4],remembered=sessionStorage.getItem('rx_report_student')||'';sessionStorage.removeItem('rx_report_student');
    function staffName(id){var su=coreUsers.find(function(x){return x.id===id});return su?su.first_name+' '+su.last_name:'—'}
    function reportSubjectTable(r){return table(r.subjects,[
@@ -1546,7 +1549,7 @@ else if(p==='attendance'){
    }
  }
  else if(p==='announcements'){
-   var rr=await Promise.all([raw('/api/announcements'),raw('/api/classes'),raw('/api/communications/status'),raw('/api/communications/outbox')]);
+   var rr=await Promise.all([raw('/api/announcements'),raw('/api/classes?includeAllYears=true'),raw('/api/communications/status'),raw('/api/communications/outbox')]);
    var notes=rr[0],classes=rr[1],comm=rr[2],outbox=rr[3],providers=comm.providers||{},rules=comm.rules||[],commSummary=comm.summary||{};
    function providerCard(name,x){x=x||{};var suffix=name==='Email'&&x.mode?' • '+x.mode:'';var chain=name==='Email'&&x.candidates&&x.candidates.length>1?' • fallback '+x.candidates.join(' → '):'';return'<div class="panel stat"><span class="muted">'+esc(name)+'</span><b style="font-size:17px">'+(name==='Email'&&x.mode==='testing'?'Test mode':x.configured?'Credentials configured':'Needs setup')+'</b><small>'+esc((x.provider||'')+suffix+chain)+'</small></div>'}
    E('content').innerHTML='<div class="section"><div><h1>Communication Centre</h1><p class="muted">Email, SMS, WhatsApp alerts, direct messages, notification rules and school announcements.</p></div><div class="actions"><button id="checkMessagingConnections" class="ghost">Check connections</button><button id="retryPendingMessages" class="ghost">Retry Pending</button><button id="sendDirect" class="primary">Send message</button><button id="addAnnouncement" class="ghost">New announcement</button></div></div>'+
@@ -1659,7 +1662,7 @@ else if(p==='attendance'){
      raw('/api/staff/module-memberships'),
      raw('/api/teacher-assignments'),
      raw('/api/roles/capabilities'),
-     raw('/api/classes'),
+     raw('/api/classes?includeAllYears=true'),
      raw('/api/report-reviewers'),
      raw('/api/academic-years'),
      raw('/api/terms'),

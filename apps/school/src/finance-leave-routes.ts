@@ -1,3 +1,4 @@
+import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -39,7 +40,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.patch('/api/staff/users/:membershipId',async request=>{
     const a=await authorize(request,db,config,'staff.edit');
-    const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const {membershipId}=z.object({membershipId:schoolRecordId}).parse(request.params);
     const b=z.object({
       firstName:z.string().trim().min(1).max(100).optional(),
       lastName:z.string().trim().min(1).max(100).optional(),
@@ -72,7 +73,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/staff/users/:membershipId/status',async request=>{
     const a=await authorize(request,db,config,'staff.status');
-    const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const {membershipId}=z.object({membershipId:schoolRecordId}).parse(request.params);
     const b=z.object({status:z.enum(['active','suspended'])}).parse(request.body);
     const base=config.CORE_OS_URL.replace(/\/$/,'');
     const res=await fetch(base+'/v1/internal/school/users/'+membershipId+'/status',{
@@ -91,7 +92,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/staff/users/:membershipId/unlock',async request=>{
     const a=await authorize(request,db,config,'staff.status');
-    const {membershipId}=z.object({membershipId:z.string().uuid()}).parse(request.params);
+    const {membershipId}=z.object({membershipId:schoolRecordId}).parse(request.params);
     const base=config.CORE_OS_URL.replace(/\/$/,'');
     const res=await fetch(base+'/v1/internal/school/users/'+membershipId+'/unlock',{
       method:'POST',headers:{...coreServiceHeaders(),'content-type':'application/json'},
@@ -131,7 +132,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.patch('/api/finance/accounts/:id',async request=>{
     const a=await authorize(request,db,config,'finance.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({
       name:z.string().trim().min(2).max(180).optional(),
       subtype:z.string().trim().max(60).nullable().optional(),
@@ -212,7 +213,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/finance/journals/:id',async request=>{
     const a=await authorize(request,db,config,'finance.view');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const entry=await one(db,'SELECT * FROM finance_journal_entries WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const lines=(await db.query(
       'SELECT jl.*,fa.code account_code,fa.name account_name,fa.account_type FROM finance_journal_lines jl JOIN finance_accounts fa ON fa.id=jl.account_id '+
@@ -223,7 +224,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
   app.post('/api/finance/journals',async(request,reply)=>{
     const a=await authorize(request,db,config,'finance.post');
     const b=z.object({entryDate:z.string().date(),description:z.string().min(2).max(1000),reference:z.string().max(160).optional(),
-      lines:z.array(z.object({accountId:z.string().uuid(),debit:z.number().min(0).default(0),credit:z.number().min(0).default(0),description:z.string().max(500).optional()})).min(2).max(50)}).parse(request.body);
+      lines:z.array(z.object({accountId:schoolRecordId,debit:z.number().min(0).default(0),credit:z.number().min(0).default(0),description:z.string().max(500).optional()})).min(2).max(50)}).parse(request.body);
     const entry=await tx(db,(client:any)=>postFinanceJournal(client,{organisationId:a.core.organisation_id,entryDate:b.entryDate,description:b.description,
       reference:b.reference??null,actorOsUserId:a.core.id,lines:b.lines}));
     await audit(a.core.organisation_id,a.core.id,'finance.journal_posted','finance_journal_entry',entry.id);
@@ -245,8 +246,8 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/expenses',async(request,reply)=>{
     const a=await authorize(request,db,config,'finance.post');
-    const b=z.object({expenseDate:z.string().date(),vendorId:z.string().uuid().nullable().optional(),expenseAccountId:z.string().uuid(),
-      paymentAccountId:z.string().uuid(),amount:z.number().positive(),taxAmount:z.number().min(0).default(0),description:z.string().min(2).max(1200),
+    const b=z.object({expenseDate:z.string().date(),vendorId:schoolRecordId.nullable().optional(),expenseAccountId:schoolRecordId,
+      paymentAccountId:schoolRecordId,amount:z.number().positive(),taxAmount:z.number().min(0).default(0),description:z.string().min(2).max(1200),
       reference:z.string().max(160).optional()}).parse(request.body);
     const result=await tx(db,async(client:any)=>{
       const expenseAccount=await one(client,"SELECT * FROM finance_accounts WHERE id=$1 AND organisation_id=$2 AND account_type='expense' AND is_active=true",
@@ -270,7 +271,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/expenses/:id/void',async request=>{
     const a=await authorize(request,db,config,'finance.reverse');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({originalReference:z.string().trim().min(2).max(160),reason:z.string().trim().min(2).max(1000)}).parse(request.body);
     const row=await tx(db,async(client:any)=>{
       const expense=await one(client,"SELECT * FROM finance_expenses WHERE id=$1 AND organisation_id=$2 AND status='posted' FOR UPDATE",[id,a.core.organisation_id]) as any;
@@ -310,7 +311,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.patch('/api/finance/tax-types/:id',async request=>{
     const a=await authorize(request,db,config,'tax.manage');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({name:z.string().trim().min(2).max(180).optional(),authority:z.string().max(220).nullable().optional(),
       rate:z.number().min(0).max(100).nullable().optional(),filingFrequency:z.enum(['monthly','quarterly','annual','other']).optional(),isActive:z.boolean().optional()})
       .refine(v=>Object.keys(v).length>0).parse(request.body);
@@ -324,7 +325,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/tax-obligations',async(request,reply)=>{
     const a=await authorize(request,db,config,'tax.manage');
-    const b=z.object({taxTypeId:z.string().uuid(),periodStart:z.string().date(),periodEnd:z.string().date(),dueDate:z.string().date(),
+    const b=z.object({taxTypeId:schoolRecordId,periodStart:z.string().date(),periodEnd:z.string().date(),dueDate:z.string().date(),
       amountDue:z.number().min(0),filingReference:z.string().max(180).optional(),notes:z.string().max(3000).optional()}).parse(request.body);
     if(b.periodEnd<b.periodStart)throw fail(400,'Tax period end must be after the start date');
     const result=await tx(db,async(client:any)=>{
@@ -349,7 +350,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/tax-payments',async(request,reply)=>{
     const a=await authorize(request,db,config,'tax.manage');
-    const b=z.object({obligationId:z.string().uuid(),paymentDate:z.string().date(),amount:z.number().positive(),paymentAccountId:z.string().uuid(),
+    const b=z.object({obligationId:schoolRecordId,paymentDate:z.string().date(),amount:z.number().positive(),paymentAccountId:schoolRecordId,
       authorityReference:z.string().max(180).optional(),receiptReference:z.string().max(180).optional()}).parse(request.body);
     const result=await tx(db,async(client:any)=>{
       const obligation=await one(client,
@@ -387,7 +388,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/finance/budgets',async(request,reply)=>{
     const a=await authorize(request,db,config,'finance.manage');
-    const b=z.object({academicYearId:z.string().uuid().nullable().optional(),accountId:z.string().uuid(),periodStart:z.string().date(),
+    const b=z.object({academicYearId:schoolRecordId.nullable().optional(),accountId:schoolRecordId,periodStart:z.string().date(),
       periodEnd:z.string().date(),amount:z.number().min(0),notes:z.string().max(2000).optional()}).parse(request.body);
     if(b.periodEnd<b.periodStart)throw fail(400,'Budget end date must be after start date');
     const row=await one(db,
@@ -582,7 +583,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/leave/eligible-relievers',async request=>{
     const a=await authorize(request,db,config,'leave.view');
-    const q=z.object({applicantOsUserId:z.preprocess(v=>typeof v==='string'&&v.trim()===''?undefined:v,z.string().uuid().optional())}).parse(request.query);
+    const q=z.object({applicantOsUserId:z.preprocess(v=>typeof v==='string'&&v.trim()===''?undefined:v,schoolRecordId.optional())}).parse(request.query);
     const users=await fetchCoreUsers(a.core.organisation_id);
     const teaching=(await db.query(
       "SELECT sm.os_user_id,sm.role,sr.name role_name FROM school_memberships sm JOIN school_roles sr "+
@@ -617,7 +618,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.get('/api/leave/requests/:id',async request=>{
     const a=await authorize(request,db,config,'leave.view');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const leave=await one(db,'SELECT * FROM staff_leave_requests WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]) as any;
     const canReview=a.role==='school_admin'||Boolean((await maybeOne(db,
       'SELECT allowed FROM school_role_capabilities WHERE organisation_id=$1 AND role=$2 AND capability_key=$3',
@@ -632,10 +633,10 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/leave/requests',async(request,reply)=>{
     const a=await authorize(request,db,config,'leave.apply');
-    const b=z.object({applicantOsUserId:z.string().uuid().optional(),
+    const b=z.object({applicantOsUserId:schoolRecordId.optional(),
       leaveType:z.enum(['annual','sick','maternity','paternity','study','compassionate','official','other']),
       startDate:z.string().date(),endDate:z.string().date(),reason:z.string().trim().min(3).max(5000),
-      relieverOsUserIds:z.array(z.string().uuid()).min(1).max(10)}).parse(request.body);
+      relieverOsUserIds:z.array(schoolRecordId).min(1).max(10)}).parse(request.body);
     if(b.endDate<b.startDate)throw fail(400,'Leave end date must be after the start date');
     const applicant=b.applicantOsUserId??a.core.id;
     if(applicant!==a.core.id){
@@ -673,7 +674,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/leave/requests/:id/review',async request=>{
     const a=await authorize(request,db,config,'leave.review');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const b=z.object({action:z.enum(['approve','decline']),note:z.string().max(3000).optional()}).parse(request.body);
     const current=await one(db,"SELECT * FROM staff_leave_requests WHERE id=$1 AND organisation_id=$2 AND status='submitted'",
       [id,a.core.organisation_id]) as any;
@@ -688,7 +689,7 @@ export async function registerFinanceLeaveRoutes(app:FastifyInstance,d:Deps){
 
   app.post('/api/leave/requests/:id/cancel',async request=>{
     const a=await authorize(request,db,config,'leave.apply');
-    const {id}=z.object({id:z.string().uuid()}).parse(request.params);
+    const {id}=z.object({id:schoolRecordId}).parse(request.params);
     const current=await one(db,'SELECT * FROM staff_leave_requests WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]) as any;
     if(current.applicant_os_user_id!==a.core.id&&a.role!=='school_admin')throw fail(403,'You cannot cancel this leave request');
     if(!['submitted','approved'].includes(current.status))throw fail(409,'This leave request cannot be cancelled');
