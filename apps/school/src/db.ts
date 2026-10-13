@@ -24,16 +24,52 @@ export function createSchoolDb(config: SchoolConfig) {
     max: config.DB_POOL_MAX,
     application_name: 'revolt-x-school'
   });
-  // Configure every physical PostgreSQL connection after it opens instead of sending
-  // search_path as a startup parameter. Neon/PgBouncer rejects custom startup options,
-  // while Railway/PostgreSQL accepts them. Issuing SET here keeps unqualified School
-  // tables in the dedicated schema on both providers and avoids intermittent
-  // `relation "school_profiles" does not exist` failures when the pool rotates clients.
-  pool.on('connect',client=>{
-    void client.query(`SET search_path TO ${schoolSearchPath}`).catch(error=>{
-      pool.emit('error',error,client);
-    });
-  });
+
+  // A Pool 'connect' event does not wait for an async handler. The previous listener
+  // could therefore race the first application query on a newly-opened connection:
+  // `/api/auth/schools` sometimes queried `school_profiles` before search_path had
+  // been applied and PostgreSQL looked in the wrong schema. Initialise each physical
+  // client synchronously from the caller's point of view before exposing it to any
+  // School query. This also covers pool rotation and cold starts without relying on
+  // unsupported PostgreSQL startup options in hosted/PgBouncer environments.
+  const rawConnect=pool.connect.bind(pool);
+  const initialized=new WeakMap<pg.PoolClient,Promise<void>>();
+
+  async function prepareClient(client:pg.PoolClient){
+    let pending=initialized.get(client);
+    if(!pending){
+      pending=client.query(`SET search_path TO ${schoolSearchPath}`).then(()=>undefined);
+      initialized.set(client,pending);
+    }
+    try{
+      await pending;
+    }catch(error){
+      initialized.delete(client);
+      throw error;
+    }
+  }
+
+  (pool as any).connect=async()=>{
+    const client=await rawConnect();
+    try{
+      await prepareClient(client);
+      return client;
+    }catch(error){
+      client.release();
+      throw error;
+    }
+  };
+
+  (pool as any).query=async(...args:any[])=>{
+    const client=await rawConnect();
+    try{
+      await prepareClient(client);
+      return await (client.query as any)(...args);
+    }finally{
+      client.release();
+    }
+  };
+
   return pool;
 }
 
