@@ -2,15 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from '../dist/login-ui.js';
+import { virtualClock } from './virtual-clock.mjs';
 
 async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond,startup}={}) {
+  const clock=virtualClock();
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
   const context={document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URL,URLSearchParams,
     location:{pathname:path,search,origin:'https://school.example.test',href:'https://school.example.test'+path+search,replace:url=>redirects.push(url)},history:{replaceState(){}},
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},
     sessionStorage:{getItem:key=>sessions.get(key),removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
-    clearTimeout(){},setTimeout:fn=>fn(),fetch:async(url,options)=>{
+    Date:clock.Date,AbortController,clearTimeout:clock.clearTimeout,setTimeout:clock.setTimeout,fetch:async(url,options)=>{
       calls.push({url,body:options?.body?JSON.parse(options.body):undefined});
       if(url==='/api/auth/schools')return{ok:true,json:async()=>schools};
       if(url==='/api/system/core-status'||String(url).startsWith('https://core.example.test/'))return startup?startup(url,options):{ok:true,json:async()=>({core:{healthy:true,status:200,url:'https://core.example.test'}})};
@@ -20,7 +22,7 @@ async function browser(html, {path='/admin-login',search='',saved='',schools=[{i
   const script=html.match(/<script>([\s\S]*?)<\/script>/i)?.[1];assert.ok(script);
   vm.runInNewContext(script,context);
   await new Promise(resolve=>setImmediate(resolve));
-  return{element,calls,redirects,storage,sessions};
+  return{element,calls,redirects,storage,sessions,clock};
 }
 
 test('staff web login resolves a saved school UUID and replaces the expired teacher session after successful sign-in',async()=>{
@@ -64,6 +66,22 @@ test('web login keeps entered credentials and never posts a password when startu
   assert.equal(b.calls.some(call=>call.url==='/api/auth/staff-id-login'),false);assert.equal(b.element('password').value,'FixtureStaffPass123!');assert.equal(b.element('signin').disabled,false);assert.match(b.element('status').textContent,/entries are still here/);
 });
 
+for(const [name,html,path,authPath] of [['staff',loginFrontend,'/s/alpha/login','/api/auth/staff-id-login'],['administrator',adminLoginFrontend,'/s/alpha/admin-login','/api/auth/admin-login']]){
+  test(name+' web sign-in survives a failed first connection and a minute of fast startup responses',async()=>{
+    let b,probes=0;
+    b=await browser(html,{path,startup:url=>{
+      if(url==='/api/system/core-status'){
+        if(++probes===1)throw Error('connection dropped');
+        return{ok:true,json:async()=>({core:{url:'https://core.example.test',healthy:b.clock.now()>=60000,status:b.clock.now()>=60000?200:429}})};
+      }
+      return{ok:false,status:0,json:()=>assert.fail()};
+    },respond:()=>({ok:true,json:async()=>({accessToken:'fixture-session',school:{id:'alpha'},user:{firstName:'Ama'},redirectTo:'/teacher'})})});
+    b.element('staffId').value='STF-000001';b.element('email').value='fixture@example.test';b.element('password').value='FixtureStaffPass123!';
+    await b.element('signin').onclick();
+    assert.equal(b.clock.now(),60000);assert.equal(b.calls.filter(call=>call.url===authPath).length,1);assert.deepEqual(b.redirects,['/teacher']);
+  });
+}
+
 for(const [name,html] of [['admin',adminLoginFrontend],['staff',loginFrontend]]) {
   test(name+' school selection resolves tenant paths, case and legacy organisation IDs',async()=>{
     for(const options of [{path:'/s/ALPHA/admin-login',search:'?school=other'},{search:'?school=ORG-ALPHA'},{saved:'ALPHA'}]) {
@@ -86,6 +104,7 @@ test('reset without a school omits the optional identifier and clears stale sess
   const token='a'.repeat(43),b=await browser(adminPasswordResetFrontend,{path:'/admin-password-reset',search:'?token='+token});
   b.element('newPassword').value=b.element('confirmPassword').value='NewSecurePass123';
   await b.element('save').onclick();
+  await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(b.calls[0].body,{token,newPassword:'NewSecurePass123'});
   assert.equal(b.sessions.size,0);assert.equal(b.storage.get('rx_school_id'),'alpha');assert.deepEqual(b.redirects,['/s/alpha/admin-login']);
 });

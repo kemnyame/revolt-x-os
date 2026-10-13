@@ -26,8 +26,8 @@ export const schoolSignInStartupScript = String.raw`
   var pending=null;
   function unavailable(){var error=Error('The sign-in service could not start. Your entries are still here. Please try signing in again.');error.status=503;return error}
   function pause(milliseconds){return new Promise(function(resolve){setTimeout(resolve,milliseconds)})}
-  async function read(url,timeout,external){
-    var controller=typeof AbortController==='function'?new AbortController():null;
+  async function read(url,timeout,external,providedController){
+    var controller=providedController||(typeof AbortController==='function'?new AbortController():null);
     var timer=controller?setTimeout(function(){controller.abort()},timeout):null;
     try{
       var response=await window.fetch(url,{method:'GET',cache:'no-store',credentials:external?'omit':'same-origin',mode:external?'no-cors':'same-origin',redirect:external?'error':'follow',signal:controller?controller.signal:undefined});
@@ -47,23 +47,35 @@ export const schoolSignInStartupScript = String.raw`
     }catch(error){return null}
   }
   async function start(progress){
-    var deadline=Date.now()+90000;
-    var status=await read('/api/system/core-status',15000,false),core=status.body&&status.body.core;
-    if(status.ok&&core&&core.healthy===true)return;
-    var url=core&&publicHealthUrl(core.url);
-    if(!url)throw unavailable();
-    if(progress)progress('Starting sign-in. This can take up to a minute. Please wait…');
-    for(var attempt=0;attempt<6&&Date.now()<deadline;attempt++){
-      await read(url,Math.max(1,Math.min(15000,deadline-Date.now())),true);
-      if(Date.now()>=deadline)break;
-      // Confirm the original School-to-Core connection before sending a password.
-      var verified=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
-      if(verified.ok&&verified.body&&verified.body.core&&verified.body.core.healthy===true){
-        if(progress)progress('Signing in…');return;
+    var deadline=Date.now()+90000,url=null,wakeRequest=null,nextWakeAt=0,announced=false;
+    try{
+      // Fast gateway replies must not exhaust an attempt counter before the host
+      // has time to start. A failed first School request is recoverable too.
+      while(Date.now()<deadline){
+        var status=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
+        var core=status.body&&status.body.core;
+        if(status.ok&&core&&core.healthy===true){
+          if(announced&&progress)progress('Signing in…');return;
+        }
+        if(status.ok&&core&&core.url!==undefined){
+          url=publicHealthUrl(core.url);if(!url)throw unavailable();
+        }
+        if(!announced){announced=true;if(progress)progress('Starting sign-in. This can take about a minute. Please keep this screen open…')}
+        if(Date.now()>=deadline)break;
+        if(url&&!wakeRequest&&Date.now()>=nextWakeAt){
+          var controller=typeof AbortController==='function'?new AbortController():null;
+          // Leave the public request open through a normal cold start. Verify
+          // School concurrently; neither an opaque reply nor public availability
+          // alone permits sending credentials. Retry a failed wake at most every
+          // 30 seconds, only while this interactive sign-in is pending.
+          nextWakeAt=Date.now()+30000;
+          wakeRequest={controller:controller};
+          read(url,Math.max(1,Math.min(60000,deadline-Date.now())),true,controller).then(function(){wakeRequest=null});
+        }
+        await pause(Math.max(1,Math.min(3000,deadline-Date.now())));
       }
-      if(attempt<5){var delay=[1000,2000,3000,5000,6000][attempt];if(Date.now()+delay>=deadline)break;await pause(delay)}
-    }
-    throw unavailable();
+      throw unavailable();
+    }finally{if(wakeRequest&&wakeRequest.controller)wakeRequest.controller.abort()}
   }
   window.RevoltSchoolSignIn={ensureReady:function(progress){
     if(pending)return pending;
