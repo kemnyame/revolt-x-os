@@ -2,16 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { probeSchoolSignInService, schoolSignInStartupScript } from '../dist/sign-in-startup.js';
+import { virtualClock } from './virtual-clock.mjs';
 
 const base='https://core.example.test';
 const response=(body,status=200)=>({ok:status>=200&&status<300,status,json:async()=>body});
 const status=healthy=>response({core:{url:base,healthy,status:healthy?200:429}});
 
 function client(handler){
-  let time=0;const calls=[];
+  const clock=virtualClock(),calls=[];
   const window={fetch:async(url,options)=>{calls.push({url,options});return handler(url,options,calls.length)}};
-  vm.runInNewContext(schoolSignInStartupScript,{window,URL,location:{origin:'https://school.example.test'},Date:{now:()=>time},setTimeout:(fn,delay)=>{time+=delay;queueMicrotask(fn);return 0},clearTimeout(){}});
-  return{ready:window.RevoltSchoolSignIn.ensureReady,calls,advance:ms=>{time+=ms}};
+  vm.runInNewContext(schoolSignInStartupScript,{window,URL,AbortController,location:{origin:'https://school.example.test'},...clock});
+  return{ready:window.RevoltSchoolSignIn.ensureReady,calls,...clock};
 }
 
 test('429 gateway responses do not report a running sign-in service',async()=>{
@@ -46,7 +47,48 @@ test('a sleeping Core is woken by a public opaque GET and verified through the o
 test('public Core availability alone cannot authorize password submission while School still cannot connect',async()=>{
   const c=client(url=>url==='/api/system/core-status'?status(false):response({status:'ok'}));
   await assert.rejects(c.ready(),error=>error.status===503&&/entries are still here/.test(error.message));
-  assert.equal(c.calls.filter(call=>call.url===base+'/health/live').length,6);assert.ok(c.calls.every(call=>call.options.method==='GET'));
+  assert.equal(c.now(),90000);assert.equal(c.calls.filter(call=>call.url===base+'/health/live').length,3);assert.ok(c.calls.every(call=>call.options.method==='GET'));assert.equal(c.timerCount(),0);
+});
+
+test('fast gateway and opaque startup replies recover after a full minute instead of exhausting six attempts early',async()=>{
+  let c;
+  c=client(url=>url==='/api/system/core-status'?status(c.now()>=60000):{ok:false,status:0,json:()=>assert.fail('Do not inspect an opaque reply')});
+  await c.ready();
+  assert.equal(c.now(),60000);assert.ok(c.calls.filter(call=>call.url==='/api/system/core-status').length>6);
+  assert.equal(c.calls.filter(call=>call.url===base+'/health/live').length,2);assert.equal(c.timerCount(),0);
+});
+
+test('a dropped initial School status request is retried and still wakes Core before proceeding',async()=>{
+  let probes=0;
+  const c=client(url=>{
+    if(url==='/api/system/core-status'){
+      if(++probes===1)throw Error('Network connection lost');
+      if(probes===2)return response('<html>Starting</html>',503);
+      return status(probes>=5);
+    }
+    return response(null,429);
+  });
+  await c.ready();assert.equal(probes,5);assert.ok(c.calls.some(call=>call.url===base+'/health/live'));assert.equal(c.timerCount(),0);
+});
+
+test('a hanging first request times out then recovers without asking the user to submit again',async()=>{
+  let probes=0;
+  const c=client((url,options)=>{
+    if(url==='/api/system/core-status'&&++probes===1)return new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Error('timeout')),{once:true}));
+    return status(true);
+  });
+  await c.ready();assert.equal(probes,2);assert.equal(c.now(),18000);assert.equal(c.timerCount(),0);
+});
+
+test('School verification continues while the public wake request is open, then cancels unused network work',async()=>{
+  let probes=0,wakeSignal;
+  const c=client((url,options)=>{
+    if(url==='/api/system/core-status')return status(++probes>=4);
+    wakeSignal=options.signal;
+    return new Promise((_resolve,reject)=>wakeSignal.addEventListener('abort',()=>reject(Error('cancelled')),{once:true}));
+  });
+  await c.ready();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(c.now(),9000);assert.equal(wakeSignal.aborted,true);assert.equal(c.timerCount(),0);
 });
 
 test('concurrent sign-in readiness checks share one request and release their state when finished',async()=>{
@@ -62,10 +104,16 @@ test('a failed startup can be retried without stale pending state',async()=>{
   await assert.rejects(c.ready(),error=>error.status===503);available=true;await c.ready();assert.equal(c.calls.at(-1).url,'/api/system/core-status');
 });
 
-test('startup never fetches insecure, credential-bearing or incomplete public addresses',async()=>{
-  for(const url of [undefined,'http://core.example.test','https://user:password@core.example.test','https://core.example.test/?token=private']){
+test('startup never fetches insecure or credential-bearing public addresses',async()=>{
+  for(const url of ['http://core.example.test','https://user:password@core.example.test','https://core.example.test/?token=private']){
     const c=client(()=>response({core:{url,healthy:false,status:429}}));await assert.rejects(c.ready(),error=>error.status===503);assert.equal(c.calls.length,1);
   }
+});
+
+test('missing startup metadata is retried within the deadline without inventing a public address',async()=>{
+  const c=client(()=>response({core:{healthy:false,status:429}}));
+  await assert.rejects(c.ready(),error=>error.status===503);assert.equal(c.now(),90000);
+  assert.ok(c.calls.every(call=>call.url==='/api/system/core-status'));
 });
 
 test('startup stops when its overall deadline is exhausted',async()=>{

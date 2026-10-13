@@ -6,6 +6,7 @@ import { mobileExperienceFrontend, mobileExperienceScript } from '../dist/mobile
 import { mobileWorkflowScript } from '../dist/mobile-workflows.js';
 import { schoolSessionScript } from '../dist/session-ui.js';
 import { schoolSignInStartupScript } from '../dist/sign-in-startup.js';
+import { virtualClock } from './virtual-clock.mjs';
 
 const storage=initial=>{const map=new Map(Object.entries(initial||{}));return{getItem:k=>map.get(k)||null,setItem:(k,v)=>map.set(k,String(v)),removeItem:k=>map.delete(k)}};
 const capabilities=['academic.view','reports.view','assessment.view','assessment.create','assessment.score','attendance.view','attendance.mark','homework.view','homework.create','homework.publish'];
@@ -43,7 +44,7 @@ function harness(role='teacher',handler,options={}){
   return response([]);
  };
  window.fetch=fetch;
- const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage(options.sessions??{[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(options.saved),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:options.search||'',replace(){}},URL,URLSearchParams,Set,setTimeout:options.setTimeout||setTimeout,clearTimeout,addEventListener:()=>{},FileReader:class{}});
+ const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage(options.sessions??{[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(options.saved),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:options.search||'',replace(){}},URL,URLSearchParams,Set,AbortController,Date:options.clock?.Date||Date,setTimeout:options.clock?.setTimeout||setTimeout,clearTimeout:options.clock?.clearTimeout||clearTimeout,addEventListener:()=>{},FileReader:class{}});
  vm.runInContext(schoolSignInStartupScript+mobileWorkflowScript+mobileExperienceScript,context);
  const click=id=>document.getElementById(id).click();
  const submit=id=>document.getElementById(id).onsubmit({preventDefault(){}});
@@ -107,13 +108,31 @@ test('mobile sign-in automatically wakes Core before sending a staff password to
 });
 
 test('mobile preserves staff entries without posting a password if the original bridge never becomes ready',async()=>{
+ const clock=virtualClock();
  const h=harness('teacher',async path=>{
   if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha'}]);
   if(path==='/api/system/core-status')return response({core:{url:'https://core.example.test',healthy:false,status:429}});
   if(path==='https://core.example.test/health/live')return response(null,429);
- },{sessions:{},search:'?school=alpha',setTimeout:fn=>{queueMicrotask(fn);return 0}});
+ },{sessions:{},search:'?school=alpha',clock});
  await waitFor(()=>h.document.getElementById('mLoginSchool')?.value==='alpha');h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','FixtureStaffPass123!');await h.submit('mLoginForm');
  assert.equal(h.writes.length,0);assert.equal(h.document.getElementById('mLoginStaff').value,'STF-000001');assert.equal(h.document.getElementById('mLoginPassword').value,'FixtureStaffPass123!');assert.equal(h.document.getElementById('mLoginSubmit').disabled,false);assert.match(h.document.getElementById('mError').textContent,/entries are still here/);
+ assert.equal(clock.now(),90000);
+});
+
+test('mobile teacher sign-in recovers automatically after a dropped first connection and a minute of cold-start replies',async()=>{
+ const clock=virtualClock();let probes=0;
+ const h=harness('teacher',async(path)=>{
+  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha'}]);
+  if(path==='/api/system/core-status'){
+   if(++probes===1)throw Error('connection dropped');
+   return response({core:{url:'https://core.example.test',healthy:clock.now()>=60000,status:clock.now()>=60000?200:429}});
+  }
+  if(path==='https://core.example.test/health/live')return{ok:false,status:0,json:()=>assert.fail()};
+  if(path==='/api/auth/staff-id-login')return response({accessToken:'rxs_fixture_fresh',school:{id:'alpha'}});
+ },{sessions:{},search:'?school=alpha',clock});
+ await waitFor(()=>h.document.getElementById('mLoginSchool')?.value==='alpha');h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','FixtureStaffPass123!');
+ await h.submit('mLoginForm');await waitFor(()=>h.document.querySelector('[data-go="scores"]'));
+ assert.equal(clock.now(),60000);assert.equal(h.writes.length,1);assert.deepEqual(h.writes[0].body,{schoolId:'alpha',staffId:'STF-000001',password:'FixtureStaffPass123!'});
 });
 
 test('dedicated teacher UI exposes direct tasks and only assigned class subjects',async()=>{
