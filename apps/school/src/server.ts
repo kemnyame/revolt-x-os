@@ -861,6 +861,12 @@ function dateOnlyValue(value:any){
   return Number.isNaN(parsed.getTime())?null:parsed.toISOString().slice(0,10);
 }
 
+function requiredDateOnlyValue(value:any,label='Date'){
+  const normalized=dateOnlyValue(value);
+  if(!normalized)throw fail(400,label+' is invalid. Use the calendar and select a valid date.');
+  return normalized;
+}
+
 const optionalEmailSchema=z.preprocess(value=>{
   if(value==null)return undefined;
   if(typeof value!=='string')return value;
@@ -2277,13 +2283,18 @@ app.patch('/api/school/promotion-settings',async request=>{
 
 
 function fixedTermName(termNo:number){return termNo===1?'First Term':termNo===2?'Second Term':'Third Term'}
-function isoDateAdd(value:string,days:number){
-  const d=new Date(value+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);
+function isoDateAdd(value:any,days:number){
+  const normalized=requiredDateOnlyValue(value,'Academic calendar date');
+  const d=new Date(normalized+'T00:00:00.000Z');
+  d.setUTCDate(d.getUTCDate()+days);
+  return d.toISOString().slice(0,10);
 }
 async function ensureFixedAcademicYearTerms(queryDb:any,organisationId:string,academicYearId:string){
   const year=(await queryDb.query('SELECT id,start_date,end_date FROM academic_years WHERE id=$1 AND organisation_id=$2',[academicYearId,organisationId])).rows[0];
   if(!year)return[];
-  const start=String(year.start_date).slice(0,10),end=String(year.end_date).slice(0,10);
+  const start=requiredDateOnlyValue(year.start_date,'Academic year start date');
+  const end=requiredDateOnlyValue(year.end_date,'Academic year end date');
+  if(end<=start)throw fail(400,'Academic year dates are invalid. The end date must be after the start date.');
   const totalDays=Math.max(3,Math.floor((new Date(end+'T00:00:00Z').getTime()-new Date(start+'T00:00:00Z').getTime())/86400000)+1);
   const cut1=Math.max(1,Math.floor(totalDays/3)),cut2=Math.max(cut1+1,Math.floor(totalDays*2/3));
   const ranges=[
@@ -4454,7 +4465,8 @@ app.patch('/api/academic-years/:id',async request=>{
   const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const b=z.object({name:z.string().min(4).max(40).optional(),startDate:z.string().date().optional(),endDate:z.string().date().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
+  const start=b.startDate??requiredDateOnlyValue(current.start_date,'Academic year start date');
+  const end=b.endDate??requiredDateOnlyValue(current.end_date,'Academic year end date');
   if(end<=start)throw fail(400,'Academic year end date must be after start date');
   const row=await one<any>(db,'UPDATE academic_years SET name=COALESCE($1,name),start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date) WHERE id=$4 AND organisation_id=$5 RETURNING *',[b.name??null,b.startDate??null,b.endDate??null,id,a.core.organisation_id]);
   await audit(a.core.organisation_id,a.core.id,'academic_year.updated','academic_year',id);
@@ -4479,8 +4491,9 @@ app.patch('/api/terms/:id',async request=>{
     nextTermBegins:z.string().date().nullable().optional()
   }).refine(v=>Object.keys(v).length>0).parse(request.body);
   const current=await one<any>(db,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
-  const start=b.startDate??String(current.start_date).slice(0,10),end=b.endDate??String(current.end_date).slice(0,10);
-  const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?String(current.next_term_begins).slice(0,10):null);
+  const start=b.startDate??requiredDateOnlyValue(current.start_date,'Term start date');
+  const end=b.endDate??requiredDateOnlyValue(current.end_date,'Term end date');
+  const next=Object.hasOwn(b,'nextTermBegins')?b.nextTermBegins:(current.next_term_begins?requiredDateOnlyValue(current.next_term_begins,'Next term date'):null);
   if(end<=start)throw fail(400,'Term end date must be after start date');
   if(next&&next<=end)throw fail(400,'Next term begins must be after the current term ends');
   const row=await one<any>(db,`UPDATE terms SET name=$1,start_date=COALESCE($2::date,start_date),end_date=COALESCE($3::date,end_date),
@@ -7936,7 +7949,8 @@ await registerAccountingRoutes(app,{
 });
 
 app.setErrorHandler(async(error:any,request,reply)=>{
-  let status=Number(error.statusCode)||(error?.name==='ZodError'?400:500);
+  const invalidTimeValue=error instanceof RangeError&&/invalid time value/i.test(String(error.message||''));
+  let status=Number(error.statusCode)||(error?.name==='ZodError'||invalidTimeValue?400:500);
   if(error.code==='23505')status=409;
   if(error.code==='23503')status=409;
   if(error.code==='23514')status=400;
@@ -7960,6 +7974,8 @@ app.setErrorHandler(async(error:any,request,reply)=>{
         ?'One or more values are in the wrong format. Check dates, numbers and selected records.'
         :error.code==='42P08'
         ?'The database could not safely process this action. The error has been logged for review.'
+        :invalidTimeValue
+          ?'A date or time is invalid. Use the calendar/date picker and select a valid value.'
         :validationMessage
           ?validationMessage
           :(error.message||'Unexpected school service error');
