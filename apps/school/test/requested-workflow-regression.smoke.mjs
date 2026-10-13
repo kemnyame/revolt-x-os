@@ -35,7 +35,7 @@ test('School-local sessions never fall through to Core OS',async()=>{
   assert.match(auth,/requestSchoolTokens/);
   assert.match(auth,/School session expired\. Please sign in again/);
   assert.match(server,/\/health\/live/);
-  assert.match(server,/reachable:\s*res\.status\s*<\s*500/);
+  assert.match(server,/probeSchoolSignInService\(config\)/);
 });
 
 test('Core wake recovery is non-blocking and automatically health-polls',async()=>{

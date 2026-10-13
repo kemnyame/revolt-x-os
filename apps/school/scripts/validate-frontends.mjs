@@ -7,6 +7,7 @@ import { loginFrontend } from '../dist/login-ui.js';
 import { schoolDesignScript } from '../dist/school-design.js';
 import { mobileExperienceScript, mobileExperienceFrontend } from '../dist/mobile-experience.js';
 import { mobileWorkflowScript } from '../dist/mobile-workflows.js';
+import { schoolSignInStartupScript } from '../dist/sign-in-startup.js';
 
 function validateScript(name,source){
   try{
@@ -29,6 +30,7 @@ validateScript('School',schoolAppScript);
 validateScript('Shared school design',schoolDesignScript);
 validateScript('Dedicated mobile app',mobileExperienceScript);
 validateScript('Mobile workflow rules',mobileWorkflowScript);
+validateScript('Sign-in startup',schoolSignInStartupScript);
 
 for(const [name,html] of [
   ['Teacher',teacherFrontend],

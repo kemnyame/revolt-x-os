@@ -8,6 +8,7 @@ import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeE
 import { Script } from 'node:vm';
 import { createRequire } from 'node:module';
 import { authenticateCoreSchoolLogin } from './core-school-login.js';
+import { probeSchoolSignInService } from './sign-in-startup.js';
 import { Transform } from 'node:stream';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
@@ -1779,16 +1780,7 @@ app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{stat
 
 let coreWakeInFlight:Promise<any>|null=null;
 async function probeCoreOS(){
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const started=Date.now();
-  try{
-    // Probe a lightweight health route, never the public application shell. A 4xx
-    // still proves the process is awake; only 5xx/network failure means unavailable.
-    const res=await fetch(base+'/health/live',{method:'GET',signal:AbortSignal.timeout(4500)});
-    return{reachable:res.status<500,healthy:res.ok,status:res.status,responseMs:Date.now()-started,url:base};
-  }catch(error:any){
-    return{reachable:false,healthy:false,status:0,responseMs:Date.now()-started,url:base,error:String(error?.message||error)};
-  }
+  return probeSchoolSignInService(config);
 }
 async function wakeCoreOS(){
   if(coreWakeInFlight)return coreWakeInFlight;
@@ -1804,7 +1796,8 @@ async function wakeCoreOS(){
   try{return await coreWakeInFlight}finally{coreWakeInFlight=null}
 }
 
-app.get('/api/system/core-status',async()=>{
+app.get('/api/system/core-status',async(_request,reply)=>{
+  reply.header('cache-control','no-store, max-age=0');
   const core=await probeCoreOS();
   let database='ready';
   try{await db.query('SELECT 1')}catch{database='unavailable'}
