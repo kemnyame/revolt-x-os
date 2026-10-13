@@ -29,6 +29,7 @@ import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
 import { registerHrPayrollRoutes } from './hr-payroll-routes.js';
 import { registerSchoolRemediationRoutes } from './school-remediation-routes.js';
+import { registerReportFeePolicyRoutes, reportDeliveryPolicy, studentsWithOutstandingFees } from './report-fee-policy.js';
 import {
   assertPortalLoginAllowed,
   clearPortalLoginThrottle,
@@ -1966,6 +1967,7 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 }
 
 app.post('/api/auth/admin-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_admin',request,()=>handleSchoolAdminLogin(request,reply)));
+registerReportFeePolicyRoutes(app,{db,config});
 registerSchoolAccessRoutes(app,{db,config,requireCoreServiceRequest,
   passwordChangedAudit:(core,staffId)=>audit(core.organisation_id,core.id,'staff.password_changed','user',core.id,{staffId})});
 
@@ -5536,10 +5538,14 @@ app.post('/api/teacher/report-pool/release',async request=>{
     throw fail(409,'Reports cannot be released while grades are incomplete. '+details.join(' | '));
   }
 
+  const reportPolicy=await reportDeliveryPolicy(db,a.core.organisation_id);
+  const feeBlockedStudentIds=reportPolicy.blockReportDeliveryWhenFeesOwed
+    ?await studentsWithOutstandingFees(db,a.core.organisation_id,pool.rows.map((row:any)=>row.student_id))
+    :new Set<string>();
   const newlyReleased:any[]=[];
   await tx(db,async client=>{
     for(const row of pool.rows){
-      if(row.released_at)continue;
+      if(row.released_at||feeBlockedStudentIds.has(row.student_id))continue;
       let decision=Number(releaseTerm.term_no)===3?row.promotion_decision:null;
       if(Number(releaseTerm.term_no)===3&&!decision){
         const results=await calculateStudentTermResults(a.core.organisation_id,row.student_id,b.termId);
@@ -5572,11 +5578,12 @@ app.post('/api/teacher/report-pool/release',async request=>{
     communicationCount+=results.length;
   }
   await audit(a.core.organisation_id,a.core.id,'reports.class_released','classroom',b.classroomId,{
-    termId:b.termId,released:newlyReleased.length,communications:communicationCount,missingGuardianEmail
+    termId:b.termId,released:newlyReleased.length,withheldForFees:feeBlockedStudentIds.size,communications:communicationCount,missingGuardianEmail
   });
   return{
     released:newlyReleased.length,
-    alreadyReleased:pool.rows.length-newlyReleased.length,
+    withheldForFees:feeBlockedStudentIds.size,
+    alreadyReleased:pool.rows.filter((x:any)=>Boolean(x.released_at)).length,
     communications:communicationCount,
     missingGuardianEmail,
     students:newlyReleased.map((x:any)=>({studentId:x.student_id,admissionNo:x.admission_no,promotionDecision:x.promotion_decision}))
