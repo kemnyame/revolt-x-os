@@ -106,6 +106,7 @@ test('an administrator page without a bound account ID is remembered as Admin Lo
   const cookie=page.headers['set-cookie'].split(';')[0];
   assert.ok(decodeURIComponent(cookie).endsWith('/s/alpha/admin-login'));
   assert.equal((await app.inject({url:'/login',headers:{cookie}})).headers.location,'/s/alpha/admin-login');
+  assert.equal((await app.inject({url:'/',headers:{cookie}})).headers.location,'/s/alpha/admin-login');
 });
 
 test('an explicit school always wins and a generic admin page never binds a staff member as the administrator',async t=>{

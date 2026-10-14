@@ -8,11 +8,11 @@ export function setSessionDeadline(request:any,value:Date|string|null|undefined)
 
 export function schoolSessionLoginPath(core:any,next='/',expired=false){
   const slug=core?.organisation_slug||core?.organisation_id;
-  const administrator=Boolean(core?.dedicated_admin&&core?.id);
+  const administrator=Boolean(core?.dedicated_admin);
   let path=slug?'/s/'+encodeURIComponent(slug)+(administrator?'/admin-login':'/login'):'/login';
-  const query=new URLSearchParams(administrator?{admin:core.id}:{next});
+  const query=new URLSearchParams(administrator?(core?.id?{admin:core.id}:{}):{next});
   if(expired)query.set('expired','1');
-  return path+'?'+query.toString();
+  return path+(query.size?'?'+query.toString():'');
 }
 
 export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student'){

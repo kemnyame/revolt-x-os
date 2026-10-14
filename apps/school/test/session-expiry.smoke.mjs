@@ -61,6 +61,7 @@ test('an already expired saved session returns to login without another protecte
   await assert.rejects(b.fetch('/api/context'),{status:401});assert.equal(b.calls.length,0);assert.equal(b.redirects.length,1);
 });
 test('server document redirects preserve dedicated administrators and staff return paths',()=>{
+  assert.equal(schoolSessionLoginPath({organisation_slug:'alpha',dedicated_admin:true}),'/s/alpha/admin-login');
   assert.equal(schoolSessionLoginPath({organisation_slug:'alpha',dedicated_admin:true,id:uid},'/',true),'/s/alpha/admin-login?admin='+uid+'&expired=1');
   assert.equal(schoolSessionLoginPath({organisation_slug:'alpha'},'/students/test',true),'/s/alpha/login?next=%2Fstudents%2Ftest&expired=1');
   assert.equal(schoolSessionLoginPath(null),'/login?next=%2F');
