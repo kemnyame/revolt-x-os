@@ -24,10 +24,19 @@ function rememberSchoolLogin(reply:any,core:any){
 async function schoolLoginDocument(request:any,reply:any,frontend:string,administrator=false){
   reply.header('cache-control','no-store, max-age=0');
   const remembered=rememberedSchoolContext(request);
-  const requested=request.params?.school||request.query?.school||remembered?.organisation_slug;
+  const explicit=request.params?.school||request.query?.school;
+  let previous:any=null;
+  const token=explicit?'':requestSessionToken(request);
+  if(token.startsWith('rxs_')){
+    const row=await maybeOne<any>(db,'SELECT core_context FROM school_sessions WHERE token_hash=$1',[createHash('sha256').update(token).digest('hex')]);
+    previous=row?.core_context;
+  }
+  const recovered=previous||remembered;
+  const requested=explicit||recovered?.organisation_slug||recovered?.organisation_id;
   if(!requested)return reply.type('text/html; charset=utf-8').send(frontend);
   const school=await resolveTenantSchool(String(requested));
-  const adminId=request.query?.admin||(administrator&&remembered?.organisation_slug===school.tenant_slug?remembered?.id:undefined);
+  if(!explicit&&recovered?.dedicated_admin)administrator=true;
+  const adminId=request.query?.admin||(administrator&&recovered?.dedicated_admin&&(recovered?.organisation_slug===school.tenant_slug||recovered?.organisation_id===school.organisation_id)?recovered?.id:undefined);
   const context={organisation_slug:school.tenant_slug,dedicated_admin:administrator,id:adminId};
   if(!request.params?.school){
     let target='/s/'+encodeURIComponent(school.tenant_slug)+(administrator?'/admin-login':'/login');
@@ -69,8 +78,11 @@ async function signOutSchoolSession(request:any,reply:any){
     if(row)context=row.core_context;
   }
   if(school&&context?.organisation_slug!==school)context={organisation_slug:school};
+  rememberSchoolLogin(reply,context);
+  const rememberedCookie=reply.getHeader('set-cookie');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
+  const cleared='rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure;
+  reply.header('set-cookie',rememberedCookie?[String(rememberedCookie),cleared]:cleared);
   return reply.header('cache-control','no-store').send({signedOut:true,loginUrl:schoolSessionLoginPath(context)});
 }
  return{schoolLoginDocument,openSchoolDocument,rememberSchoolLogin,signOutSchoolSession};

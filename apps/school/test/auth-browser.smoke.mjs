@@ -4,9 +4,9 @@ import vm from 'node:vm';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from '../dist/login-ui.js';
 import { virtualClock } from './virtual-clock.mjs';
 
-async function browser(html, {path='/s/alpha/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],directory,respond,startup,tenant}={}) {
+async function browser(html, {path='/s/alpha/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],directory,respond,startup,tenant,sessionHints={}}={}) {
   const clock=virtualClock();
-  const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
+  const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map(Object.entries({rx_school_token:'old',rx_teacher_token:'old',...sessionHints})),calls=[],redirects=[];
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
   const context={document:{body:{dataset:tenant?{schoolId:tenant.id,schoolName:tenant.name}:{}},getElementById:element,querySelectorAll:()=>[],createElement:()=>({})},URL,URLSearchParams,Headers,
     location:{pathname:path,search,origin:'https://school.example.test',href:'https://school.example.test'+path+search,replace:url=>redirects.push(url)},history:{replaceState(){}},
@@ -40,9 +40,21 @@ test('server-rendered staff and administrator pages need no school metadata requ
   }
 });
 
-test('a generic link with no school cannot silently choose a saved school or send credentials',async()=>{
-  const b=await browser(loginFrontend,{path:'/login',saved:'alpha'});assert.equal(b.element('signin').disabled,true);assert.match(b.element('status').textContent,/sign-in link provided by your school/);
+test('a generic link restores the browser school address without sending credentials',async()=>{
+  const b=await browser(loginFrontend,{path:'/login',saved:'alpha'});assert.equal(b.element('signin').disabled,true);assert.match(b.element('status').textContent,/Returning to your school/);assert.deepEqual(b.redirects,['/s/alpha/login']);
   await b.element('signin').onclick();assert.equal(b.calls.length,0);
+});
+
+test('generic administrator recovery retains its exact saved account address over an older global school hint',async()=>{
+  const uid='11111111-1111-4111-8111-111111111111';
+  const b=await browser(adminLoginFrontend,{path:'/admin-login',saved:'beta',sessionHints:{rx_school_login_url:'/s/alpha/admin-login?admin='+uid}});
+  assert.deepEqual(b.redirects,['/s/alpha/admin-login?admin='+uid]);assert.equal(b.calls.length,0);
+});
+
+test('a new browser receives a clear invitation explanation with no unusable credential form or school-link field',async()=>{
+  const b=await browser(adminLoginFrontend,{path:'/admin-login',saved:''});
+  assert.equal(b.element('schoolCredentials').hidden,true);assert.match(b.element('status').textContent,/shared School address/);assert.equal(b.calls.length,0);
+  assert.doesNotMatch(b.element('status').textContent,/Open the sign-in link provided/);
 });
 
 for(const [name,html] of [['staff',loginFrontend],['administrator',adminLoginFrontend]]){
@@ -144,7 +156,7 @@ for(const [name,html] of [['admin',adminLoginFrontend],['staff',loginFrontend]])
   });
   test(name+' malformed or unknown links do not select a different saved school',async()=>{
     for(const options of [{path:'/s/%E0%A4%A/admin-login',saved:'alpha'},{path:'/admin-login',search:'?school=missing',saved:'alpha'},{path:'/admin-login',search:'?school=%25',saved:'alpha'}]) {
-      const b=await browser(html,options);assert.equal(b.element('schoolId').value,'');assert.match(b.element('status').textContent,/unavailable|Open the sign-in link/);
+      const b=await browser(html,options);assert.equal(b.element('schoolId').value,'');assert.match(b.element('status').textContent,/unavailable|shared School address/);
       await b.element('signin').onclick();assert.ok(b.calls.length<=1);assert.equal(b.calls.some(c=>c.body),false);
     }
   });
