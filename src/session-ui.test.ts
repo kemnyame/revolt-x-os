@@ -59,7 +59,7 @@ it('retriable Request bodies survive the OS authentication refresh',async()=>{
 it('the OS login screen explains expiry and clears the old deadline after successful sign-in',async()=>{
   const elements=new Map<string,any>(),storage=new Map([['rx_os_session_expires_at','old-expired-time']]),redirects:string[]=[];
   const element=(id:string)=>{if(!elements.has(id))elements.set(id,{value:'',innerHTML:''});return elements.get(id)};
-  const context={document:{getElementById:element},URLSearchParams,location:{search:'?expired=1',replace:(url:string)=>redirects.push(url)},
+  const context={document:{getElementById:element},URLSearchParams,AbortController,Date,setTimeout,clearTimeout,location:{search:'?expired=1',replace:(url:string)=>redirects.push(url)},
     sessionStorage:{setItem:(key:string,value:string)=>storage.set(key,value),removeItem:(key:string)=>storage.delete(key)},
     fetch:async()=>json({accessToken:'fresh-access',refreshToken:'fresh-refresh'})};
   vm.runInNewContext(osLoginFrontend.match(/<script>([\s\S]*?)<\/script>/)![1]!,context);

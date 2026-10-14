@@ -7,6 +7,7 @@ export function createDb(config: Config): Pool {
   return new pg.Pool({
     connectionString: config.DATABASE_URL,
     max: config.DB_POOL_MAX,
+    connectionTimeoutMillis: 10_000,
     application_name: 'revolt-x-os',
     options: '-c search_path=revolt_x_os,public'
   });

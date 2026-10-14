@@ -6,6 +6,7 @@ const config={CORE_OS_URL:'https://core.example.test/',CORE_SERVICE_KEY:'test-on
 const credentials={schoolId:'alpha',staffId:'STF-000001',password:'FixturePassword123! '};
 const account={id:'fixture-user',organisation_id:'fixture-school',membership_id:'fixture-membership',must_change_password:true};
 const response=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json',...headers}});
+function recoveryClock(){let time=0;return{now:()=>time,wait:async ms=>{time+=ms}}}
 
 test('staff sign-in recovers from startup throttling and an unavailable gateway without changing the supplied credentials',async()=>{
   const calls=[],pauses=[],replies=[new Response('Service is starting',{status:429}),response({message:'Gateway unavailable'},503),response(account)];
@@ -28,16 +29,16 @@ test('wrong passwords and disabled staff are returned immediately and are never 
 test('persistent service throttling reports a busy service rather than invalid staff credentials',async()=>{
   let calls=0;
   await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
-    fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429)},wait:async()=>{}
+    ...recoveryClock(),fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429)}
   }),error=>error.statusCode===429&&error.code==='SCHOOL_SIGN_IN_BUSY'&&error.retryAfterSeconds===5&&!/Invalid school|password/i.test(error.message));
-  assert.equal(calls,4);
+  assert.ok(calls>4,'Fast failures must not exhaust recovery before a cold start finishes');
 });
 
-test('long Retry-After pauses return an actionable retry time without retrying too early',async()=>{
-  let calls=0;
+test('long Retry-After pauses are respected within the recovery deadline',async()=>{
+  let calls=0;const clock=recoveryClock();
   await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{
-    fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429,{'retry-after':'30'})},wait:()=>assert.fail('Must respect upstream backoff')
-  }),{statusCode:429,retryAfterSeconds:30});assert.equal(calls,1);
+    ...clock,fetchCore:async()=>{calls++;return response({message:'Rate limit exceeded'},429,{'retry-after':'30'})}
+  }),{statusCode:429,retryAfterSeconds:30});assert.equal(calls,2);assert.equal(clock.now(),30000);
 });
 
 test('short Retry-After pauses are respected during startup recovery',async()=>{
@@ -49,8 +50,15 @@ test('short Retry-After pauses are respected during startup recovery',async()=>{
 
 test('connection failures and incomplete successful responses do not become credential errors',async()=>{
   for(const fetchCore of [async()=>{throw Error('network unavailable')},async()=>response({starting:true}),async()=>new Response('<html>Starting</html>')]){
-    await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{fetchCore,wait:async()=>{}}),{statusCode:503,code:'SCHOOL_SIGN_IN_UNAVAILABLE'});
+    await assert.rejects(authenticateCoreSchoolLogin(config,'staff',credentials,{fetchCore,...recoveryClock()}),{statusCode:503,code:'SCHOOL_SIGN_IN_UNAVAILABLE'});
   }
+});
+
+test('a service that recovers after twenty seconds completes the original sign-in',async()=>{
+  const clock=recoveryClock();let calls=0;
+  const result=await authenticateCoreSchoolLogin(config,'staff',credentials,{
+    ...clock,fetchCore:async()=>{calls++;return clock.now()<20000?new Response('Starting',{status:429}):response(account)}
+  });assert.deepEqual(result,account);assert.ok(calls>4);assert.ok(clock.now()>=20000&&clock.now()<55000);
 });
 
 test('startup retries stop at the request deadline',async()=>{

@@ -11,6 +11,7 @@ import { Script } from 'node:vm';
 import { createRequire } from 'node:module';
 import { authenticateCoreSchoolLogin } from './core-school-login.js';
 import { probeSchoolSignInService } from './sign-in-startup.js';
+import { registerSchoolDirectory } from './school-directory.js';
 import { Transform } from 'node:stream';
 import { loadSchoolConfig } from './config.js';
 import { createSchoolDb, ensureSchoolSchema, migrateSchool, maybeOne, one, tx } from './db.js';
@@ -1880,24 +1881,7 @@ function inferSchoolRoleFromStaff(user:any){
   return 'teacher';
 }
 
-app.get('/api/auth/schools',async()=>{
-  const local=(await db.query(`SELECT tenant_slug id,school_name name,organisation_id "organisationId" FROM school_profiles
-    ORDER BY lower(school_name),tenant_slug`)).rows as any[];
-  if(!config.CORE_SERVICE_KEY)return local;
-  const base=config.CORE_OS_URL.replace(/\/$/,'');
-  const response=await fetch(base+'/v1/internal/school/directory',{
-    headers:coreServiceHeaders(),
-    signal:AbortSignal.timeout(12000)
-  }).catch(()=>null);
-  if(!response?.ok)return local;
-  const remote=await response.json().catch(()=>[]) as any[];
-  const merged=new Map<string,any>();
-  [...remote,...local].forEach((x:any)=>{
-    const id=String(x?.id||'').trim();
-    if(id)merged.set(id.toLowerCase(),{id,name:String(x?.name||id),organisationId:x?.organisationId??x?.organisation_id??null,licenceStatus:x?.licence_status??x?.licenceStatus??null});
-  });
-  return [...merged.values()].sort((a,b)=>a.name.localeCompare(b.name));
-});
+registerSchoolDirectory(app,{db,config});
 
 async function handleSchoolAdminLogin(request:any,reply:any){
   const b=z.object({

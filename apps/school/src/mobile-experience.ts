@@ -218,16 +218,22 @@ async function login(message){
  state.ctx=null;state.me=null;E('mDock').hidden=true;E('mHeaderAction').hidden=true;
  layout('<div class="m-login-intro"><a href="/mobile" class="m-subtext">'+icon('back')+' Change account type</a><div class="m-avatar large" style="margin-top:26px">'+icon(role==='teacher'?'scores':'child')+'</div><h1>'+esc(role==='teacher'?'Teacher sign-in':'Welcome, parent.')+'</h1><p>'+esc(role==='teacher'?'Use your school Staff ID and password.':'Use your registered phone number and a linked child’s Student ID.')+'</p></div>'+(message?'<div class="m-notice warn">'+esc(message)+'</div>':'')+'<form id="mLoginForm" class="m-form m-card"><label for="mLoginSchool">School <span class="m-required">*</span></label><select id="mLoginSchool" required disabled>'+option('','Loading schools…')+'</select>'+(role==='teacher'?field('mLoginStaff','Staff ID','text','',true,'autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"')+field('mLoginPassword','Password','password','',true,'autocomplete="current-password"')+'<label class="m-checkbox"><input id="mShowPassword" type="checkbox">Show password</label>':field('mLoginPhone','Mobile number','tel','',true,'autocomplete="tel" inputmode="tel" placeholder="024… or +233…"')+field('mLoginStudent','Student ID','text','',true,'autocomplete="off"'))+'<button id="mLoginSubmit" class="m-btn" type="submit" aria-live="polite">Sign in</button></form>');
  if(E('mShowPassword'))E('mShowPassword').onchange=function(){E('mLoginPassword').type=this.checked?'text':'password'};
+ var reload=document.createElement('button');reload.id='mLoginReload';reload.type='button';reload.className='m-btn ghost';reload.textContent='Reload schools';reload.hidden=true;E('mLoginForm').appendChild(reload);
+ async function loadLoginSchools(){
+ E('mLoginSubmit').disabled=true;E('mLoginSchool').disabled=true;E('mError').hidden=true;reload.hidden=true;
  try{
-  var schools=await api('/api/auth/schools',null,null,true);
+  var schools=await window.RevoltSchoolSignIn.loadData('/api/auth/schools',{valid:Array.isArray,progress:function(message){E('mLoginSubmit').textContent=message}});
   var requested=new URLSearchParams(location.search).get('school')||'';
   var preferred=(requested||localStorage.getItem('rx_school_id')||'').trim().toLowerCase();
   var selected=schools.find(function(s){return String(s.id).toLowerCase()===preferred||String(s.organisationId||'').toLowerCase()===preferred});
   E('mLoginSchool').innerHTML=option('','Select your school')+schools.map(function(s){return option(s.id,s.name,selected&&s.id===selected.id)}).join('');
   E('mLoginSchool').disabled=!schools.length;E('mLoginSubmit').disabled=!schools.length;
-  if(!schools.length)showError(Error('No schools are available for sign-in. Contact your school.'));
+  E('mLoginSubmit').textContent='Sign in';
+  if(!schools.length){showError(Error('No schools are available for sign-in. Contact your school.'));reload.hidden=false}
   else if(requested&&!selected)showError(Error('The school in this link is unavailable. Select your school to continue.'));
- }catch(error){showError(error);E('mLoginSchool').innerHTML=option('','Unable to load schools');E('mLoginSubmit').disabled=true}
+ }catch(error){showError(error);E('mLoginSchool').innerHTML=option('','Unable to load schools');E('mLoginSubmit').disabled=true;reload.hidden=false;E('mLoginSubmit').textContent='Sign in'}
+ }
+ reload.onclick=loadLoginSchools;await loadLoginSchools();
  bindForm('mLoginForm',async function(){
   if(state.saving)return;
   var school=E('mLoginSchool').value;

@@ -97,7 +97,10 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
       headers:{'x-revolt-service-key':options.config.CORE_SERVICE_KEY},signal:AbortSignal.timeout(20000)
     }).catch(()=>null);
     const user:any=await response?.json().catch(()=>null);
-    if(!response?.ok)throw Object.assign(new Error(user?.error?.message||user?.message||'The administrator link is unavailable. Open the current link from your school record.'),{statusCode:response?.status||503});
+    if(!response?.ok){
+      const retryAfter=response?.headers.get('retry-after');if(retryAfter)reply.header('retry-after',retryAfter);
+      throw Object.assign(new Error(user?.error?.message||user?.message||'The sign-in service is starting or unavailable. Your administrator link will be checked when it reconnects.'),{statusCode:response?.status||503});
+    }
     if(user?.id!==query.adminUserId||typeof user.email!=='string'||!user.organisation_slug)throw Object.assign(new Error('The school administrator link could not be verified'),{statusCode:503});
     return{administrator:{id:user.id,email:user.email,name:[user.first_name,user.last_name].filter(Boolean).join(' ')},school:{id:user.organisation_slug,name:user.organisation_name}};
   });

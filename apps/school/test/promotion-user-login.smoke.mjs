@@ -11,11 +11,13 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   const access=await read('school-access.js');
   const login=await read('login-ui.js');
   const ui=await read('ui.js');
+  const directory=await read('school-directory.js');
 
   assert.match(server,/term_no IN \(1,2,3\)/);
   assert.match(server,/academic_aggregate_score/);
   assert.match(server,/promotionScore:\s*annualAverage/);
-  assert.match(server,/\/api\/auth\/schools/);
+  assert.match(server,/registerSchoolDirectory\(app/);
+  assert.match(directory,/\/api\/auth\/schools/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
   assert.match(server,/authenticateCoreSchoolLogin\(config,\s*['"]staff['"]/);
   assert.match(server,/staff\.signed_in/);

@@ -49,7 +49,7 @@ export async function authenticateCoreSchoolLogin(
   let lastStatus = 503;
   let retryAfterSeconds = 5;
 
-  for (let attempt = 0; attempt < 4 && now() < deadline; attempt++) {
+  for (let attempt = 0; now() < deadline; attempt++) {
     const remaining = deadline - now();
     const response = await fetchCore(url, {
       method: 'POST',
@@ -57,7 +57,7 @@ export async function authenticateCoreSchoolLogin(
       body,
       signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, remaining)))
     }).catch(() => null);
-    let pause = [750, 1500, 3000][attempt] ?? 0;
+    let pause = [750, 1500, 3000][attempt] ?? 5000;
     if (response) {
       const payload = await response.json().catch(() => null) as any;
       if (response.ok && typeof payload?.id === 'string'
@@ -69,8 +69,9 @@ export async function authenticateCoreSchoolLogin(
         lastStatus = response.status;
         const requestedPause = retryAfter(response, now());
         retryAfterSeconds = Math.max(5, Math.ceil(requestedPause / 1000));
-        // Respect longer backoff without holding a browser request indefinitely.
-        if (requestedPause > 5000) break;
+        // Fast gateway failures must not use up recovery before Core can start.
+        // Respect upstream backoff within the same bounded request deadline.
+        if (now() + requestedPause >= deadline) break;
         pause = Math.max(pause, requestedPause);
       } else {
         const message = responseMessage(payload);
@@ -82,7 +83,8 @@ export async function authenticateCoreSchoolLogin(
         throw loginError(response.status, message ?? (response.status === 401 ? invalid : unavailableMessage), code);
       }
     } else lastStatus = 503;
-    if (attempt < 3 && now() + pause < deadline) await wait(pause);
+    if (now() + pause >= deadline) break;
+    await wait(pause);
   }
   if (lastStatus === 429) throw loginError(429, busyMessage, 'SCHOOL_SIGN_IN_BUSY', retryAfterSeconds);
   throw loginError(503, unavailableMessage, 'SCHOOL_SIGN_IN_UNAVAILABLE', retryAfterSeconds);
