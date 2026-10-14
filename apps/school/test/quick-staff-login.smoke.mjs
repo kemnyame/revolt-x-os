@@ -23,7 +23,7 @@ test('legacy Quick Login is removed and School plus Staff ID plus password is ca
   assert.match(server,/\/api\/auth\/staff-id-login/);
   assert.match(server,/createSchoolStaffSession\(coreContext,\s*['"]staff_id['"]\)/);
 
-  assert.match(login,/<select id="schoolId"/);
+  assert.match(login,/<input id="schoolId" type="hidden"/);
   assert.match(login,/Staff ID/);
   assert.match(login,/Password/);
   assert.match(login,/Sign in/);

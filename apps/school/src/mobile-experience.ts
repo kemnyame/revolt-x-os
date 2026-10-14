@@ -1,3 +1,4 @@
+import {schoolLocationScript} from './tenant-ui.js';
 import { createHash } from 'node:crypto';
 import { schoolSessionScript } from './session-ui.js';
 import { schoolSignInStartupScript } from './sign-in-startup.js';
@@ -9,6 +10,7 @@ body.m-native-android .m-header{display:none}body.m-native-android .m-register-t
 `;
 
 export const mobileExperienceScript=String.raw`
+${schoolLocationScript}
 (function(){
 'use strict';
 if(navigator.userAgent&&navigator.userAgent.includes('RevoltSchoolAndroid/'))document.body.classList.add('m-native-android');
@@ -213,31 +215,28 @@ async function profile(seq){var profile=role==='teacher'?await api('/api/me/prof
 async function lessonnotes(seq){var rows=await api('/api/lesson-notes?teacherOsUserId='+encodeURIComponent(state.ctx.core.id));if(seq!==state.seq)return;layout(heading('Lesson notes','Plan a lesson. Save a draft. Submit when ready.','more')+notice()+(can('lesson_notes.create')?button('mNewLessonNote','Create lesson note','secondary'):'')+(rows.length?rows.map(function(row){return'<div class="m-card"><div class="m-card-head"><h3>'+esc(row.title)+'</h3>'+badge(row.status)+'</div><p>'+esc(row.classroom_name)+' · '+esc(row.subject_name)+' · '+dateLabel(row.lesson_date)+'</p><details><summary class="m-subtext">View lesson content</summary><div class="m-body-text" style="margin-top:12px">'+esc(row.learning_objectives||'')+'\n\n'+esc(row.main_activity||'')+'</div></details>'+(['draft','returned'].includes(row.status)&&can('lesson_notes.edit')?'<button type="button" class="m-btn ghost" style="margin-top:14px" data-edit-note="'+row.id+'">Edit lesson</button>':'')+(['draft','returned'].includes(row.status)&&can('lesson_notes.submit')?'<button type="button" class="m-btn secondary" style="margin-top:16px" data-submit-note="'+row.id+'">Submit for review</button>':'')+'</div>'}).join(''):empty('No lesson notes yet','Create a note for one of your assigned subjects.')));if(E('mNewLessonNote'))E('mNewLessonNote').onclick=function(){go('lessonnote-new')};E('mView').querySelectorAll('[data-edit-note]').forEach(function(b){b.onclick=function(){go('lessonnote-new',rows.find(function(r){return r.id===b.dataset.editNote}))}});E('mView').querySelectorAll('[data-submit-note]').forEach(function(button){button.onclick=function(){commit(function(){return api('/api/lesson-notes/'+button.dataset.submitNote+'/submit',{})},'lessonnotes','Lesson note submitted')}})}
 async function leave(){layout(heading('Leave and relief','','more')+empty('Use your school’s leave process','Your school’s approved leave and relief assignments continue to apply.'))}
 async function signature(seq){var signature=await api('/api/report-signatures/me');if(seq!==state.seq)return;layout(heading('Report signature','Used automatically on the reports you sign.','more')+notice()+'<form id="mSignatureForm" class="m-card m-form">'+field('mSignatureName','Name on report','text',signature.display_name||state.ctx.core.first_name+' '+state.ctx.core.last_name,true)+field('mSignatureFile','Signature image','file','',false,'accept="image/png,image/jpeg,image/webp"')+'<div id="mSignaturePreview">'+(signature.signature_image_data?'<img src="'+esc(signature.signature_image_data)+'" alt="Current signature" style="max-width:100%;max-height:90px">':'')+'</div><button type="submit" class="m-btn">Save signature</button></form>');var data=signature.signature_image_data||null;E('mSignatureFile').onchange=function(){var file=this.files&&this.files[0];if(!file)return;if(file.size>900000)return showError(Error('Use an image smaller than 900 KB.'));var reader=new FileReader();reader.onload=function(){data=String(reader.result);E('mSignaturePreview').innerHTML='<img src="'+esc(data)+'" alt="Selected signature" style="max-width:100%;max-height:90px">'};reader.readAsDataURL(file)};bindForm('mSignatureForm',function(){var body={displayName:E('mSignatureName').value.trim(),signatureImageData:data};return commit(function(){return api('/api/report-signatures/me',body,'PUT')},'more','Signature saved')})}
-async function signOut(){if(state.saving)return;try{await api(role==='teacher'?'/api/auth/logout':'/api/parent/logout',{})}catch(error){}sessionStorage.removeItem(role==='teacher'?'rx_teacher_token':'rx_parent_token');if(role==='teacher')sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');location.replace('/mobile/'+role)}
+async function signOut(){if(state.saving)return;try{await api(role==='teacher'?'/api/auth/logout':'/api/parent/logout',{})}catch(error){}sessionStorage.removeItem(role==='teacher'?'rx_teacher_token':'rx_parent_token');if(role==='teacher')sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');location.replace(schoolWorkspacePath('/mobile/'+role,schoolFromLocation()))}
 async function login(message){
  state.ctx=null;state.me=null;E('mDock').hidden=true;E('mHeaderAction').hidden=true;
- layout('<div class="m-login-intro"><a href="/mobile" class="m-subtext">'+icon('back')+' Change account type</a><div class="m-avatar large" style="margin-top:26px">'+icon(role==='teacher'?'scores':'child')+'</div><h1>'+esc(role==='teacher'?'Teacher sign-in':'Welcome, parent.')+'</h1><p>'+esc(role==='teacher'?'Use your school Staff ID and password.':'Use your registered phone number and a linked child’s Student ID.')+'</p></div>'+(message?'<div class="m-notice warn">'+esc(message)+'</div>':'')+'<form id="mLoginForm" class="m-form m-card"><label for="mLoginSchool">School <span class="m-required">*</span></label><select id="mLoginSchool" required disabled>'+option('','Loading schools…')+'</select>'+(role==='teacher'?field('mLoginStaff','Staff ID','text','',true,'autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"')+field('mLoginPassword','Password','password','',true,'autocomplete="current-password"')+'<label class="m-checkbox"><input id="mShowPassword" type="checkbox">Show password</label>':field('mLoginPhone','Mobile number','tel','',true,'autocomplete="tel" inputmode="tel" placeholder="024… or +233…"')+field('mLoginStudent','Student ID','text','',true,'autocomplete="off"'))+'<button id="mLoginSubmit" class="m-btn" type="submit" aria-live="polite">Sign in</button></form>');
+ layout('<div class="m-login-intro"><a href="'+esc(schoolWorkspacePath('/mobile',schoolFromLocation()))+'" class="m-subtext">'+icon('back')+' Change account type</a><div class="m-avatar large" style="margin-top:26px">'+icon(role==='teacher'?'scores':'child')+'</div><h1>'+esc(role==='teacher'?'Teacher sign-in':'Welcome, parent.')+'</h1><p>'+esc(role==='teacher'?'Use your school Staff ID and password.':'Use your registered phone number and a linked child’s Student ID.')+'</p></div>'+(message?'<div class="m-notice warn">'+esc(message)+'</div>':'')+'<form id="mLoginForm" class="m-form m-card"><p id="mLoginSchoolName" class="m-eyebrow">Your school</p><input id="mLoginSchool" type="hidden">'+(role==='teacher'?field('mLoginStaff','Staff ID','text','',true,'autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"')+field('mLoginPassword','Password','password','',true,'autocomplete="current-password"')+'<label class="m-checkbox"><input id="mShowPassword" type="checkbox">Show password</label>':field('mLoginPhone','Mobile number','tel','',true,'autocomplete="tel" inputmode="tel" placeholder="024… or +233…"')+field('mLoginStudent','Student ID','text','',true,'autocomplete="off"'))+'<button id="mLoginSubmit" class="m-btn" type="submit" aria-live="polite">Sign in</button></form>');
  if(E('mShowPassword'))E('mShowPassword').onchange=function(){E('mLoginPassword').type=this.checked?'text':'password'};
- var reload=document.createElement('button');reload.id='mLoginReload';reload.type='button';reload.className='m-btn ghost';reload.textContent='Reload schools';reload.hidden=true;E('mLoginForm').appendChild(reload);
- async function loadLoginSchools(){
- E('mLoginSubmit').disabled=true;E('mLoginSchool').disabled=true;E('mError').hidden=true;reload.hidden=true;
+ var reload=document.createElement('button');reload.id='mLoginReload';reload.type='button';reload.className='m-btn ghost';reload.textContent='Retry loading sign-in';reload.hidden=true;E('mLoginForm').appendChild(reload);
+ async function loadLoginSchool(){
+ E('mLoginSubmit').disabled=true;E('mError').hidden=true;reload.hidden=true;
+ var requested=schoolFromLocation();
+ if(!requested){showError(Error('Open the sign-in link provided by your school.'));return}
  try{
-  var schools=await window.RevoltSchoolSignIn.loadData('/api/auth/schools',{valid:Array.isArray,progress:function(message){E('mLoginSubmit').textContent=message}});
-  var requested=new URLSearchParams(location.search).get('school')||'';
-  var preferred=(requested||localStorage.getItem('rx_school_id')||'').trim().toLowerCase();
-  var selected=schools.find(function(s){return String(s.id).toLowerCase()===preferred||String(s.organisationId||'').toLowerCase()===preferred});
-  E('mLoginSchool').innerHTML=option('','Select your school')+schools.map(function(s){return option(s.id,s.name,selected&&s.id===selected.id)}).join('');
-  E('mLoginSchool').disabled=!schools.length;E('mLoginSubmit').disabled=!schools.length;
-  E('mLoginSubmit').textContent='Sign in';
-  if(!schools.length){showError(Error('No schools are available for sign-in. Contact your school.'));reload.hidden=false}
-  else if(requested&&!selected)showError(Error('The school in this link is unavailable. Select your school to continue.'));
- }catch(error){showError(error);E('mLoginSchool').innerHTML=option('','Unable to load schools');E('mLoginSubmit').disabled=true;reload.hidden=false;E('mLoginSubmit').textContent='Sign in'}
+  var data=document.body.dataset,school=data.schoolId?{id:data.schoolId,name:data.schoolName}:null;
+  if(!school)school=await window.RevoltSchoolSignIn.loadData('/api/auth/school-context?'+new URLSearchParams({school:requested}),{valid:function(value){return value&&value.id&&value.name},progress:function(message){E('mLoginSubmit').textContent=message}});
+  E('mLoginSchool').value=school.id;E('mLoginSchoolName').textContent=school.name;E('mSchoolName').textContent=school.name;
+  E('mLoginSubmit').disabled=false;E('mLoginSubmit').textContent='Sign in';
+ }catch(error){showError(error);E('mLoginSubmit').disabled=true;reload.hidden=false;E('mLoginSubmit').textContent='Sign in'}
  }
- reload.onclick=loadLoginSchools;await loadLoginSchools();
+ reload.onclick=loadLoginSchool;await loadLoginSchool();
  bindForm('mLoginForm',async function(){
   if(state.saving)return;
   var school=E('mLoginSchool').value;
-  if(!school){showError(Error('Select your school before signing in.'));E('mLoginSchool').focus();return}
+  if(!school){showError(Error('Open the sign-in link provided by your school.'));return}
   var body=role==='teacher'?{schoolId:school,staffId:E('mLoginStaff').value.trim(),password:E('mLoginPassword').value}:{schoolSlug:school,phone:E('mLoginPhone').value.trim(),studentId:E('mLoginStudent').value.trim()};
   if(role==='teacher'&&!body.staffId){showError(Error('Enter your Staff ID.'));E('mLoginStaff').focus();return}
   if(role==='teacher'&&!body.password){showError(Error('Enter your password.'));E('mLoginPassword').focus();return}
@@ -249,7 +248,8 @@ async function login(message){
    state.token=role==='teacher'?result.accessToken:result.token;
    sessionStorage.setItem(role==='teacher'?'rx_teacher_token':'rx_parent_token',state.token);
    sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');
-   if(role==='teacher')sessionStorage.setItem('rx_school_token',state.token);
+   if(role==='teacher'){sessionStorage.setItem('rx_school_token',state.token);sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||school)+'/login')}
+   sessionStorage.setItem(role==='teacher'?'rx_teacher_login_url':'rx_parent_login_url',schoolWorkspacePath('/mobile/'+role,result.school&&result.school.id||school));
    localStorage.setItem('rx_school_id',result.school&&result.school.id||school);
    state.dirty=false;
    if(result.requiresPasswordChange){setSaving(false);return passwordChange()}
@@ -275,7 +275,7 @@ E('mHeaderAction').onclick=function(){go('inbox')};
 window.rxMobileBack=function(){
  if(state.saving){toast('Your record is being saved. Please wait.');return true}
  if(!E('mDialog').hidden){closeSheet();return true}
- if(!state.ctx&&!state.me||state.page==='home'){location.replace('/mobile');return true}
+ if(!state.ctx&&!state.me||state.page==='home'){location.replace(schoolWorkspacePath('/mobile',schoolFromLocation()));return true}
  if(state.page==='score-entry'){go('assessment-list',state.scoreSelection);return true}
  var back=E('mView').querySelector('.m-back[data-go]');go(back?back.dataset.go:'home');return true;
 };

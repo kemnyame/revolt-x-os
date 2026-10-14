@@ -28,11 +28,11 @@ test('year promotion and School plus Staff ID plus password login are wired',asy
   assert.doesNotMatch(server,/password:\s*config\.STAFF_GENERIC_PASSWORD/);
   assert.match(server,/\/api\/staff\/users\/:membershipId\/password-reset/);
 
-  assert.match(login,/<select id="schoolId"/);
+  assert.match(login,/<input id="schoolId" type="hidden"/);
   assert.match(login,/Staff ID/);
   assert.match(login,/Password/);
   assert.match(login,/type="password"/);
-  assert.match(login,/passwordChangeUrl/);
+  assert.match(login,/\/change-password/);
   assert.doesNotMatch(login,/Email address/);
 
   assert.match(ui,/3-Term Aggregate/);

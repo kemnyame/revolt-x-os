@@ -29,9 +29,9 @@ test('October School workflow hardening is installed',async()=>{
   assert.match(server,/Headteacher \/ Reviewer/);
   assert.doesNotMatch(server,/\/api\/test-access\//);
   assert.doesNotMatch(server,/provisionDemoTeachers/);
-  assert.match(server,/app\.get\('\/demo'.*redirect\('\/login'/);
-  assert.match(server,/app\.get\('\/main'.*redirect\('\/login'/);
-  assert.match(server,/app\.get\('\/quick-login'.*redirect\('\/login'/);
+  assert.match(server,/app\.get\('\/demo'.*request\.query.*\/login/);
+  assert.match(server,/app\.get\('\/main'.*request\.query.*\/login/);
+  assert.match(server,/app\.get\('\/quick-login'.*request\.query.*\/login/);
 
   assert.match(teacher,/rx_teacher_page/);
   assert.match(teacher,/Pending assessment scores/);

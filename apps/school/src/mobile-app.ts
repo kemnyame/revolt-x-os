@@ -1,3 +1,4 @@
+import {schoolTenantDocument,schoolWorkspaceUrl} from './tenant-ui.js';
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { mobileIcons } from './mobile-icons.js';
@@ -68,10 +69,19 @@ export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_nam
 
 export { mobileRoleChoiceFrontend as schoolMobileFrontend };
 
-export async function registerSchoolMobile(app:FastifyInstance){
+export async function registerSchoolMobile(app:FastifyInstance,options?:{resolveSchool:(request:any)=>Promise<{tenant_slug:string;school_name:string}|null>}){
+ async function page(request:any,reply:any,html:string){
+  const school=await options?.resolveSchool(request);
+  if(school){
+   if(!request.query?.school)return reply.redirect(schoolWorkspaceUrl(school.tenant_slug,String(request.url).split('?')[0]));
+   html=schoolTenantDocument(html,school);
+   for(const path of ['/mobile/teacher','/mobile/parent'])html=html.replaceAll('href="'+path+'"','href="'+schoolWorkspaceUrl(school.tenant_slug,path)+'"');
+  }
+  return reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(html.replace('</head>',polishHead+'</head>'));
+ }
  await registerMobilePhoneAuth(app);
- for(const path of ['/mobile','/mobile/'])app.get(path,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileRoleChoiceFrontend.replace('</head>',polishHead+'</head>')));
- for(const role of ['teacher','parent'] as const)app.get('/mobile/'+role,async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(mobileExperienceFrontend(role).replace('</head>',polishHead+'</head>')));
+ for(const path of ['/mobile','/mobile/'])app.get(path,async(request,reply)=>page(request,reply,mobileRoleChoiceFrontend));
+ for(const role of ['teacher','parent'] as const)app.get('/mobile/'+role,async(request,reply)=>page(request,reply,mobileExperienceFrontend(role)));
  app.get('/school-native.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(mobileExperienceCss));
  app.get('/school-native.js',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(mobileExperienceScript));
  app.get('/school-polish.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(mobilePolishCss));

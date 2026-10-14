@@ -3,7 +3,9 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import type { Db } from '../db/index.js';
-import { one, transaction } from '../db/index.js';
+import { maybeOne, one, transaction } from '../db/index.js';
+import {createSchoolAccount,findSchoolAccount,nextSchoolStaffId} from '../auth/school-accounts.js';
+import {setSchoolCredential} from '../auth/school-credentials.js';
 import { audit, emitEvent } from '../core/audit.js';
 import { conflict, notFound } from '../core/errors.js';
 import { requirePermission } from '../core/http.js';
@@ -12,14 +14,17 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
   app.get('/v1/users', async request => {
     const a = requirePermission(request, 'users.read');
     return (await db.query(
-      `SELECT u.id,u.email,u.first_name,u.last_name,u.status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
+      `SELECT u.id,CASE WHEN sa.user_id IS NULL THEN u.email ELSE sa.email END email,
+              COALESCE(sa.first_name,u.first_name) first_name,COALESCE(sa.last_name,u.last_name) last_name,COALESCE(sa.status,u.status) status,
+              m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
        JOIN users u ON u.id=m.user_id
+       LEFT JOIN school_accounts sa ON sa.organisation_id=m.organisation_id AND sa.user_id=u.id
        LEFT JOIN membership_roles mr ON mr.membership_id=m.id
        LEFT JOIN roles r ON r.id=mr.role_id
        WHERE m.organisation_id=$1
-       GROUP BY u.id,m.id
+       GROUP BY u.id,m.id,sa.organisation_id,sa.user_id
        ORDER BY u.first_name,u.last_name`,
       [a.organisationId]
     )).rows;
@@ -39,7 +44,10 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
     try {
       const result = await transaction(db, async c => {
         const generated = randomBytes(24).toString('base64url');
-        const user = await one<{ id: string }>(
+        const school=await maybeOne(c,`SELECT 1 FROM organisations o WHERE o.id=$1 AND
+          (o.settings->>'application'='school' OR EXISTS(SELECT 1 FROM saas_customers sc WHERE sc.customer_organisation_id=o.id AND sc.customer_type='school'))`,[a.organisationId]);
+        if(school&&await findSchoolAccount(c,a.organisationId,b.email))throw conflict('Email is already in use in this school');
+        const user = school?await createSchoolAccount(c,a.organisationId,{email:b.email,firstName:b.firstName,lastName:b.lastName,status:'invited'}):await one<{ id: string }>(
           c,
           `INSERT INTO users(email,password_hash,first_name,last_name,status)
            VALUES($1,$2,$3,$4,'invited')
@@ -47,12 +55,13 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
            RETURNING id`,
           [b.email.toLowerCase(), await bcrypt.hash(generated, 12), b.firstName, b.lastName]
         );
+        if(school)await setSchoolCredential(c,a.organisationId,user.id,await bcrypt.hash(generated,12),true);
         const membership = await one<any>(
           c,
           `INSERT INTO organisation_memberships(organisation_id,user_id,job_title,employee_number,status)
            VALUES($1,$2,$3,$4,'invited')
            RETURNING *`,
-          [a.organisationId, user.id, b.jobTitle ?? null, b.employeeNumber ?? null]
+          [a.organisationId, user.id, b.jobTitle ?? null, b.employeeNumber ?? (school?await nextSchoolStaffId(c,a.organisationId):null)]
         );
         const assigned = await c.query(
           `INSERT INTO membership_roles(membership_id,role_id,scope_type,scope_id,granted_by)
@@ -98,19 +107,23 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
       return transaction(db, async c => {
         const before = await one<any>(
           c,
-          `SELECT m.*,u.first_name,u.last_name
+          `SELECT m.*,COALESCE(sa.first_name,u.first_name) first_name,COALESCE(sa.last_name,u.last_name) last_name,sa.user_id school_account_id
            FROM organisation_memberships m
            JOIN users u ON u.id=m.user_id
+           LEFT JOIN school_accounts sa ON sa.organisation_id=m.organisation_id AND sa.user_id=u.id
            WHERE m.id=$1 AND m.organisation_id=$2
            FOR UPDATE OF m,u`,
           [p.membershipId, a.organisationId]
         );
 
         if (b.firstName !== undefined || b.lastName !== undefined) {
-          await c.query(
-            `UPDATE users SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),updated_at=now() WHERE id=$3`,
-            [b.firstName ?? null, b.lastName ?? null, before.user_id]
-          );
+          if(before.school_account_id){
+            await c.query(`UPDATE school_accounts SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),updated_at=now()
+              WHERE user_id=$3 AND organisation_id=$4`,[b.firstName??null,b.lastName??null,before.user_id,a.organisationId]);
+          }else{
+            await c.query(`UPDATE users SET first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),updated_at=now() WHERE id=$3`,
+              [b.firstName??null,b.lastName??null,before.user_id]);
+          }
         }
 
         await c.query(
@@ -140,14 +153,16 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
 
         const row = await one<any>(
           c,
-          `SELECT u.id,u.email,u.first_name,u.last_name,u.status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
+          `SELECT u.id,CASE WHEN sa.user_id IS NULL THEN u.email ELSE sa.email END email,
+            COALESCE(sa.first_name,u.first_name) first_name,COALESCE(sa.last_name,u.last_name) last_name,COALESCE(sa.status,u.status) status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at,
                   COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
            FROM organisation_memberships m
            JOIN users u ON u.id=m.user_id
+           LEFT JOIN school_accounts sa ON sa.organisation_id=m.organisation_id AND sa.user_id=u.id
            LEFT JOIN membership_roles mr ON mr.membership_id=m.id
            LEFT JOIN roles r ON r.id=mr.role_id
            WHERE m.id=$1 AND m.organisation_id=$2
-           GROUP BY u.id,m.id`,
+           GROUP BY u.id,m.id,sa.organisation_id,sa.user_id`,
           [p.membershipId, a.organisationId]
         );
 

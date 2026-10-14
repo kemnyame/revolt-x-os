@@ -23,6 +23,18 @@ export function registerSchoolDirectory(app: FastifyInstance, options: {
   const now = options.now ?? Date.now;
   let remote: School[] = [], refreshAfter = 0, pending: Promise<void> | null = null;
 
+  // Login metadata is tenant-specific and local. It never waits for a directory
+  // refresh or exposes accounts/credentials belonging to any other school.
+  app.get('/api/auth/school-context',async(request:any,reply)=>{
+    reply.header('cache-control','no-store, max-age=0');
+    const slug=String(request.query?.school||'').trim();
+    if(!slug||slug.length>120)return reply.code(400).send({error:{message:'Open the sign-in link provided by your school.'}});
+    const row=(await options.db.query(`SELECT tenant_slug id,school_name name,organisation_id "organisationId"
+      FROM school_profiles WHERE lower(tenant_slug)=lower($1) OR organisation_id::text=$1`,[slug])).rows[0];
+    if(!row)return reply.code(404).send({error:{message:'This school link is unavailable. Contact your school administrator.'}});
+    return row;
+  });
+
   function refresh() {
     if (!options.config.CORE_SERVICE_KEY || now() < refreshAfter) return pending ?? Promise.resolve();
     if (pending) return pending;

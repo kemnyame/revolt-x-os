@@ -79,6 +79,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
   // School-local token presented. No School token is ever forwarded to Core OS.
   // A valid School session must satisfy both its absolute expiry and the organisation's
   // administrator-configured inactivity timeout.
+  const expectedSchool=String(request.headers['x-revolt-school']||'').trim();
   for(const token of tokens){
     const row=await maybeOne<{core_context:CoreContext;session_expires_at:Date|string}>(
       db,
@@ -86,6 +87,8 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
          SET last_used_at=now()
          WHERE token_hash=$1
            AND revoked_at IS NULL
+           AND ($2::text IS NULL OR EXISTS(SELECT 1 FROM school_profiles sp WHERE sp.organisation_id=school_sessions.organisation_id
+             AND (lower(sp.tenant_slug)=lower($2) OR sp.organisation_id::text=$2)))
            AND expires_at>now()
            AND last_used_at > now()-make_interval(mins=>COALESCE((
              SELECT idle_timeout_minutes
@@ -93,7 +96,7 @@ async function fetchSchoolSessionContext(request:FastifyRequest,db:SchoolDb):Pro
              WHERE sss.organisation_id=school_sessions.organisation_id
            ),30))
          RETURNING core_context,LEAST(expires_at,now()+make_interval(mins=>COALESCE((SELECT idle_timeout_minutes FROM school_security_settings sss WHERE sss.organisation_id=school_sessions.organisation_id),30))) session_expires_at`,
-      [schoolSessionHash(token)]
+      [schoolSessionHash(token),expectedSchool||null]
     );
     if(row?.core_context){setSessionDeadline(request,row.session_expires_at);return{core:row.core_context,token}}
   }
@@ -155,6 +158,11 @@ export async function authorize(request:FastifyRequest,db:SchoolDb,config:School
   // Established School sessions are fully local and must not require Core availability.
   const schoolSession=await fetchSchoolSessionContext(request,db);
   const core=schoolSession?.core??await fetchCoreContext(request,config);
+  const expectedSchool=String(request.headers['x-revolt-school']||'').trim();
+  if(expectedSchool){
+    const tenant=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles WHERE lower(tenant_slug)=lower($1) OR organisation_id::text=$1',[expectedSchool]);
+    if(!tenant||tenant.organisation_id!==core.organisation_id)throw Object.assign(new Error('This session belongs to another school. Open your school sign-in link.'),{statusCode:401,code:'SCHOOL_SESSION_MISMATCH'});
+  }
   if(core.must_change_password&&!options?.allowPasswordChange){
     throw Object.assign(new Error('Password change required before opening the School workspace'),{statusCode:403,code:'PASSWORD_CHANGE_REQUIRED'});
   }

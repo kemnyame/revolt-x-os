@@ -1,3 +1,4 @@
+import {schoolWorkspaceUrl} from './tenant-ui.js';
 import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -127,7 +128,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     if(keepSessionHash)await options.db.query(`UPDATE school_sessions SET core_context=jsonb_set(core_context,'{must_change_password}','false'::jsonb,true),last_used_at=now()
       WHERE token_hash=$1 AND revoked_at IS NULL`,[keepSessionHash]);
     const profile=await schoolRoleProfile(options.db,access.core.organisation_id,access.role);
-    return{changed:true,redirectTo:profile?.portal_mode==='teacher'?'/teacher':'/'};
+    return{changed:true,redirectTo:schoolWorkspaceUrl(access.core.organisation_slug,profile?.portal_mode==='teacher'?'/teacher':'/')};
   });
   app.post('/api/internal/os-password-reset-email',async(request,reply)=>{
     options.requireCoreServiceRequest(request);
@@ -158,13 +159,13 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     if (!result) throw Object.assign(new Error('Core Revolt-X OS could not complete the password reset. Please try again.'), { statusCode: 503 });
     const payload: any = await result.json().catch(() => null);
     if (!result.ok) throw Object.assign(new Error(payload?.error?.message || payload?.message || 'Reset link is invalid or has expired. Generate a new reset link.'), { statusCode: result.status });
-    if (payload?.reset !== true || typeof payload?.email !== 'string')
+    if (payload?.reset !== true || typeof payload?.email !== 'string' || typeof payload?.userId !== 'string' || typeof payload?.organisationId !== 'string')
       throw Object.assign(new Error('The password-reset response could not be verified. Please contact your administrator.'), { statusCode: 503 });
 
     // Core also calls the trusted revocation endpoint before consuming a reset token.
-    // Retain a local fallback for a rolling deployment against an older Core response.
-    if (payload.userId) await revokeSchoolUserSessions(options.db, payload.userId,undefined,payload.organisationId);
-    else await options.db.query("UPDATE school_sessions SET revoked_at=now() WHERE lower(core_context->>'email')=lower($1) AND revoked_at IS NULL", [payload.email]);
+    // Revocation always includes the resolved school; matching an email globally
+    // would sign out independent accounts in other schools.
+    await revokeSchoolUserSessions(options.db,payload.userId,undefined,payload.organisationId);
     const school = typeof payload.organisationSlug === 'string' ? payload.organisationSlug : body.schoolId;
     const adminLoginUrl = (school ? '/s/' + encodeURIComponent(school) + '/admin-login' : '/admin-login')+(payload.userId?'?admin='+encodeURIComponent(payload.userId):'');
     const secure = options.config.NODE_ENV === 'production' ? '; Secure' : '';

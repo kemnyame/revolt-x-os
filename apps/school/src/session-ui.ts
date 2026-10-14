@@ -1,3 +1,4 @@
+import {schoolLocationScript} from './tenant-ui.js';
 /** Authentication deadlines come from the server; no heartbeat extends idle sessions. */
 export function setSessionDeadline(request:any,value:Date|string|null|undefined){
   if(!value)return;
@@ -16,6 +17,7 @@ export function schoolSessionLoginPath(core:any,next='/',expired=false){
 
 export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student'){
   return String.raw`
+${schoolLocationScript}
 (function(){
   var portal=${JSON.stringify(portal)},originalFetch=window.fetch.bind(window),redirecting=false,deadline=0,timer=null;
   var family=portal==='teacher'?'staff':portal,deadlineKey='rx_'+(family==='staff'?'school':family)+'_session_expires_at';
@@ -29,24 +31,26 @@ export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student')
       return url;
     }catch(e){return null}
   }
-  function loginTarget(){
-    var url=safeHint(),q=new URLSearchParams(location.search);
+  function loginTarget(expiredSession){
+    var url=safeHint(),routeSchool=schoolFromLocation();
+    // The address takes precedence over a browser hint from a different school.
+    if(routeSchool&&url){try{if(decodeURIComponent(url.pathname.split('/')[2]||'')!==routeSchool)url=null}catch(e){url=null}}
     if((portal==='teacher'||portal==='parent')&&location.pathname==='/mobile/'+portal){
-      var mobile=new URL('/mobile/'+portal,location.origin),mobileSchool=q.get('school')||localStorage.getItem('rx_school_id')||'';
+      var mobile=new URL('/mobile/'+portal,location.origin),mobileSchool=routeSchool||'';
       if(mobileSchool)mobile.searchParams.set('school',mobileSchool);
-      mobile.searchParams.set('expired','1');return mobile.pathname+mobile.search;
+      if(expiredSession)mobile.searchParams.set('expired','1');return mobile.pathname+mobile.search;
     }
     if(!url){
-      var school=q.get('school')||(family==='staff'?localStorage.getItem('rx_school_id'):'')||'';
+      var school=routeSchool||'';
       var path=family==='staff'?(school?'/s/'+encodeURIComponent(school)+'/login':'/login'):'/'+family;
       url=new URL(path,location.origin);if(school&&family!=='staff')url.searchParams.set('school',school);
     }
     if(family==='staff'&&!url.pathname.endsWith('/admin-login'))url.searchParams.set('next',portal==='teacher'?'/teacher':'/');
-    url.searchParams.set('expired','1');return url.pathname+url.search;
+    if(expiredSession)url.searchParams.set('expired','1');else url.searchParams.delete('expired');return url.pathname+url.search;
   }
   function endSession(){
     if(redirecting)return;redirecting=true;clearTimeout(timer);
-    var target=loginTarget();
+    var target=loginTarget(true);
     if(family==='staff'){sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token')}
     else sessionStorage.removeItem('rx_'+family+'_token');
     sessionStorage.removeItem(deadlineKey);location.replace(target);
@@ -70,6 +74,11 @@ export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student')
   }
   window.fetch=async function(input,options){
     var url=new URL(typeof input==='string'?input:input.url||String(input),location.href),path=url.pathname;
+    var routeSchool=schoolFromLocation();
+    if(routeSchool&&url.origin===location.origin&&path.startsWith('/api/')){
+      var headers=new Headers(options&&options.headers||(typeof input!=='string'&&input.headers)||{});headers.set('x-revolt-school',routeSchool);
+      options=Object.assign({},options||{},{headers:headers});
+    }
     var protectedCall=url.origin===location.origin&&(family==='staff'
       ?path.startsWith('/api/')&&(!path.startsWith('/api/auth/')||path==='/api/auth/change-password'||path==='/api/auth/logout')&&!path.startsWith('/api/test-access/')&&!path.startsWith('/api/system/core-')
       :path.startsWith('/api/'+family+'/')&&path!=='/api/'+family+'/login');
@@ -81,7 +90,7 @@ export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student')
     if(!redirecting&&response.ok){await rememberContext(response,path);armDeadline(response.headers&&response.headers.get('x-revolt-session-expires-at'))}
     return response;
   };
-  window.rxSessionGuard={expire:endSession};
+  window.rxSessionGuard={expire:endSession,loginTarget:function(){return loginTarget(false)},school:schoolFromLocation};
   var saved=Number(sessionStorage.getItem(deadlineKey));
   if(saved&&sessionStorage.getItem('rx_'+(family==='staff'?'school':family)+'_token'))armDeadline(new Date(saved).toISOString());
 })();

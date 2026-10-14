@@ -39,12 +39,13 @@ export async function resetPassword(db:Db,t:string,p:string,m:RequestMeta={},opt
   const ph=await bcrypt.hash(p,12);
   return transaction(db,async q=>{
     const r=await maybeOne<{id:string;user_id:string;organisation_id:string;organisation_slug:string;email:string;purpose:string}>(q,`
-      SELECT pr.id,pr.user_id,pr.purpose,m.organisation_id,o.slug organisation_slug,u.email
+      SELECT pr.id,pr.user_id,pr.purpose,m.organisation_id,o.slug organisation_slug,CASE WHEN pr.purpose='account' THEN u.email ELSE sa.email END email
       FROM password_reset_tokens pr JOIN users u ON u.id=pr.user_id
       JOIN organisation_memberships m ON m.user_id=pr.user_id
       JOIN organisations o ON o.id=m.organisation_id
+      LEFT JOIN school_accounts sa ON sa.organisation_id=m.organisation_id AND sa.user_id=u.id
       WHERE pr.token_hash=$1 AND pr.used_at IS NULL AND pr.expires_at>now()
-        AND u.status='active' AND (m.status='active' OR (pr.purpose='school_staff' AND m.status='invited')) AND o.status='active'
+        AND (CASE WHEN pr.purpose='account' THEN u.status ELSE sa.status END)='active' AND (m.status='active' OR (pr.purpose='school_staff' AND m.status='invited')) AND o.status='active'
         AND ($2::text IS NULL OR lower(o.slug)=lower($2) OR o.id::text=$2)
         AND pr.organisation_id=o.id
         AND ($3::text IS NULL OR pr.purpose=$3)

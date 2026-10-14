@@ -99,8 +99,6 @@ export function registerSchoolOrderRoutes(app:FastifyInstance,db:Db){
     const body=z.object({school:schoolSetupSchema,amount:money.optional(),dueDays:z.coerce.number().int().min(1).max(180).default(14)}).parse(request.body);
     const plan=await maybeOne<any>(db,"SELECT pl.* FROM saas_pricing_plans pl JOIN saas_products p ON p.id=pl.product_id WHERE pl.id=$1 AND pl.is_active=true AND p.product_key='school'",[body.school.planId]);
     if(!plan)throw notFound('School pricing plan');
-    const administrator=await maybeOne<any>(db,'SELECT status FROM users WHERE email=$1',[body.school.adminEmail]);
-    if(administrator&&administrator.status!=='active')throw conflict('The administrator email belongs to an inactive account. Choose an active administrator before raising the invoice.');
     const total=body.amount??Number(plan[body.school.billingFrequency==='annual'?'annual_price':body.school.billingFrequency==='termly'?'termly_price':'monthly_price']);
     const amount=money.parse(total);
     // Reject an existing school slug before issuing an invoice that cannot be used.

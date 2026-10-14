@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {schoolSessionScript,schoolSessionLoginPath} from '../dist/session-ui.js';
 
-function browser(portal,respond,{saved={},school='alpha',search=''}={}){
+function browser(portal,respond,{saved={},school='alpha',search='?school=alpha'}={}){
   const storage=new Map(Object.entries({rx_school_token:'rxs_old',rx_teacher_token:'rxs_old',rx_parent_token:'parent-old',rx_student_token:'student-old',...saved})),calls=[],redirects=[],timers=new Map();
   let clock=Date.now(),id=0;
   class Clock extends Date{static now(){return clock}}
-  const context={URL,URLSearchParams,Date:Clock,
+  const context={URL,URLSearchParams,Headers,Date:Clock,
     location:{origin:'https://school.example.test',href:'https://school.example.test/'+portal+search,pathname:'/'+portal,search,replace:url=>redirects.push(url)},
     localStorage:{getItem:key=>key==='rx_school_id'?school:null},
     sessionStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},

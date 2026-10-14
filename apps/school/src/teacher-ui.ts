@@ -55,12 +55,12 @@ async function openTeacherProfile(){
 function wait(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
 async function publicJson(path,opt){opt=opt||{};var baseHeaders=opt.body==null?{}:{'content-type':'application/json'};opt.headers=Object.assign(baseHeaders,opt.headers||{});var r=await fetch(path,opt),j=null;try{j=await r.json()}catch(e){}if(!r.ok){var er=Error(j&&j.error&&j.error.message?j.error.message:'Request failed ('+r.status+')');er.status=r.status;throw er}return j}
 function showTeacherLogin(message){
-  var url='/login?next='+encodeURIComponent('/teacher');
+  var url=window.rxSessionGuard.loginTarget();
   if(message)url+='&message='+encodeURIComponent(message);
   location.replace(url)
 }
 function showPasswordSetup(setupToken){
-  location.replace('/login?next='+encodeURIComponent('/teacher')+'&setup='+encodeURIComponent(setupToken))
+  var url=new URL(window.rxSessionGuard.loginTarget(),location.origin);url.searchParams.set('setup',setupToken);location.replace(url.pathname+url.search)
 }
 async function openWorkspace(){
   ctx=await raw('/api/teacher/context');
@@ -70,7 +70,7 @@ async function openWorkspace(){
   E('nav').onclick=function(e){var b=e.target.closest('[data-p]');if(b)page(b.dataset.p)};
   E('refresh').onclick=function(){page(current)};
   E('myProfile').onclick=openTeacherProfile;
-  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace('/login')};
+  E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace(window.rxSessionGuard.loginTarget())};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
   var savedPage=sessionStorage.getItem('rx_teacher_page')||'';var first=visibleNav.find(function(n){return n[0]===savedPage})||visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
@@ -97,7 +97,7 @@ async function boot(){
     if(e.status===401){window.rxSessionGuard.expire();return}
     E('loading').innerHTML='<div class="auth-card"><div class="auth-brand">REVOLT-X SCHOOL</div><h1>Teacher workspace unavailable</h1><p class="muted">'+esc(e.message)+'</p><button id="teacherRetry" class="primary" style="width:100%">Retry</button><button id="teacherSignIn" class="ghost" style="width:100%;margin-top:8px">Return to sign in</button></div>';
     E('teacherRetry').onclick=function(){location.reload()};
-    E('teacherSignIn').onclick=function(){location.replace('/login?next='+encodeURIComponent('/teacher'))}
+    E('teacherSignIn').onclick=function(){location.replace(window.rxSessionGuard.loginTarget())}
   }
 }
 

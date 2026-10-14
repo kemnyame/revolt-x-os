@@ -1,3 +1,4 @@
+import {createSchoolAccount,findSchoolAccount,nextSchoolStaffId} from '../auth/school-accounts.js';
 import { databaseRecordId } from '../core/record-id.js';
 import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -85,20 +86,20 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const customer=matches[0] as any;
 
     const members=(await db.query(
-      `SELECT u.id,u.email,u.first_name,u.last_name,u.status user_status,
+      `SELECT u.id,sa.email,sa.first_name,sa.last_name,sa.status user_status,(u.email='preview@revolt-x.local') preview_account,
               m.id membership_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
-       JOIN users u ON u.id=m.user_id
+       JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
        LEFT JOIN membership_roles mr ON mr.membership_id=m.id
        LEFT JOIN roles r ON r.id=mr.role_id
        WHERE m.organisation_id=$1 AND m.status='active'
-       GROUP BY u.id,m.id
-       ORDER BY u.first_name,u.last_name`,
+       GROUP BY u.id,m.id,sa.organisation_id,sa.user_id
+       ORDER BY sa.first_name,sa.last_name`,
       [customer.id]
     )).rows as any[];
 
-    const usableMembers=members.filter((u:any)=>String(u.email||'').toLowerCase()!=='preview@revolt-x.local');
+    const usableMembers=members.filter((u:any)=>!u.preview_account);
     const admin=usableMembers.find((u:any)=>Array.isArray(u.roles)&&u.roles.includes('owner')&&String(u.email||'').includes('@')&&!String(u.email).endsWith('@revolt-x.local'))
       || usableMembers.find((u:any)=>String(u.email||'').toLowerCase()===String(customer.primary_contact_email||'').toLowerCase())
       || usableMembers.find((u:any)=>String(u.user_status)==='active'&&String(u.email||'').includes('@')&&!String(u.email).endsWith('@revolt-x.local'));
@@ -178,20 +179,20 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }).parse(request.body);
 
     const row=await maybeOne<any>(db,`SELECT
-        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,sc.password_hash,sc.must_change_password,
+        u.id user_id,sa.email,sa.first_name,sa.last_name,sa.status user_status,sc.password_hash,sc.must_change_password,
         m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
         o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
         COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
       FROM organisation_memberships m
-      JOIN users u ON u.id=m.user_id
+      JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
       JOIN organisations o ON o.id=m.organisation_id
       LEFT JOIN school_credentials sc ON sc.organisation_id=m.organisation_id AND sc.user_id=u.id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
-      WHERE (lower(o.slug)=lower($1) OR o.id::text=$1) AND lower(u.email)=lower($2)
+      WHERE (lower(o.slug)=lower($1) OR o.id::text=$1) AND lower(sa.email)=lower($2)
         AND ($3::uuid IS NULL OR u.id=$3)
         AND (o.settings->>'primaryAdminUserId' IS NULL OR o.settings->>'primaryAdminUserId'=u.id::text)
-      GROUP BY u.id,m.id,o.id,sc.password_hash,sc.must_change_password
+      GROUP BY u.id,m.id,sa.organisation_id,sa.user_id,o.id,sc.password_hash,sc.must_change_password
       LIMIT 1`,[b.schoolId,b.email,b.adminUserId??null]);
 
     if(!row||!row.password_hash)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school administrator email or password');
@@ -240,19 +241,19 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }).parse(request.body);
 
     const row=await maybeOne<any>(db,`SELECT
-        u.id user_id,u.email,u.first_name,u.last_name,u.status user_status,sc.password_hash,sc.must_change_password,
+        u.id user_id,sa.email,sa.first_name,sa.last_name,sa.status user_status,sc.password_hash,sc.must_change_password,
         m.id membership_id,m.organisation_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,
         o.name organisation_name,o.slug organisation_slug,o.status organisation_status,
         COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
       FROM organisation_memberships m
-      JOIN users u ON u.id=m.user_id
+      JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
       JOIN organisations o ON o.id=m.organisation_id
       LEFT JOIN school_credentials sc ON sc.organisation_id=m.organisation_id AND sc.user_id=u.id
       LEFT JOIN membership_roles mr ON mr.membership_id=m.id
       LEFT JOIN roles r ON r.id=mr.role_id
       WHERE (lower(o.slug)=lower($1) OR o.id::text=$1)
         AND (lower(COALESCE(m.employee_number,''))=lower($2) OR lower(COALESCE(m.login_staff_id,''))=lower($2))
-      GROUP BY u.id,m.id,o.id,sc.password_hash,sc.must_change_password
+      GROUP BY u.id,m.id,sa.organisation_id,sa.user_id,o.id,sc.password_hash,sc.must_change_password
       LIMIT 1`,[b.schoolId,b.staffId]);
 
     if(!row||!row.password_hash)throw new AppError(401,'INVALID_CREDENTIALS','Invalid school, Staff ID or password');
@@ -303,9 +304,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       const account=await one<any>(q,`SELECT u.id,m.id membership_id,m.organisation_id,m.employee_number,o.name organisation_name
         FROM users u
         JOIN organisation_memberships m ON m.user_id=u.id
+        JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
         JOIN organisations o ON o.id=m.organisation_id
-        WHERE u.id=$1 AND (lower(o.slug)=lower($2) OR o.id::text=$2) AND u.status='active' AND m.status='active' AND o.status='active'
-        FOR UPDATE OF u,m`,[b.userId,b.schoolId]);
+        WHERE u.id=$1 AND (lower(o.slug)=lower($2) OR o.id::text=$2) AND sa.status='active' AND m.status='active' AND o.status='active'
+        FOR UPDATE OF sa,m`,[b.userId,b.schoolId]);
       const passwordHash=await bcrypt.hash(b.newPassword,12);
       await setSchoolCredential(q,account.organisation_id,b.userId,passwordHash,false);
       await revokeLinkedSchoolSessions(q,config,b.userId,b.keepSessionHash,account.organisation_id);
@@ -324,16 +326,16 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     requireSchoolService(request,config);
     const q=scopeSchema.parse(request.query);
     return (await db.query(
-      `SELECT u.id,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,u.first_name,u.last_name,u.status,
+      `SELECT u.id,CASE WHEN sa.email LIKE '%@revolt-x.local' THEN NULL ELSE sa.email END email,sa.first_name,sa.last_name,sa.status,
               m.id membership_id,m.job_title,m.employee_number,m.login_staff_id,m.status membership_status,m.joined_at,
               COALESCE(array_agg(DISTINCT r.key) FILTER(WHERE r.key IS NOT NULL),'{}') roles
        FROM organisation_memberships m
-       JOIN users u ON u.id=m.user_id
+       JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
        LEFT JOIN membership_roles mr ON mr.membership_id=m.id
        LEFT JOIN roles r ON r.id=mr.role_id
        WHERE m.organisation_id=$1
-       GROUP BY u.id,m.id
-       ORDER BY u.first_name,u.last_name`,
+       GROUP BY u.id,m.id,sa.organisation_id,sa.user_id
+       ORDER BY sa.first_name,sa.last_name`,
       [q.organisationId]
     )).rows;
   });
@@ -357,15 +359,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     try{
       const result=await transaction(db,async c=>{
         const generated=b.temporaryPassword||randomBytes(24).toString('base64url');
-        const internalEmail=b.email||('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local');
-        const user=await one<{id:string}>(
-          c,
-          `INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at)
-           VALUES($1,$2,$3,$4,'invited',true,now())
-           ON CONFLICT(email) DO UPDATE SET first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,updated_at=now()
-           RETURNING id`,
-          [internalEmail,await bcrypt.hash(generated,12),b.firstName,b.lastName]
-        );
+        if(b.email&&await findSchoolAccount(c,b.organisationId,b.email))throw conflict('Email is already in use in this school');
+        const user=await createSchoolAccount(c,b.organisationId,{email:b.email??null,firstName:b.firstName,lastName:b.lastName,status:'invited'});
         await setSchoolCredential(c,b.organisationId,user.id,await bcrypt.hash(generated,12),true);
         const existing=await c.query(
           'SELECT id FROM organisation_memberships WHERE organisation_id=$1 AND user_id=$2',
@@ -373,21 +368,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         );
         if(existing.rowCount)throw conflict('User is already a member');
 
-        // Staff numbers are generated centrally by Core OS. The transaction lock keeps
-        // the organisation-local sequence safe when staff are created concurrently.
-        await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`school-staff-number:${b.organisationId}`]);
-        const staffSequence=await one<{next_no:number}>(
-          c,
-          `SELECT COALESCE(MAX(
-             CASE WHEN employee_number ~ '^STF-[0-9]{6}$'
-                  THEN substring(employee_number from 5)::int
-                  ELSE NULL END
-           ),0)+1 AS next_no
-           FROM organisation_memberships
-           WHERE organisation_id=$1`,
-          [b.organisationId]
-        );
-        const employeeNumber='STF-'+String(staffSequence.next_no).padStart(6,'0');
+        const employeeNumber=await nextSchoolStaffId(c,b.organisationId);
         const membership=await one<any>(
           c,
           `INSERT INTO organisation_memberships(organisation_id,user_id,job_title,employee_number,status)
@@ -415,7 +396,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       });
       return reply.code(201).send(result);
     }catch(e:any){
-      if(e.code==='23505')throw conflict('User is already a member or employee number is in use');
+      if(e.code==='23505')throw conflict('Email or Staff ID is already in use in this school');
       throw e;
     }
   });
@@ -435,17 +416,17 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
 
     try{
       return transaction(db,async q=>{
-        const before=await one<any>(q,`SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
-          FROM organisation_memberships m JOIN users u ON u.id=m.user_id
-          WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
+        const before=await one<any>(q,`SELECT m.*,sa.email,sa.first_name,sa.last_name,sa.status user_status
+          FROM organisation_memberships m JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
+          WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,sa`,[p.membershipId,b.organisationId]);
 
         if(b.firstName!==undefined||b.lastName!==undefined||Object.hasOwn(b,'email')){
           const nextEmail=Object.hasOwn(b,'email')
-            ?(b.email??('staff-'+randomBytes(12).toString('hex')+'@revolt-x.local'))
+            ?b.email
             :before.email;
-          await q.query(`UPDATE users SET
+          await q.query(`UPDATE school_accounts SET
             first_name=COALESCE($1,first_name),last_name=COALESCE($2,last_name),email=$3,updated_at=now()
-            WHERE id=$4`,[b.firstName??null,b.lastName??null,nextEmail,before.user_id]);
+            WHERE user_id=$4 AND organisation_id=$5`,[b.firstName??null,b.lastName??null,nextEmail,before.user_id,b.organisationId]);
         }
         await q.query(`UPDATE organisation_memberships SET
           job_title=CASE WHEN $1 THEN $2 ELSE job_title END,
@@ -453,16 +434,16 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
           WHERE id=$5`,[
           Object.hasOwn(b,'jobTitle'),b.jobTitle??null,Object.hasOwn(b,'employeeNumber'),b.employeeNumber??null,p.membershipId
         ]);
-        const row=await one<any>(q,`SELECT u.id,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,
-          u.first_name,u.last_name,u.status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at
-          FROM organisation_memberships m JOIN users u ON u.id=m.user_id
+        const row=await one<any>(q,`SELECT u.id,CASE WHEN sa.email LIKE '%@revolt-x.local' THEN NULL ELSE sa.email END email,
+          sa.first_name,sa.last_name,sa.status,m.id membership_id,m.job_title,m.employee_number,m.status membership_status,m.joined_at
+          FROM organisation_memberships m JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
           WHERE m.id=$1 AND m.organisation_id=$2`,[p.membershipId,b.organisationId]);
         await audit(q,{organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
           action:'school_service.user_updated',resourceType:'membership',resourceId:p.membershipId,beforeState:before,afterState:row});
         return row;
       });
     }catch(e:any){
-      if(e.code==='23505')throw conflict('Email or employee number is already in use');
+      if(e.code==='23505')throw conflict('Email or Staff ID is already in use in this school');
       throw e;
     }
   });
@@ -472,10 +453,10 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({organisationId:databaseRecordId,actorUserId:databaseRecordId}).parse(request.body);
     return transaction(db,async q=>{
-      const before=await one<any>(q,`SELECT m.*,u.status user_status FROM organisation_memberships m
-        JOIN users u ON u.id=m.user_id WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,
+      const before=await one<any>(q,`SELECT m.*,sa.status user_status FROM organisation_memberships m
+        JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,sa`,
         [p.membershipId,b.organisationId]);
-      await q.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1",[before.user_id]);
+      await q.query("UPDATE school_accounts SET status='active',updated_at=now() WHERE user_id=$1 AND organisation_id=$2",[before.user_id,b.organisationId]);
       const row=await one<any>(q,"UPDATE organisation_memberships SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",
         [p.membershipId,b.organisationId]);
       await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
@@ -497,16 +478,16 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     return transaction(db,async c=>{
       const membership=await one<any>(
         c,
-        `SELECT m.*,CASE WHEN u.email LIKE '%@revolt-x.local' THEN NULL ELSE u.email END email,u.first_name,u.last_name,u.status user_status
+        `SELECT m.*,CASE WHEN sa.email LIKE '%@revolt-x.local' THEN NULL ELSE sa.email END email,sa.first_name,sa.last_name,sa.status user_status
          FROM organisation_memberships m
-         JOIN users u ON u.id=m.user_id
+         JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
          WHERE m.id=$1 AND m.organisation_id=$2
-         FOR UPDATE OF m,u`,
+         FOR UPDATE OF m,sa`,
         [p.membershipId,b.organisationId]
       );
       if(!membership.email)throw conflict('Add a real email address before creating a password setup invitation');
-      if(!['active','invited'].includes(membership.user_status))throw conflict('This Core OS account is inactive. Ask the OS owner to restore it.');
-      await c.query("UPDATE users SET status='active',updated_at=now() WHERE id=$1 AND status='invited'",[membership.user_id]);
+      if(!['active','invited'].includes(membership.user_status))throw conflict('This school account is inactive. Ask your school administrator to restore it.');
+      await c.query("UPDATE school_accounts SET status='active',updated_at=now() WHERE user_id=$1 AND organisation_id=$2 AND status='invited'",[membership.user_id,b.organisationId]);
       const token=randomBytes(32).toString('base64url');
       const tokenHash=createHash('sha256').update(token).digest('hex');
       await clearSchoolResetTokens(c,membership.user_id,b.organisationId);
@@ -542,13 +523,13 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     }).parse(request.body);
 
     return transaction(db,async c=>{
-      const membership=await one<any>(c,`SELECT m.*,u.email,u.first_name,u.last_name,u.status user_status
-        FROM organisation_memberships m JOIN users u ON u.id=m.user_id
-        WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,u`,[p.membershipId,b.organisationId]);
+      const membership=await one<any>(c,`SELECT m.*,sa.email,sa.first_name,sa.last_name,sa.status user_status
+        FROM organisation_memberships m JOIN users u ON u.id=m.user_id JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
+        WHERE m.id=$1 AND m.organisation_id=$2 FOR UPDATE OF m,sa`,[p.membershipId,b.organisationId]);
       const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
       if(membership.user_status==='disabled'||membership.user_status==='suspended')throw conflict('This account is disabled. Restore it through the account access controls first.');
       await setSchoolCredential(c,b.organisationId,membership.user_id,passwordHash,true);
-      await c.query("UPDATE users SET status='active' WHERE id=$1 AND status='invited'",[membership.user_id]);
+      await c.query("UPDATE school_accounts SET status='active',updated_at=now() WHERE user_id=$1 AND organisation_id=$2 AND status='invited'",[membership.user_id,b.organisationId]);
       await revokeLinkedSchoolSessions(c,config,membership.user_id,undefined,b.organisationId);
       await c.query("UPDATE organisation_memberships SET status='active' WHERE id=$1",[membership.id]);
       await c.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',
@@ -584,8 +565,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         [b.status,p.membershipId,b.organisationId]
       );
       await c.query(
-        "UPDATE users SET status=CASE WHEN $1='active' THEN 'active' ELSE status END,updated_at=now() WHERE id=$2",
-        [b.status,row.user_id]
+        "UPDATE school_accounts SET status=CASE WHEN $1='active' THEN 'active' ELSE status END,updated_at=now() WHERE user_id=$2 AND organisation_id=$3",
+        [b.status,row.user_id,b.organisationId]
       );
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
