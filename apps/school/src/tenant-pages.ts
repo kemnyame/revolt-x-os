@@ -16,8 +16,9 @@ export function rememberedSchoolContext(request:any){
 export function createSchoolTenantPages(options:{db:SchoolDb;config:SchoolConfig;resolveTenantSchool:(slug:string)=>Promise<any>;schoolFrontend:string;requestSessionToken:(request:any)=>string}){
  const {db,config,resolveTenantSchool,schoolFrontend,requestSessionToken}=options;
 function rememberSchoolLogin(reply:any,core:any){
-  const path=schoolSessionLoginPath(core).split('&expired=')[0]!;
-  if(!path.startsWith('/s/'))return;
+  const school=core?.organisation_slug||core?.organisation_id;
+  if(!school)return;
+  const path='/s/'+encodeURIComponent(school)+(core?.dedicated_admin?'/admin-login'+(core.id?'?admin='+encodeURIComponent(core.id):''):'/login');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
   reply.header('set-cookie','rx_school_login='+encodeURIComponent(path)+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000'+secure);
 }
