@@ -63,19 +63,28 @@ self.addEventListener('fetch',event=>{
 
 export const schoolMobileVersion=createHash('sha256').update(schoolMobileCss+mobilePolishCss+schoolMobileScript+mobilePolishScript+schoolServiceWorker).digest('hex').slice(0,12);
 const polishHead=`<link rel="stylesheet" href="/school-polish.css?v=${schoolMobileVersion}"><script src="/school-polish.js?v=${schoolMobileVersion}" defer></script>`;
+const staleSchoolCleanup=`<script>(function(){try{localStorage.removeItem('rx_school_id')}catch(e){}try{sessionStorage.removeItem('rx_school_login_url');sessionStorage.removeItem('rx_teacher_login_url');sessionStorage.removeItem('rx_parent_login_url')}catch(e){}try{var u=new URL(location.href);u.searchParams.delete('school');history.replaceState(null,'',u.pathname+u.search+u.hash)}catch(e){}})();</script>`;
 export const schoolMobileHead=`<link rel="manifest" href="/school.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Revolt School"><link rel="apple-touch-icon" href="/school-icon-192.png"><link rel="icon" type="image/png" href="/school-icon-192.png"><link rel="stylesheet" href="/school-mobile.css?v=${schoolMobileVersion}"><script src="/school-mobile.js?v=${schoolMobileVersion}" defer></script>${polishHead}`;
 
-export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_name:'Revolt School',description:'A focused mobile app for teachers and parents.',lang:'en',start_url:'/mobile',scope:'/mobile',display:'standalone',background_color:'#f6f7f3',theme_color:'#24634e',prefer_related_applications:false,icons:[{src:'/school-icon-192.png',sizes:'192x192',type:'image/png',purpose:'any maskable'},{src:'/school-icon-512.png',sizes:'512x512',type:'image/png',purpose:'any maskable'}],shortcuts:[{name:'Teacher app',url:'/mobile/teacher'},{name:'Parent app',url:'/mobile/parent'}]};
+export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_name:'Revolt School',description:'A focused mobile app for teachers and parents.',lang:'en',start_url:'/mobile',scope:'/mobile',display:'standalone',background_color:'#f6f7f5',theme_color:'#24634e',prefer_related_applications:false,icons:[{src:'/school-icon-192.png',sizes:'192x192',type:'image/png',purpose:'any maskable'},{src:'/school-icon-512.png',sizes:'512x512',type:'image/png',purpose:'any maskable'}],shortcuts:[{name:'Teacher app',url:'/mobile/teacher'},{name:'Parent app',url:'/mobile/parent'}]};
 
 export { mobileRoleChoiceFrontend as schoolMobileFrontend };
 
 export async function registerSchoolMobile(app:FastifyInstance,options?:{resolveSchool:(request:any)=>Promise<{tenant_slug:string;school_name:string}|null>}){
  async function page(request:any,reply:any,html:string){
-  const school=await options?.resolveSchool(request);
+  let school:{tenant_slug:string;school_name:string}|null=null,staleSchool=false;
+  try{school=await options?.resolveSchool(request)??null}
+  catch(error:any){
+   if(Number(error?.statusCode)!==404||String(error?.message||'')!=='School code was not found')throw error;
+   staleSchool=true;
+   reply.header('set-cookie','rx_school_login=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  }
   if(school){
    if(!request.query?.school)return reply.redirect(schoolWorkspaceUrl(school.tenant_slug,String(request.url).split('?')[0]));
    html=schoolTenantDocument(html,school);
    for(const path of ['/mobile/teacher','/mobile/parent'])html=html.replaceAll('href="'+path+'"','href="'+schoolWorkspaceUrl(school.tenant_slug,path)+'"');
+  }else if(staleSchool&&request.query?.school){
+   html=html.replace('</head>',staleSchoolCleanup+'</head>');
   }
   return reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(html.replace('</head>',polishHead+'</head>'));
  }
