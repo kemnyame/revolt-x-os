@@ -224,7 +224,7 @@ async function login(message){
  async function loadLoginSchool(){
  E('mLoginSubmit').disabled=true;E('mError').hidden=true;reload.hidden=true;
  var requested=schoolFromLocation();
- if(!requested){showError(Error('Open the sign-in link provided by your school.'));return}
+ if(!requested){if(recoverSchoolLocation(role))return;showError(Error('Your school could not be identified on this device. Ask your administrator to resend your sign-in invitation.'));return}
  try{
   var data=document.body.dataset,school=data.schoolId?{id:data.schoolId,name:data.schoolName}:null;
   if(!school)school=await window.RevoltSchoolSignIn.loadData('/api/auth/school-context?'+new URLSearchParams({school:requested}),{valid:function(value){return value&&value.id&&value.name},progress:function(message){E('mLoginSubmit').textContent=message}});

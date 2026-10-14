@@ -5,6 +5,27 @@ function schoolFromLocation(){
   if(parts[0]==='s'&&parts[1]){try{return decodeURIComponent(parts[1]).trim()}catch(e){return ''}}
   return(new URLSearchParams(location.search).get('school')||'').trim();
 }
+function recoverSchoolLocation(portal){
+  if(schoolFromLocation()||location.pathname.startsWith('/s/')||new URLSearchParams(location.search).has('school'))return false;
+  var family=portal==='teacher'?'school':portal==='staff'?'school':portal,hint='',school='',target;
+  try{hint=sessionStorage.getItem('rx_'+family+'_login_url')||''}catch(e){}
+  try{
+    var saved=new URL(hint,location.origin),match=saved.pathname.match(/^\/s\/([^/]+)\/(login|admin-login)$/);
+    if(hint&&saved.origin===location.origin&&match){school=decodeURIComponent(match[1]);target=saved}
+    else if(hint&&saved.origin===location.origin&&(saved.pathname==='/'+portal||saved.pathname==='/mobile/'+portal))school=saved.searchParams.get('school')||'';
+  }catch(e){}
+  // These are navigation hints from earlier releases, never authentication or
+  // account selection. The destination still resolves and verifies its tenant.
+  if(!school){try{school=localStorage.getItem('rx_school_id')||''}catch(e){}}
+  if(!school||school.length>120||/[\s/\\?#<>]/.test(school))return false;
+  var mobile=location.pathname.startsWith('/mobile/');
+  if(mobile||family!=='school')target=new URL(location.pathname,location.origin);
+  else if(!target||(location.pathname==='/admin-login'&&!target.pathname.endsWith('/admin-login')))target=new URL('/s/'+encodeURIComponent(school)+(location.pathname==='/admin-login'?'/admin-login':'/login'),location.origin);
+  if(mobile||family!=='school')target.searchParams.set('school',school);
+  var query=new URLSearchParams(location.search);
+  for(var key of ['expired','next','setup'])if(query.has(key))target.searchParams.set(key,query.get(key));
+  location.replace(target.pathname+target.search);return true;
+}
 function schoolWorkspacePath(path,school){
   var url=new URL(path||'/',location.origin);
   if(url.origin!==location.origin||!/^\/(?:teacher|headteacher|parent|student|mobile(?:\/(?:teacher|parent))?|students\/[^/]+)?$/.test(url.pathname))url=new URL('/',location.origin);

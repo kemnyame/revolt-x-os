@@ -7,11 +7,17 @@ const schoolSelectionScript=`
   ${schoolLocationScript}
   async function loadSchool(){
     var button=E('signin'),requested=schoolFromLocation();button.disabled=true;E('retrySignIn').hidden=true;
-    if(!requested){show('Open the sign-in link provided by your school.');return false}
+    if(!requested){
+      E('schoolCredentials').hidden=true;
+      if(recoverSchoolLocation('staff')){show('Returning to your school sign-in page.','success');return false}
+      show('This is the shared School address. Your school’s invitation opens its sign-in page automatically. Ask your school administrator to resend the invitation.','success');
+      return false
+    }
     try{
       var data=document.body&&document.body.dataset,school=data&&data.schoolId?{id:data.schoolId,name:data.schoolName}:null;
       if(!school)school=await window.RevoltSchoolSignIn.loadData('/api/auth/school-context?'+new URLSearchParams({school:requested}),{valid:function(value){return value&&value.id&&value.name},progress:function(message){show(message,'success')}});
       E('schoolId').value=school.id;E('schoolName').textContent=school.name;document.title=school.name+' · Sign in';
+      E('schoolCredentials').hidden=false;
       var peer=E('otherLogin');if(peer)peer.href='/s/'+encodeURIComponent(school.id)+(location.pathname.endsWith('/admin-login')?'/login':'/admin-login');
       E('status').textContent='';E('status').className='';button.disabled=false;return true;
     }catch(err){show(err.message||'Could not load your school');E('retrySignIn').hidden=false;return false}
@@ -67,7 +73,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
       <p class="muted">Enter your Staff ID and password.</p>
 
       <p id="schoolName" class="eyebrow" aria-live="polite">Your school</p>
-      <input id="schoolId" type="hidden">
+      <div id="schoolCredentials"><input id="schoolId" type="hidden">
 
       <label for="staffId">Staff ID</label>
       <input id="staffId" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="e.g. STF-000001">
@@ -75,7 +81,7 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
       <label for="password">Password</label>
       <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password">
 
-      <button id="signin" type="button">Sign in</button>
+      <button id="signin" type="button">Sign in</button></div>
       <p id="sessionExpired" class="help" hidden>Your session expired. Please sign in again.</p><div id="status" role="status" aria-live="polite"></div>
       <button id="retrySignIn" type="button" hidden>Retry loading sign-in</button>
 
@@ -163,7 +169,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <p class="muted">Sign in with the administrator account created for this school.</p>
 
       <p id="schoolName" class="eyebrow" aria-live="polite">Your school</p>
-      <input id="schoolId" type="hidden">
+      <div id="schoolCredentials"><input id="schoolId" type="hidden">
 
       <label for="email">Administrator email</label>
       <input id="email" type="email" autocomplete="username" placeholder="admin@school.edu.gh">
@@ -171,7 +177,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <label for="password">Administrator password</label>
       <input id="password" type="password" autocomplete="current-password" placeholder="Enter administrator password">
 
-      <button id="signin" type="button">Sign in as Administrator</button>
+      <button id="signin" type="button">Sign in as Administrator</button></div>
       <p id="sessionExpired" class="help" hidden>Your session expired. Please sign in again.</p><div id="status" role="status" aria-live="polite"></div>
       <button id="retrySignIn" type="button" hidden>Retry loading sign-in</button>
 

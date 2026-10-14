@@ -51,7 +51,7 @@ test('a fresh browser gets only its school login, with no directory or browser-s
   assert.equal(r.statusCode,200);assert.match(r.body,/data-school-id="alpha" data-school-name="Alpha School"/);
   assert.doesNotMatch(r.body,/<select|Select your school|\/api\/auth\/schools/);assert.match(r.headers['cache-control'],/no-store/);
   assert.match(r.headers['set-cookie'],/^rx_school_login=/);assert.equal((await app.inject('/s/missing/login')).statusCode,404);
-  const plain=await app.inject('/login');assert.doesNotMatch(plain.body,/<select/);assert.match(plain.body,/Open the sign-in link provided by your school/);
+  const plain=await app.inject('/login');assert.doesNotMatch(plain.body,/<select/);assert.match(plain.body,/shared School address/);
 });
 
 test('repeated logout and fresh sessions return to the same school and preserve administrator login type',async t=>{
@@ -90,6 +90,31 @@ test('generic links recover the previous public school address and reject extern
     const response=await app.inject({url:'/login',headers:{cookie:'rx_school_login='+encodeURIComponent(hint)}});
     assert.equal(response.statusCode,200);assert.equal(response.headers.location,undefined);
   }
+});
+
+test('generic login recovers old active or expired sessions without the newer return cookie',async t=>{
+  const app=await fixture(t);
+  for(const admin of [false,true])for(const expired of [false,true]){
+    const token=await issue('alpha',{admin,expired});
+    const response=await app.inject({url:'/login',headers:{cookie:'rx_school_session='+token}});
+    assert.equal(response.statusCode,302);assert.equal(response.headers.location,'/s/alpha/'+(admin?'admin-login?admin='+user:'login'));
+  }
+});
+
+test('an explicit school always wins and a generic admin page never binds a staff member as the administrator',async t=>{
+  const app=await fixture(t),token=await issue('alpha');
+  const headers={cookie:'rx_school_session='+token+'; rx_school_login='+encodeURIComponent('/s/beta/login')};
+  assert.equal((await app.inject({url:'/login',headers})).headers.location,'/s/alpha/login');
+  assert.equal((await app.inject({url:'/login?school=beta',headers})).headers.location,'/s/beta/login');
+  assert.equal((await app.inject({url:'/admin-login',headers})).headers.location,'/s/alpha/admin-login');
+});
+
+test('logging out an older session writes the public school return cookie before clearing authentication',async t=>{
+  const app=await fixture(t),token=await issue('alpha',{admin:true});
+  const response=await app.inject({method:'POST',url:'/api/auth/logout',headers:{cookie:'rx_school_session='+token}});
+  const cookies=response.headers['set-cookie'];assert.ok(Array.isArray(cookies));
+  assert.ok(cookies.some(c=>c.startsWith('rx_school_login=')&&decodeURIComponent(c).includes('/s/alpha/admin-login?admin='+user)));
+  assert.ok(cookies.some(c=>c.startsWith('rx_school_session=')&&c.includes('Max-Age=0')));
 });
 
 test('school names are safely escaped when server-rendered into login pages',()=>{
