@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from '../dist/login-ui.js';
 import { virtualClock } from './virtual-clock.mjs';
 
-async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],respond,startup}={}) {
+async function browser(html, {path='/admin-login',search='',saved='',schools=[{id:'alpha',name:'Alpha',organisationId:'org-alpha'}],directory,respond,startup}={}) {
   const clock=virtualClock();
   const elements=new Map(),storage=new Map([['rx_school_id',saved]]),sessions=new Map([['rx_school_token','old'],['rx_teacher_token','old']]),calls=[],redirects=[];
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',innerHTML:'',disabled:false,focus(){},appendChild(){}});return elements.get(id)};
@@ -14,7 +14,7 @@ async function browser(html, {path='/admin-login',search='',saved='',schools=[{i
     sessionStorage:{getItem:key=>sessions.get(key),removeItem:key=>sessions.delete(key),setItem:(key,value)=>sessions.set(key,value)},
     Date:clock.Date,AbortController,clearTimeout:clock.clearTimeout,setTimeout:clock.setTimeout,fetch:async(url,options)=>{
       calls.push({url,body:options?.body?JSON.parse(options.body):undefined});
-      if(url==='/api/auth/schools')return{ok:true,json:async()=>schools};
+      if(url==='/api/auth/schools')return directory?directory(url,options,clock):{ok:true,json:async()=>schools};
       if(url==='/api/system/core-status'||String(url).startsWith('https://core.example.test/'))return startup?startup(url,options):{ok:true,json:async()=>({core:{healthy:true,status:200,url:'https://core.example.test'}})};
       return respond?respond(url,options):{ok:true,json:async()=>({reset:true,schoolId:'alpha',adminLoginUrl:'/s/alpha/admin-login'})};
     }};
@@ -24,6 +24,42 @@ async function browser(html, {path='/admin-login',search='',saved='',schools=[{i
   await new Promise(resolve=>setImmediate(resolve));
   return{element,calls,redirects,storage,sessions,clock};
 }
+
+async function settled(predicate){for(let i=0;i<100&&!predicate();i++)await new Promise(resolve=>setImmediate(resolve));assert.ok(predicate())}
+
+for(const [name,html] of [['staff',loginFrontend],['administrator',adminLoginFrontend]]){
+  test(name+' school directory recovers from a dropped connection, startup HTML and temporary database failure',async()=>{
+    let attempts=0;
+    const b=await browser(html,{path:'/s/alpha/login',directory:()=>{
+      attempts++;if(attempts===1)throw Error('Connection dropped');
+      if(attempts===2)return{ok:true,status:200,json:async()=>null};
+      if(attempts===3)return{ok:false,status:503,json:async()=>({error:{message:'Database starting'}})};
+      return{ok:true,status:200,json:async()=>[{id:'alpha',name:'Alpha'}]};
+    }});
+    b.element('password').value='KeepEnteredPassword123!';
+    await settled(()=>!b.element('signin').disabled);
+    assert.equal(b.element('schoolId').value,'alpha');assert.equal(attempts,4);assert.equal(b.element('password').value,'KeepEnteredPassword123!');
+  });
+}
+
+test('a failed school directory can be retried on the same form without losing entered credentials',async()=>{
+  let available=false;
+  const b=await browser(loginFrontend,{path:'/s/alpha/login',directory:()=>({ok:available,status:available?200:503,json:async()=>available?[{id:'alpha',name:'Alpha'}]:null})});
+  b.element('staffId').value='STF-000001';b.element('password').value='KeepEnteredPassword123!';
+  await settled(()=>b.element('retrySignIn').hidden===false);
+  assert.equal(b.element('signin').disabled,true);assert.ok(b.clock.now()<=90000);
+  available=true;await b.element('retrySignIn').onclick();
+  assert.equal(b.element('signin').disabled,false);assert.equal(b.element('password').value,'KeepEnteredPassword123!');assert.equal(b.element('staffId').value,'STF-000001');
+});
+
+test('administrator link recovers from startup throttling before permitting its exact account to sign in',async()=>{
+  const uid='11111111-1111-4111-8111-111111111111';let attempts=0;
+  const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin='+uid,respond:()=>{
+    attempts++;return attempts<3?{ok:false,status:429,json:async()=>null}:{ok:true,status:200,json:async()=>({administrator:{id:uid,email:'primary@example.test',name:'Primary'},school:{id:'alpha',name:'Alpha'}})};
+  }});
+  b.element('password').value='KeepEnteredPassword123!';await settled(()=>!b.element('signin').disabled);
+  assert.equal(attempts,3);assert.equal(b.element('email').value,'primary@example.test');assert.equal(b.element('schoolId').value,'alpha');assert.equal(b.element('password').value,'KeepEnteredPassword123!');
+});
 
 test('staff web login resolves a saved school UUID and replaces the expired teacher session after successful sign-in',async()=>{
   const b=await browser(loginFrontend,{path:'/login',saved:'ORG-ALPHA',respond:()=>({ok:true,json:async()=>({accessToken:'fixture-fresh-session',school:{id:'alpha'},user:{firstName:'Ama'},redirectTo:'/teacher'})})});
@@ -141,7 +177,7 @@ test('administrator-specific links lock the verified school and email and send t
   b.element('email').value='wrong@example.test';b.element('password').value='PersonalResetPass123';await b.element('signin').onclick();assert.deepEqual(b.calls.at(-1).body,{schoolId:'alpha',email:'primary@example.test',password:'PersonalResetPass123',adminUserId:uid});
 });
 test('an expired or replaced administrator link blocks sign-in instead of falling back to another account',async()=>{
-  const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin=11111111-1111-4111-8111-111111111111',respond:()=>({ok:false,json:async()=>({error:{message:'School administrator login link is no longer valid'}})})});
+  const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin=11111111-1111-4111-8111-111111111111',respond:()=>({ok:false,status:404,json:async()=>({error:{message:'School administrator login link is no longer valid'}})})});
   assert.equal(b.element('signin').disabled,true);await b.element('signin').onclick();assert.equal(b.calls.length,1);assert.match(b.element('status').textContent,/no longer valid/);
 });
 

@@ -1,3 +1,5 @@
+import {osLoginRequestScript} from './auth/login-request-ui.js';
+
 export const osLoginFrontend=String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -24,6 +26,7 @@ export const osLoginFrontend=String.raw`<!doctype html>
 <script>
 (function(){
 function E(id){return document.getElementById(id)}
+${osLoginRequestScript}
 function msg(text,bad){E('message').innerHTML='<div class="'+(bad?'error':'success')+'">'+String(text).replace(/[<>&]/g,'')+'</div>'}
 function save(x){sessionStorage.removeItem('rx_os_session_expires_at');sessionStorage.setItem('rx_access',x.accessToken);sessionStorage.setItem('rx_refresh',x.refreshToken||'');location.replace('/')}
 function tab(which){['login','register','recovery'].forEach(function(name){E(name+'View').classList.toggle('hidden',name!==which)});E('loginTab').classList.toggle('active',which==='login');E('registerTab').classList.toggle('active',which==='register');E('message').innerHTML=''}
@@ -34,7 +37,7 @@ E('backToLogin').onclick=function(){tab('login')};
 E('recoveryBtn').onclick=async function(){var b=this,email=E('recoveryEmail').value.trim();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){msg('Enter a valid OS account email address.',true);return}b.disabled=true;try{var r=await fetch('/v1/auth/password-reset/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:email})});if(!r.ok)throw Error(r.status===429?'Too many requests. Please wait before trying again.':'Password recovery is temporarily unavailable. Please try again.');msg('If this email belongs to an active OS account, a reset link will arrive shortly. Check your inbox and spam folder. A new request is available after 60 seconds.',false)}catch(e){msg(e.message,true)}finally{b.disabled=false}};
 E('recoveryEmail').onkeydown=function(e){if(e.key==='Enter')E('recoveryBtn').click()};
 E('loginTab').onclick=function(){tab('login')};E('registerTab').onclick=function(){tab('register')};
-E('loginBtn').onclick=async function(){var b=E('loginBtn');b.disabled=true;try{var r=await fetch('/v1/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:E('loginEmail').value.trim(),password:E('loginPassword').value})});var j=await r.json().catch(function(){return{}});if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Sign in failed');save(j)}catch(e){msg(e.message,true);b.disabled=false}};
+E('loginBtn').onclick=async function(){var b=E('loginBtn');if(b.disabled)return;var email=E('loginEmail').value.trim(),password=E('loginPassword').value;if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){msg('Enter a valid OS account email address.',true);E('loginEmail').focus();return}if(!password){msg('Enter your OS password.',true);E('loginPassword').focus();return}b.disabled=true;var old=b.textContent;b.textContent='Signing in…';try{var j=await requestOsLogin({email:email,password:password},function(message){msg(message,false)});save(j)}catch(e){msg(e.message,true);b.disabled=false;b.textContent=old}};
 E('registerBtn').onclick=async function(){var b=E('registerBtn');b.disabled=true;try{var r=await fetch('/v1/auth/register-organisation',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({organisationName:E('orgName').value.trim(),slug:E('orgSlug').value.trim(),firstName:E('firstName').value.trim(),lastName:E('lastName').value.trim(),email:E('registerEmail').value.trim(),password:E('registerPassword').value})});var j=await r.json().catch(function(){return{}});if(!r.ok)throw Error(j&&j.error&&j.error.message?j.error.message:'Workspace creation failed');save(j)}catch(e){msg(e.message,true);b.disabled=false}};
 E('showLoginPassword').onchange=function(){E('loginPassword').type=this.checked?'text':'password'};E('showRegisterPassword').onchange=function(){E('registerPassword').type=this.checked?'text':'password'};E('loginPassword').onkeydown=function(e){if(e.key==='Enter')E('loginBtn').click()};
 })();

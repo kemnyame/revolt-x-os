@@ -8,6 +8,7 @@ test('legacy Quick Login is removed and School plus Staff ID plus password is ca
   const server=await read('server.js');
   const login=await read('login-ui.js');
   const config=await read('config.js');
+  const directory=await read('school-directory.js');
 
   assert.doesNotMatch(config,/ENABLE_QUICK_STAFF_LOGIN/);
   assert.doesNotMatch(config,/STAFF_GENERIC_PASSWORD/);
@@ -17,7 +18,8 @@ test('legacy Quick Login is removed and School plus Staff ID plus password is ca
   assert.doesNotMatch(server,/validateQuickLoginPassword/);
   assert.match(server,/handleSchoolStaffIdLogin/);
   assert.match(server,/authenticateCoreSchoolLogin\(config,\s*['"]staff['"]/);
-  assert.match(server,/\/api\/auth\/schools/);
+  assert.match(server,/registerSchoolDirectory\(app/);
+  assert.match(directory,/\/api\/auth\/schools/);
   assert.match(server,/\/api\/auth\/staff-id-login/);
   assert.match(server,/createSchoolStaffSession\(coreContext,\s*['"]staff_id['"]\)/);
 

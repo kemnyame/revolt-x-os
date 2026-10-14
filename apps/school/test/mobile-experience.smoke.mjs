@@ -93,6 +93,33 @@ test('unavailable schools cannot submit a mobile staff login',async()=>{
  assert.equal(h.document.getElementById('mLoginSubmit').disabled,true);await h.submit('mLoginForm');assert.equal(h.writes.length,0);
 });
 
+test('mobile teacher and parent directories recover without losing entries or posting credentials during loading',async()=>{
+ for(const role of ['teacher','parent']){
+  const clock=virtualClock();let attempts=0;
+  const h=harness(role,async path=>{
+   if(path!=='/api/auth/schools')return null;
+   attempts++;if(attempts===1)throw Error('Dropped connection');
+   return attempts===2?response({error:{message:'Service starting'}},503):response([{id:'alpha',name:'Alpha'}]);
+  },{sessions:{},search:'?school=alpha',clock});
+  await waitFor(()=>h.document.getElementById('mLoginForm'));
+  if(role==='teacher'){h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','KeepEnteredPassword123!')}
+  else h.change('mLoginPhone','0240000000');
+  await waitFor(()=>h.document.getElementById('mLoginSchool')?.value==='alpha');
+  assert.equal(h.document.getElementById('mLoginSubmit').disabled,false);assert.equal(attempts,3);assert.equal(h.writes.length,0);
+  if(role==='teacher')assert.equal(h.document.getElementById('mLoginPassword').value,'KeepEnteredPassword123!');
+  else assert.equal(h.document.getElementById('mLoginPhone').value,'0240000000');
+ }
+});
+
+test('mobile reloads an unavailable school list on the same form with staff credentials retained',async()=>{
+ let available=false;const clock=virtualClock();
+ const h=harness('teacher',async path=>path==='/api/auth/schools'?(available?response([{id:'alpha',name:'Alpha'}]):response({},503)):null,{sessions:{},search:'?school=alpha',clock});
+ await waitFor(()=>h.document.getElementById('mLoginForm'));h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','KeepEnteredPassword123!');
+ await waitFor(()=>h.document.getElementById('mLoginReload')?.hidden===false);
+ available=true;await h.click('mLoginReload');await waitFor(()=>h.document.getElementById('mLoginSubmit')?.disabled===false);
+ assert.equal(h.document.getElementById('mLoginPassword').value,'KeepEnteredPassword123!');assert.equal(h.document.getElementById('mLoginStaff').value,'STF-000001');assert.equal(h.writes.length,0);
+});
+
 test('mobile sign-in automatically wakes Core before sending a staff password to School',async()=>{
  let probes=0;const order=[];
  const h=harness('teacher',async(path,options)=>{

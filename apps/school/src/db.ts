@@ -22,6 +22,7 @@ export function createSchoolDb(config: SchoolConfig) {
   const pool=new pg.Pool({
     connectionString: normalizeDatabaseUrl(config.SCHOOL_DATABASE_URL),
     max: config.DB_POOL_MAX,
+    connectionTimeoutMillis: 10_000,
     application_name: 'revolt-x-school'
   });
 
@@ -55,15 +56,14 @@ export function createSchoolDb(config: SchoolConfig) {
       await prepareClient(client);
       return client;
     }catch(error){
-      client.release();
+      client.release(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   };
 
   (pool as any).query=async(...args:any[])=>{
-    const client=await rawConnect();
+    const client=await pool.connect();
     try{
-      await prepareClient(client);
       return await (client.query as any)(...args);
     }finally{
       client.release();

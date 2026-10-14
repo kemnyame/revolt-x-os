@@ -22,9 +22,10 @@ beforeEach(()=>pg.exec('TRUNCATE portal_login_throttle,school_sessions,school_me
 after(()=>pg.close());
 
 test('service startup failures do not consume the staff password failure allowance',async()=>{
+  let time=0;
   const request={ip:'192.0.2.10',body:{schoolId:'alpha',staffId:'STF-000001',password:'FixtureOnly123!'}};
   await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,()=>authenticateCoreSchoolLogin(config,'staff',request.body,{
-    fetchCore:async()=>new Response('Service starting',{status:429}),wait:async()=>{}
+    fetchCore:async()=>new Response('Service starting',{status:429}),now:()=>time,wait:async ms=>{time+=ms}
   })),{statusCode:429});
   assert.equal((await db.query('SELECT count(*) count FROM portal_login_throttle')).rows[0].count,0);
   await assert.rejects(withSchoolAuthThrottle(db,'school_staff',request,()=>authenticateCoreSchoolLogin(config,'staff',request.body,{

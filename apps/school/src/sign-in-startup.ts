@@ -33,7 +33,9 @@ export const schoolSignInStartupScript = String.raw`
       var response=await window.fetch(url,{method:'GET',cache:'no-store',credentials:external?'omit':'same-origin',mode:external?'no-cors':'same-origin',redirect:external?'error':'follow',signal:controller?controller.signal:undefined});
       if(external)return{ok:response.ok,status:response.status,body:null};
       var body=await response.json().catch(function(){return null});
-      return{ok:response.ok,status:response.status,body:body};
+      var retryAfter=response.headers&&response.headers.get?response.headers.get('retry-after'):null;
+      var seconds=Number(retryAfter),backoff=retryAfter?(Number.isFinite(seconds)?seconds*1000:Date.parse(retryAfter)-Date.now()):0;
+      return{ok:response.ok,status:response.status,body:body,retryAfter:Math.max(0,backoff||0)};
     }catch(error){return{ok:false,status:0,body:null}}
     finally{if(timer!==null)clearTimeout(timer)}
   }
@@ -46,8 +48,8 @@ export const schoolSignInStartupScript = String.raw`
       url.pathname=url.pathname.replace(/\/$/,'')+'/health/live';return url.href;
     }catch(error){return null}
   }
-  async function start(progress){
-    var deadline=Date.now()+90000,url=null,wakeRequest=null,nextWakeAt=0,announced=false;
+  async function start(progress,budget){
+    var deadline=Date.now()+(budget===undefined?90000:Math.max(0,Math.min(90000,budget))),url=null,wakeRequest=null,nextWakeAt=0,announced=false;
     try{
       // Fast gateway replies must not exhaust an attempt counter before the host
       // has time to start. A failed first School request is recoverable too.
@@ -77,9 +79,29 @@ export const schoolSignInStartupScript = String.raw`
       throw unavailable();
     }finally{if(wakeRequest&&wakeRequest.controller)wakeRequest.controller.abort()}
   }
-  window.RevoltSchoolSignIn={ensureReady:function(progress){
+  async function loadData(url,options){
+    options=options||{};
+    var deadline=Date.now()+90000,announced=false,recoveredCore=false,lastMessage='School sign-in could not load. Please try again.';
+    while(Date.now()<deadline){
+      var result=await read(url,Math.max(1,Math.min(15000,deadline-Date.now())),false);
+      if(result.ok&&result.body!==null&&(!options.valid||options.valid(result.body)))return result.body;
+      var message=result.body&&result.body.error&&result.body.error.message||result.body&&result.body.message;
+      if(!result.ok&&result.status>=400&&result.status<500&&result.status!==429){
+        var error=Error(message||'This sign-in link could not be verified. Open the current link from your school record.');error.status=result.status;throw error;
+      }
+      if(!announced){announced=true;if(options.progress)options.progress('Loading sign-in. Please keep this screen open while the service reconnects…')}
+      if(options.core&&!recoveredCore){
+        recoveredCore=true;await window.RevoltSchoolSignIn.ensureReady(options.progress,deadline-Date.now());
+      }
+      var delay=Math.max(3000,result.retryAfter||0);
+      if(Date.now()+delay>=deadline)break;
+      await pause(delay);
+    }
+    var error=Error(lastMessage);error.status=503;throw error;
+  }
+  window.RevoltSchoolSignIn={loadData:loadData,ensureReady:function(progress,budget){
     if(pending)return pending;
-    pending=start(progress).finally(function(){pending=null});return pending;
+    pending=start(progress,budget).finally(function(){pending=null});return pending;
   }};
 })();
 `;
