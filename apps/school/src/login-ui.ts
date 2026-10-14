@@ -1,37 +1,20 @@
+import {schoolLocationScript} from './tenant-ui.js';
 import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
 import { schoolSignInStartupScript } from './sign-in-startup.js';
 
-const schoolLocationScript=`
-  function schoolFromLocation(){
-    var parts=location.pathname.split('/').filter(Boolean);
-    if(parts[0]==='s'&&parts[1]){try{return decodeURIComponent(parts[1]).trim()}catch(e){return parts[1]}}
-    return(new URLSearchParams(location.search).get('school')||'').trim()
-  }
-`;
-
 const schoolSelectionScript=`
   ${schoolLocationScript}
-  async function loadSchools(){
-    var select=E('schoolId'),button=E('signin'),requested=schoolFromLocation(),saved='',ready=false;
-    button.disabled=true;select.disabled=true;
-    E('retrySignIn').hidden=true;
-    try{saved=localStorage.getItem('rx_school_id')||''}catch(e){}
+  async function loadSchool(){
+    var button=E('signin'),requested=schoolFromLocation();button.disabled=true;E('retrySignIn').hidden=true;
+    if(!requested){show('Open the sign-in link provided by your school.');return false}
     try{
-      var schools=await window.RevoltSchoolSignIn.loadData('/api/auth/schools',{valid:Array.isArray,progress:function(message){show(message,'success')}});
-      if(!Array.isArray(schools)||!schools.length)throw new Error('No schools are available. Ask your administrator to check school setup.');
-      function escape(value){return String(value).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-      select.innerHTML='<option value="">Select your school</option>'+schools.map(function(s){return '<option value="'+escape(s.id)+'">'+escape(s.name)+'</option>'}).join('');
-      var preferred=(requested||saved).trim().toLowerCase();
-      var match=schools.find(function(s){return String(s.id).toLowerCase()===preferred||String(s.organisationId||'').toLowerCase()===preferred});
-      if(preferred&&match)select.value=match.id;
-      else if(requested)show('The school in this link is unavailable. Select your school to continue.');
-      if(!requested||match){E('status').textContent='';E('status').className=''}
-      ready=true;
-    }catch(err){
-      select.innerHTML='<option value="">Schools unavailable</option>';
-      show(err.message||'Could not load schools');E('retrySignIn').hidden=false
-    }finally{select.disabled=!ready;button.disabled=!ready}
+      var data=document.body&&document.body.dataset,school=data&&data.schoolId?{id:data.schoolId,name:data.schoolName}:null;
+      if(!school)school=await window.RevoltSchoolSignIn.loadData('/api/auth/school-context?'+new URLSearchParams({school:requested}),{valid:function(value){return value&&value.id&&value.name},progress:function(message){show(message,'success')}});
+      E('schoolId').value=school.id;E('schoolName').textContent=school.name;document.title=school.name+' · Sign in';
+      var peer=E('otherLogin');if(peer)peer.href='/s/'+encodeURIComponent(school.id)+(location.pathname.endsWith('/admin-login')?'/login':'/admin-login');
+      E('status').textContent='';E('status').className='';button.disabled=false;return true;
+    }catch(err){show(err.message||'Could not load your school');E('retrySignIn').hidden=false;return false}
   }
 `;
 
@@ -70,10 +53,10 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     <div>
       <div class="mark">REVOLT-X SCHOOL</div>
       <h1>Welcome back to your school workspace.</h1>
-      <p>Select your school, enter the Staff ID assigned to you and use the password provided by your administrator.</p>
+      <p>Enter the Staff ID assigned to you and the password provided by your administrator.</p>
     </div>
     <div class="brand-card">
-      <b>School + Staff ID + Password</b>
+      <b>Staff ID + Password</b>
       <p style="margin:8px 0 0">Staff IDs are generated inside each school. They do not need the school name or school code added to them.</p>
     </div>
   </section>
@@ -81,10 +64,10 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
     <div class="form-wrap">
       <div class="eyebrow">Staff access</div>
       <h2>Sign in to your school</h2>
-      <p class="muted">Choose your school, then enter your Staff ID and password.</p>
+      <p class="muted">Enter your Staff ID and password.</p>
 
-      <label for="schoolId">School</label>
-      <select id="schoolId"><option value="">Loading schools...</option></select>
+      <p id="schoolName" class="eyebrow" aria-live="polite">Your school</p>
+      <input id="schoolId" type="hidden">
 
       <label for="staffId">Staff ID</label>
       <input id="staffId" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="e.g. STF-000001">
@@ -94,9 +77,9 @@ export const loginFrontend=applySchoolDesign(`<!doctype html>
 
       <button id="signin" type="button">Sign in</button>
       <p id="sessionExpired" class="help" hidden>Your session expired. Please sign in again.</p><div id="status" role="status" aria-live="polite"></div>
-      <button id="retrySignIn" type="button" hidden>Reload schools</button>
+      <button id="retrySignIn" type="button" hidden>Retry loading sign-in</button>
 
-      <div class="help"><b>First sign-in:</b> use the temporary password given by your administrator. You will be asked to create your own password before your workspace opens.</div>\n      <div class="switch">School Administrator? <a href="/admin-login">Use Admin Login</a></div>
+      <div class="help"><b>First sign-in:</b> use the temporary password given by your administrator. You will be asked to create your own password before your workspace opens.</div>\n      <div class="switch">School Administrator? <a id="otherLogin" href="/admin-login">Use Admin Login</a></div>
     </div>
   </section>
 </main>
@@ -118,7 +101,7 @@ ${schoolSignInStartupScript}
   async function signIn(){
     if(E('signin').disabled)return;
     var schoolId=E('schoolId').value,staffId=E('staffId').value.trim(),password=E('password').value;
-    if(!schoolId){show('Select your school.');E('schoolId').focus();return}
+    if(!schoolId){show('Open the sign-in link provided by your school.');return}
     if(!staffId){show('Enter your Staff ID.');E('staffId').focus();return}
     if(!password){show('Enter your password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';show('Connecting securely. This may take a moment if the sign-in service is starting.','success');
@@ -128,22 +111,22 @@ ${schoolSignInStartupScript}
       try{
         sessionStorage.removeItem('rx_school_session_expires_at');sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/login');
         sessionStorage.setItem('rx_school_token',result.accessToken);
-        if(result.redirectTo==='/teacher')sessionStorage.setItem('rx_teacher_token',result.accessToken);else sessionStorage.removeItem('rx_teacher_token');
+        if(String(result.redirectTo||'').split('?')[0]==='/teacher')sessionStorage.setItem('rx_teacher_token',result.accessToken);else sessionStorage.removeItem('rx_teacher_token');
         localStorage.setItem('rx_school_id',result.school&&result.school.id?result.school.id:schoolId)
       }catch(e){}
       if(result.requiresPasswordChange){
         show('Sign-in successful. Create your new password to continue.','success');
-        location.replace(result.passwordChangeUrl||'/change-password');
+        location.replace('/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/change-password');
         return
       }
       show('Welcome '+(result.user&&result.user.firstName?result.user.firstName:'')+'. Opening your workspace...','success');
-      location.replace(result.redirectTo||'/')
+      location.replace(schoolWorkspacePath(result.redirectTo||'/',result.school&&result.school.id||schoolId))
     }catch(err){
       show(err.message||'Sign in failed');btn.disabled=false;btn.textContent=old
     }
   }
-  loadSchools();
-  E('retrySignIn').onclick=loadSchools;
+  loadSchool();
+  E('retrySignIn').onclick=loadSchool;
   E('signin').onclick=signIn;
   E('staffId').onkeydown=function(e){if(e.key==='Enter')E('password').focus()};
   E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
@@ -169,7 +152,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <p>This login is created when the school is first provisioned in Revolt-X OS and is separate from normal staff access.</p>
     </div>
     <div class="brand-card">
-      <b>School + Admin Email + Password</b>
+      <b>Admin Email + Password</b>
       <p style="margin:8px 0 0">The primary School Administrator does not use a Staff ID on this login.</p>
     </div>
   </section>
@@ -177,10 +160,10 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
     <div class="form-wrap">
       <div class="eyebrow">Administrator access</div>
       <h2>School Admin Login</h2>
-      <p class="muted">Select the school and sign in with the administrator account created during school setup.</p>
+      <p class="muted">Sign in with the administrator account created for this school.</p>
 
-      <label for="schoolId">School</label>
-      <select id="schoolId"><option value="">Loading schools...</option></select>
+      <p id="schoolName" class="eyebrow" aria-live="polite">Your school</p>
+      <input id="schoolId" type="hidden">
 
       <label for="email">Administrator email</label>
       <input id="email" type="email" autocomplete="username" placeholder="admin@school.edu.gh">
@@ -193,7 +176,7 @@ export const adminLoginFrontend=applySchoolDesign(`<!doctype html>
       <button id="retrySignIn" type="button" hidden>Retry loading sign-in</button>
 
       <div class="help"><b>Administrator access:</b> use the Admin Email and password configured for this school in Revolt-X OS Commercial Control.</div>
-      <div class="switch">Staff member? <a href="/login">Use Staff Login</a></div>
+      <div class="switch">Staff member? <a id="otherLogin" href="/login">Use Staff Login</a></div>
     </div>
   </section>
 </main>
@@ -220,8 +203,7 @@ ${schoolSignInStartupScript}
     try{
       var school=schoolFromLocation();if(!school)throw Error('This administrator link is missing its school. Open the link from your school record.');
       var context=await window.RevoltSchoolSignIn.loadData('/api/auth/admin-login-context?'+new URLSearchParams({schoolId:school,adminUserId:administratorId}),{core:true,valid:function(value){return value&&value.administrator&&value.administrator.id===administratorId&&value.school&&value.school.id&&value.administrator.email},progress:function(message){show(message,'success')}});
-      boundAdministrator=context.administrator;E('schoolId').innerHTML='<option></option>';
-      var option=document.createElement('option');option.value=context.school.id;option.textContent=context.school.name;E('schoolId').appendChild(option);E('schoolId').value=context.school.id;
+      boundAdministrator=context.administrator;E('schoolId').value=context.school.id;E('schoolName').textContent=context.school.name;
       E('email').value=boundAdministrator.email;E('signin').disabled=false;
       show('Sign in as '+boundAdministrator.name+' for '+context.school.name+'. Enter this administrator’s password. If you reset it, use the new password.','success');
     }catch(err){show(err.message||'The administrator link could not be verified.');E('signin').disabled=true;E('retrySignIn').hidden=false}
@@ -229,7 +211,7 @@ ${schoolSignInStartupScript}
   async function signIn(){
     if(E('signin').disabled)return;
     var schoolId=E('schoolId').value,email=boundAdministrator?boundAdministrator.email:E('email').value.trim().toLowerCase(),password=E('password').value;
-    if(!schoolId){show('Select your school.');E('schoolId').focus();return}
+    if(!schoolId){show('Open the sign-in link provided by your school.');return}
     if(!email){show('Enter the administrator email.');E('email').focus();return}
     if(!password){show('Enter the administrator password.');E('password').focus();return}
     var btn=E('signin'),old=btn.textContent;btn.disabled=true;btn.textContent='Signing in...';E('status').className='';E('status').textContent='';
@@ -244,17 +226,18 @@ ${schoolSignInStartupScript}
       }catch(e){}
       if(result.requiresPasswordChange){
         show('Administrator verified. Create your new password to continue.','success');
-        location.replace(result.passwordChangeUrl||'/change-password');
+        location.replace('/s/'+encodeURIComponent(result.school&&result.school.id||schoolId)+'/change-password');
         return
       }
       show('Welcome '+(result.user&&result.user.firstName?result.user.firstName:'')+'. Opening Admin workspace...','success');
-      location.replace(result.redirectTo||'/')
+      location.replace(schoolWorkspacePath(result.redirectTo||'/',result.school&&result.school.id||schoolId))
     }catch(err){
       show(err.message||'Administrator sign in failed');btn.disabled=false;btn.textContent=old
     }
   }
-  if(administratorId)loadAdministrator();else loadSchools();
-  E('retrySignIn').onclick=administratorId?loadAdministrator:loadSchools;
+  async function initialize(){if(await loadSchool()){if(administratorId)await loadAdministrator()}}
+  initialize();
+  E('retrySignIn').onclick=initialize;
   E('signin').onclick=signIn;
   E('email').onkeydown=function(e){if(e.key==='Enter')E('password').focus()};
   E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
@@ -321,7 +304,7 @@ ${schoolSessionScript('staff')}
         show('Password changed. Sign in with your new password.','success');location.replace(j.redirectTo||'/admin-login');return
       }
       show('Password changed. Opening your workspace...','success');
-      location.replace(j.redirectTo||'/')
+      location.replace(schoolWorkspacePath(j.redirectTo||'/',schoolFromLocation()))
     }catch(err){show(err.message||'Could not change password');b.disabled=false;b.textContent=old}
   }
   E('save').onclick=save;
@@ -379,7 +362,7 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
   function show(message,type){var box=E('status');box.className='status '+(type||'error');box.textContent=message}
   ${schoolLocationScript}
   var q=new URLSearchParams(location.search),token=q.get('token')||'',school=schoolFromLocation();
-  E('backLogin').href='/admin-login'+(school?'?school='+encodeURIComponent(school):'');
+  E('backLogin').href=school?'/s/'+encodeURIComponent(school)+'/admin-login':'/admin-login';
   if(!/^[A-Za-z0-9_-]{32,500}$/.test(token)){token='';E('save').disabled=true;show('This password reset link is incomplete or invalid. Generate a new reset link from Revolt-X OS Commercial Control.');}
 
   async function save(){
@@ -398,7 +381,7 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
       try{sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');if(j.schoolId)localStorage.setItem('rx_school_id',j.schoolId)}catch(e){}
       try{history.replaceState(null,'',location.pathname)}catch(e){}
       show('Password changed successfully. Opening School Admin Login...','success');
-      setTimeout(function(){location.replace(j.adminLoginUrl||('/admin-login'+(school?'?school='+encodeURIComponent(school):'')))},700)
+      setTimeout(function(){location.replace(j.adminLoginUrl||(school?'/s/'+encodeURIComponent(school)+'/admin-login':'/admin-login'))},700)
     }catch(err){show(err.message||'Could not reset password');b.disabled=false;b.textContent=old}
   }
   E('save').onclick=save;

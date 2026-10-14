@@ -14,6 +14,7 @@ await pg.exec(`CREATE TABLE portal_login_throttle(portal text,throttle_key text,
  CREATE TABLE school_sessions(id serial,token_hash text,os_user_id uuid,organisation_id uuid,revoked_at timestamptz,expires_at timestamptz,last_used_at timestamptz DEFAULT now(),core_context jsonb);
  CREATE TABLE school_memberships(organisation_id uuid,os_user_id uuid,role text,status text,updated_at timestamptz DEFAULT now(),PRIMARY KEY(organisation_id,os_user_id));
  CREATE TABLE school_roles(organisation_id uuid,key text,name text,description text,portal_mode text,can_teach boolean,is_system boolean,is_active boolean);
+ CREATE TABLE school_profiles(organisation_id uuid,tenant_slug text,school_name text);
  CREATE TABLE school_security_settings(organisation_id uuid,idle_timeout_minutes int);`);
 const db={query:async(sql,params)=>{const result=await pg.query(sql,params);return{rows:result.rows,rowCount:result.rows.length||result.affectedRows||0}}};
 const user='11111111-1111-4111-8111-111111111111',org='22222222-2222-4222-8222-222222222222';
@@ -43,7 +44,7 @@ async function appFor(t,fetchCore,passwordChangedAudit){
 }
 
 test('reset accepts omitted and blank school IDs, uses the verified school and expires the cookie',async t=>{
-  const sent=[],app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({reset:true,email:'admin@example.test',userId:user,organisationSlug:'alpha'})});
+  const sent=[],app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({reset:true,email:'admin@example.test',userId:user,organisationId:org,organisationSlug:'alpha'})});
   for(const schoolId of [undefined,'','   ']) {
     const r=await app.inject({method:'POST',url:'/api/auth/admin-password-reset',payload:{token:'t'.repeat(43),newPassword:'NewSecurePass123',schoolId}});
     assert.equal(r.statusCode,200,r.body);assert.equal(r.json().adminLoginUrl,'/s/alpha/admin-login?admin='+user);assert.equal('schoolId' in sent.at(-1),false);assert.equal(sent.at(-1).purpose,'school_admin');assert.match(r.headers['set-cookie'],/Max-Age=0/);
@@ -157,7 +158,7 @@ test('staff password change preserves the actual current session and routes to t
   const {token,hash}=await firstLogin(false),sent=[];
   const app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({changed:true})});
   const r=await app.inject({method:'POST',url:'/api/auth/change-password',headers:{cookie:'rx_school_session='+token,authorization:'Bearer rxs_stale'},payload:{newPassword:'PersonalSecurePass123'}});
-  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().redirectTo,'/teacher');assert.equal(sent[0].keepSessionHash,hash);
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().redirectTo,'/teacher?school=alpha');assert.equal(sent[0].keepSessionHash,hash);
   const current=(await db.query('SELECT * FROM school_sessions WHERE revoked_at IS NULL')).rows;assert.equal(current.length,1);assert.equal(current[0].core_context.must_change_password,false);
 });
 

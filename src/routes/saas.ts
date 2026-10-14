@@ -1,3 +1,4 @@
+import {createSchoolAccount,findSchoolAccount} from '../auth/school-accounts.js';
 import {revokeLinkedSchoolSessions} from '../auth/school-sessions.js';
 import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -120,10 +121,10 @@ async function getEntitlements(db: Db, providerId: string, customerId: string) {
   }
 
   const adminContact = await maybeOne<any>(db,
-    `SELECT c.primary_contact_name,c.primary_contact_email,u.email organisation_admin_email,u.first_name admin_first_name,u.last_name admin_last_name
+    `SELECT c.primary_contact_name,c.primary_contact_email,sa.email organisation_admin_email,sa.first_name admin_first_name,sa.last_name admin_last_name
      FROM saas_customers c
      JOIN organisations o ON o.id=c.customer_organisation_id
-     LEFT JOIN users u ON u.id::text=(o.settings->>'primaryAdminUserId')
+     LEFT JOIN school_accounts sa ON sa.user_id::text=(o.settings->>'primaryAdminUserId') AND sa.organisation_id=o.id
      WHERE c.provider_organisation_id=$1 AND c.customer_organisation_id=$2`,
     [providerId,customerId]
   );
@@ -283,7 +284,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     });
 
     const licenseSync = await pushLicenseSnapshot(db,config,a.organisationId,b.organisationId);
-    const accessUrl = schoolApplicationBase(config) + '/login?school=' + encodeURIComponent(tenant.tenantSlug || org.slug);
+    const accessUrl = schoolApplicationBase(config) + '/s/' + encodeURIComponent(tenant.tenantSlug || org.slug) + '/login';
     const result = { organisation:org, tenant, subscription, licenseSync, accessUrl };
     await audit(db,{
       organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
@@ -353,24 +354,9 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         [b.name, slug, JSON.stringify({ application: 'school', managedBy: a.organisationId })]
       );
 
-      let admin = await maybeOne<any>(c, 'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1', [b.adminEmail]);
-      let temporaryAdminPassword: string | null = 'SchAdm!A1'+randomBytes(16).toString('hex');
-      let newAdministrator = false;
-
-      if (!admin) {
-        admin = await one<any>(
-          c,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',true,now()) RETURNING id,email,first_name,last_name,status",
-          [b.adminEmail, await bcrypt.hash(temporaryAdminPassword, 12), b.adminFirstName, b.adminLastName]
-        );
-        newAdministrator = true;
-      } else {
-        if (admin.status !== 'active') throw conflict('The administrator email belongs to an inactive OS user');
-        await c.query(
-          'UPDATE users SET first_name=$1,last_name=$2,school_password_bootstrapped_at=COALESCE(school_password_bootstrapped_at,now()),updated_at=now() WHERE id=$3',
-          [b.adminFirstName, b.adminLastName, admin.id]
-        );
-      }
+      const temporaryAdminPassword='SchAdm!A1'+randomBytes(16).toString('hex');
+      const admin=await createSchoolAccount(c,org.id,{email:b.adminEmail,firstName:b.adminFirstName,lastName:b.adminLastName});
+      const newAdministrator=true;
 
       const membership = await one<any>(
         c,
@@ -525,16 +511,17 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const primaryAdminUserId=customer.settings?.primaryAdminUserId;
     if(primaryAdminUserId){
       administrator=await maybeOne<any>(db,
-        'SELECT id,email,first_name,last_name,status FROM users WHERE id=$1',
-        [primaryAdminUserId]
+        'SELECT user_id id,email,first_name,last_name,status FROM school_accounts WHERE user_id=$1 AND organisation_id=$2',
+        [primaryAdminUserId,id]
       );
     }
     if(!administrator&&customer.primary_contact_email){
       administrator=await maybeOne<any>(db,
-        `SELECT u.id,u.email,u.first_name,u.last_name,u.status
+        `SELECT u.id,sa.email,sa.first_name,sa.last_name,sa.status
          FROM users u
          JOIN organisation_memberships m ON m.user_id=u.id
-         WHERE m.organisation_id=$1 AND lower(u.email)=lower($2)
+         JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
+         WHERE m.organisation_id=$1 AND lower(sa.email)=lower($2)
          ORDER BY m.joined_at LIMIT 1`,
         [id,customer.primary_contact_email]
       );
@@ -592,16 +579,14 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     const passwordHash = await bcrypt.hash(b.password,12);
 
     const created = await transaction(db, async q => {
-      let user = await maybeOne<any>(q,'SELECT id,email,first_name,last_name,status FROM users WHERE email=$1',[b.email]);
-      if (user) {
-        existingUser = true;
-        if (user.status !== 'active') throw conflict('The new administrator email belongs to an inactive Core OS user');
-        // Reusing an OS email must not change that user's OS password or sessions.
-      } else {
-        user = await one<any>(q,
-          "INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password,school_password_bootstrapped_at) VALUES($1,$2,$3,$4,'active',false,now()) RETURNING id,email,first_name,last_name,status",
-          [b.email,passwordHash,b.firstName,b.lastName]
-        );
+      let user=await findSchoolAccount(q,id,b.email);
+      if(user){
+        existingUser=true;
+        if(!['active','invited'].includes(user.status))throw conflict('This administrator account is inactive in this school');
+        user=await one<any>(q,`UPDATE school_accounts SET first_name=$1,last_name=$2,status='active',updated_at=now()
+          WHERE organisation_id=$3 AND user_id=$4 RETURNING user_id id,email,first_name,last_name,status`,[b.firstName,b.lastName,id,user.id]);
+      }else{
+        user=await createSchoolAccount(q,id,{email:b.email,firstName:b.firstName,lastName:b.lastName});
       }
 
       let membership = await maybeOne<any>(q,
@@ -728,14 +713,15 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     let user:any=null;
     const adminId=org.settings?.primaryAdminUserId;
     if(adminId){
-      user=await maybeOne<any>(db,'SELECT id,email,first_name,last_name,status FROM users WHERE id=$1',[adminId]);
+      user=await maybeOne<any>(db,'SELECT user_id id,email,first_name,last_name,status FROM school_accounts WHERE user_id=$1 AND organisation_id=$2',[adminId,id]);
     }
     if(!user&&org.primary_contact_email){
       user=await maybeOne<any>(db,
-        `SELECT u.id,u.email,u.first_name,u.last_name,u.status
+        `SELECT u.id,sa.email,sa.first_name,sa.last_name,sa.status
          FROM users u
          JOIN organisation_memberships m ON m.user_id=u.id
-         WHERE m.organisation_id=$1 AND lower(u.email)=lower($2)
+         JOIN school_accounts sa ON sa.user_id=u.id AND sa.organisation_id=m.organisation_id
+         WHERE m.organisation_id=$1 AND lower(sa.email)=lower($2)
          ORDER BY m.joined_at LIMIT 1`,
         [id,org.primary_contact_email]
       );
@@ -796,7 +782,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     if (!customer) throw notFound('School customer');
     const adminId = customer.settings?.primaryAdminUserId;
     if (!adminId) throw notFound('Primary school administrator');
-    const admin = await one<any>(db, 'SELECT id,email,first_name,last_name FROM users WHERE id=$1', [adminId]);
+    const admin = await one<any>(db, 'SELECT user_id id,email,first_name,last_name FROM school_accounts WHERE user_id=$1 AND organisation_id=$2', [adminId,id]);
     const entitlement = await getEntitlements(db, a.organisationId, id);
     const job = await one<any>(db, "INSERT INTO saas_provisioning_jobs(provider_organisation_id,customer_organisation_id,product_id,action,status,details,created_by) SELECT $1,$2,p.id,'create_school_tenant','running',$3,$4 FROM saas_products p WHERE p.product_key='school' RETURNING id", [a.organisationId, id, JSON.stringify({ retry: true }), a.userId]);
     try {

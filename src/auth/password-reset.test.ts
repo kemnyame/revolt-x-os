@@ -20,18 +20,20 @@ beforeAll(async()=>pg.exec(`
  CREATE TABLE organisation_memberships(id uuid,user_id uuid,organisation_id uuid,status text,joined_at timestamptz);
  CREATE TABLE roles(id uuid,key text); CREATE TABLE membership_roles(membership_id uuid,role_id uuid);
  CREATE TABLE password_reset_tokens(id serial,user_id uuid,token_hash text,used_at timestamptz,expires_at timestamptz,organisation_id uuid,purpose text DEFAULT 'account',requested_ip inet,created_at timestamptz DEFAULT now());
+ CREATE TABLE school_accounts(organisation_id uuid,user_id uuid,email text,status text);
  CREATE TABLE school_credentials(organisation_id uuid,user_id uuid,password_hash text,must_change_password boolean,initialized_at timestamptz,updated_at timestamptz DEFAULT now(),PRIMARY KEY(organisation_id,user_id));
  CREATE TABLE sessions(user_id uuid,organisation_id uuid,revoked_at timestamptz);
  CREATE TABLE saas_customers(customer_organisation_id uuid,customer_type text);
  CREATE TABLE audit_logs(id serial,organisation_id uuid,actor_user_id uuid,session_id uuid,action text,resource_type text,resource_id uuid,outcome text,ip_address text,user_agent text,before_state jsonb,after_state jsonb,metadata jsonb,severity text,source text,previous_event_hash text,event_hash text,integrity_version int,created_at timestamptz);`));
 beforeEach(async()=>{
-  await pg.exec('TRUNCATE organisations,users,organisation_memberships,password_reset_tokens,school_credentials,sessions,saas_customers,audit_logs,roles,membership_roles;');
+  await pg.exec('TRUNCATE organisations,users,organisation_memberships,password_reset_tokens,school_accounts,school_credentials,sessions,saas_customers,audit_logs,roles,membership_roles;');
   await client.query("INSERT INTO organisations(id,slug,status,settings) VALUES($1,'alpha','active',jsonb_build_object('primaryAdminUserId',$3::text)),($2,'beta','active',jsonb_build_object('primaryAdminUserId',$3::text))",[org,other,user]);
   await client.query("INSERT INTO users(id,email,password_hash,status,must_change_password,updated_at) VALUES($1,'admin@example.test','os-hash','active',true,now())",[user]);
   await client.query("INSERT INTO organisation_memberships(id,user_id,organisation_id,status,joined_at) VALUES($2,$1,$2,'active',now()-interval '1 day'),($3,$1,$3,'active',now())",[user,org,other]);
   await client.query("INSERT INTO roles VALUES($1,'owner');",[user]);
   await client.query('INSERT INTO membership_roles VALUES($1,$3),($2,$3)',[org,other,user]);
   await client.query("INSERT INTO saas_customers VALUES($1,'school'),($2,'school')",[org,other]);
+  await client.query("INSERT INTO school_accounts VALUES($1,$3,'admin@example.test','active'),($2,$3,'admin@example.test','active')",[org,other,user]);
   await client.query("INSERT INTO school_credentials VALUES($1,$3,'alpha-hash',true,now(),now()),($2,$3,'beta-hash',false,now(),now())",[org,other,user]);
   await client.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose) VALUES($1,$2,now()+interval '30 minutes',$3,'school_admin')",[user,hash,org]);
   await client.query('INSERT INTO sessions VALUES($1,$2,NULL),($1,$3,NULL)',[user,org,other]);
@@ -54,8 +56,8 @@ describe('independent OS and School password recovery',()=>{
   });
   it('rejects expired tokens, disabled accounts and stale administrator assignments',async()=>{
     await client.query("UPDATE password_reset_tokens SET expires_at=now()-interval '1 minute'");await expect(reset()).rejects.toMatchObject({statusCode:401});
-    await client.query("UPDATE password_reset_tokens SET expires_at=now()+interval '30 minutes'");await client.query("UPDATE users SET status='disabled'");await expect(reset()).rejects.toMatchObject({statusCode:401});
-    await client.query("UPDATE users SET status='active'");await client.query("UPDATE organisations SET settings='{}'");await expect(reset()).rejects.toMatchObject({statusCode:401});expect((await state()).token.used_at).toBeNull();
+    await client.query("UPDATE password_reset_tokens SET expires_at=now()+interval '30 minutes'");await client.query("UPDATE school_accounts SET status='disabled'");await expect(reset()).rejects.toMatchObject({statusCode:401});
+    await client.query("UPDATE school_accounts SET status='active'");await client.query("UPDATE organisations SET settings='{}'");await expect(reset()).rejects.toMatchObject({statusCode:401});expect((await state()).token.used_at).toBeNull();
   });
   it('rolls back a school change if its session revocation bridge fails',async()=>{
     await expect(reset(undefined,async()=>{throw Object.assign(new Error('School unavailable'),{statusCode:503})})).rejects.toMatchObject({statusCode:503});

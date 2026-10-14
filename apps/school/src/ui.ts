@@ -275,14 +275,14 @@ async function boot(){try{
   if(E('nav'))E('nav').onclick=function(e){var b=e.target.closest('button[data-p]');if(b)page(b.dataset.p)};
   var refreshButton=E('refresh');if(refreshButton)refreshButton.onclick=function(){page(current)};
   var profileButton=E('myProfile');if(profileButton)profileButton.onclick=openMyProfile;
-  var signOutButton=E('signOut');if(signOutButton)signOutButton.onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace('/login')};
+  var signOutButton=E('signOut');if(signOutButton)signOutButton.onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace(window.rxSessionGuard.loginTarget())};
   setupGlobalSearch();
   E('loading').classList.add('hide');E('app').classList.remove('hide');var contentRoot=E('content');if(contentRoot){new MutationObserver(function(){enhancePagination(contentRoot)}).observe(contentRoot,{childList:true,subtree:true})}
   var initialPath=location.pathname.match(/^\\/students\\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1]){selectedStudentId=decodeURIComponent(initialPath[1]);await page('studentdetail');}else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage&&navAllowed(n)}))await page(requestedPage);else if(savedPage&&nav.some(function(n){return n[0]===savedPage&&navAllowed(n)}))await page(savedPage);else await page('dashboard')
 }catch(e){
   E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app retries transient network delays automatically and can explicitly wake Core OS.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="wakeSchoolCore" class="primary">Wake Core OS</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Retry</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button></div></div>';
   if(E('retrySchool'))E('retrySchool').onclick=function(){location.reload()};
-  if(E('returnSchoolLogin'))E('returnSchoolLogin').onclick=function(){location.replace('/login')};
+  if(E('returnSchoolLogin'))E('returnSchoolLogin').onclick=function(){location.replace(window.rxSessionGuard.loginTarget())};
   if(E('wakeSchoolCore'))E('wakeSchoolCore').onclick=async function(){
     var btn=E('wakeSchoolCore');btn.disabled=true;btn.textContent='Starting Core OS...';E('schoolConnectionStatus').textContent='Starting Core OS in the background...';
     try{
@@ -1816,7 +1816,7 @@ else if(p==='attendance'){
 // screen forever if an unexpected browser-side exception occurs before boot completes.
 Promise.resolve().then(function(){return boot()}).catch(function(e){
   var l=E('loading');
-  if(l){l.innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e&&e.message?e.message:'Unable to initialise Revolt-X School')+'</p><div class="actions" style="justify-content:center;margin-top:14px"><button id="fatalRetrySchool" class="primary">Retry</button><button id="fatalLoginSchool" class="ghost">Return to sign in</button></div></div>';var r=E('fatalRetrySchool'),s=E('fatalLoginSchool');if(r)r.onclick=function(){location.reload()};if(s)s.onclick=function(){location.replace('/login')}}
+  if(l){l.innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e&&e.message?e.message:'Unable to initialise Revolt-X School')+'</p><div class="actions" style="justify-content:center;margin-top:14px"><button id="fatalRetrySchool" class="primary">Retry</button><button id="fatalLoginSchool" class="ghost">Return to sign in</button></div></div>';var r=E('fatalRetrySchool'),s=E('fatalLoginSchool');if(r)r.onclick=function(){location.reload()};if(s)s.onclick=function(){location.replace(window.rxSessionGuard.loginTarget())}}
 });
 })();
 </script>

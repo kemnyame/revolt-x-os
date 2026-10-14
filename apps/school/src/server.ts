@@ -1,6 +1,8 @@
+import {createSchoolTenantPages,rememberedSchoolContext} from './tenant-pages.js';
+import {schoolTenantDocument,schoolWorkspaceUrl} from './tenant-ui.js';
 import { registerSchoolClassCatalogue } from './class-catalogue.js';
 import { schoolRecordId } from './record-id.js';
-import { setSessionDeadline, schoolSessionLoginPath } from './session-ui.js';
+import { setSessionDeadline } from './session-ui.js';
 import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -106,7 +108,8 @@ async function requestActor(request:any){
     if(student)return{organisationId:student.organisation_id,userId:null,actorType:'student',portalActorId:student.student_id};
   }
 
-  const school=await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles ORDER BY created_at LIMIT 1');
+  const slug=String(request.headers['x-revolt-school']||request.body?.schoolId||request.body?.schoolSlug||request.body?.organisationId||request.query?.school||'').trim();
+  const school=slug?await maybeOne<any>(db,'SELECT organisation_id FROM school_profiles WHERE lower(tenant_slug)=lower($1) OR organisation_id::text=$1',[slug]):null;
   return{organisationId:school?.organisation_id??null,userId:null,actorType:'public'};
 }
 app.addHook('onRequest',async request=>{requestStartedAt.set(String(request.id),Date.now())});
@@ -353,7 +356,7 @@ async function schoolLicence(organisationId:string,force=false){
 
 async function resolveTenantSchool(slug?:string|null){
   if(slug){
-    const school=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE tenant_slug=$1',[slug]);
+    const school=await maybeOne<any>(db,'SELECT * FROM school_profiles WHERE lower(tenant_slug)=lower($1) OR organisation_id::text=$1',[slug]);
     if(!school)throw fail(404,'School code was not found');
     return school;
   }
@@ -1379,6 +1382,8 @@ async function guardianAuth(request:any){
     FROM guardian_portal_sessions gps JOIN guardians g ON g.id=gps.guardian_id
     WHERE gps.token_hash=$1 AND gps.revoked_at IS NULL AND gps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
   if(!row)throw fail(401,'Parent portal session has expired');
+  const expected=String(request.headers['x-revolt-school']||'').trim();
+  if(expected){const school=await resolveTenantSchool(expected);if(school.organisation_id!==row.organisation_id)throw fail(401,'This session belongs to another school. Open your school sign-in link.')}
   setSessionDeadline(request,row.session_expires_at);
   return row;
 }
@@ -1396,6 +1401,8 @@ async function studentAuth(request:any){
     FROM student_portal_sessions sps JOIN students s ON s.id=sps.student_id
     WHERE sps.token_hash=$1 AND sps.revoked_at IS NULL AND sps.expires_at>now() LIMIT 1`,[hashPortalToken(token)]);
   if(!row)throw fail(401,'Student portal session has expired');
+  const expected=String(request.headers['x-revolt-school']||'').trim();
+  if(expected){const school=await resolveTenantSchool(expected);if(school.organisation_id!==row.organisation_id)throw fail(401,'This session belongs to another school. Open your school sign-in link.')}
   setSessionDeadline(request,row.session_expires_at);
   return row;
 }
@@ -1738,52 +1745,37 @@ async function calculateClassRank(orgId:string,classroomId:string,termId:string,
   `,[orgId,classroomId,termId,studentId]);
 }
 
-async function openSchoolDocument(request:any,p:any,next:string){
-  const token=requestSessionToken(request);
-  let session:any=null;
-  if(token&&token.startsWith('rxs_')){
-    session=await maybeOne<any>(db,`SELECT core_context,
-      (revoked_at IS NULL AND expires_at>now() AND last_used_at>now()-make_interval(mins=>COALESCE((
-        SELECT idle_timeout_minutes FROM school_security_settings sss WHERE sss.organisation_id=school_sessions.organisation_id
-      ),30))) active FROM school_sessions WHERE token_hash=$1`,[createHash('sha256').update(token).digest('hex')]);
-  }
-  if(!session?.active){
-    const secure=config.NODE_ENV==='production'?'; Secure':'';
-    p.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
-    return p.redirect(schoolSessionLoginPath(session?.core_context,next,Boolean(token)));
-  }
-  return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(schoolFrontend);
-}
+const {schoolLoginDocument,openSchoolDocument,rememberSchoolLogin,signOutSchoolSession}=createSchoolTenantPages({db,config,resolveTenantSchool,schoolFrontend,requestSessionToken});
 app.get('/',async(request,p)=>openSchoolDocument(request,p,'/'));
 app.get('/students/:id',async(request,p)=>openSchoolDocument(request,p,request.url));
 app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('application/javascript; charset=utf-8').send(schoolAppScript));
 // Versioned presentation assets are shared by every School portal.
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
-await registerSchoolMobile(app);
+await registerSchoolMobile(app,{resolveSchool:async request=>{const school=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;return school?resolveTenantSchool(String(school)):null}});
 // Human-readable tenant URLs keep the school code in the address while every request
 // still resolves the tenant from the database. This avoids a separate deployment per school.
-app.get('/s/:school/login',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(loginFrontend)});
-app.get('/s/:school/admin-login',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(adminLoginFrontend)});
-app.get('/s/:school/change-password',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.type('text/html; charset=utf-8').send(passwordChangeFrontend)});
-app.get('/s/:school/admin-password-reset',async(request:any,p)=>{await resolveTenantSchool(String(request.params.school));return p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend)});
-app.get('/login',async(_r,p)=>p.type('text/html; charset=utf-8').send(loginFrontend));
+app.get('/s/:school/login',async(request:any,p)=>schoolLoginDocument(request,p,loginFrontend));
+app.get('/s/:school/admin-login',async(request:any,p)=>schoolLoginDocument(request,p,adminLoginFrontend,true));
+app.get('/s/:school/change-password',async(request:any,p)=>{const school=await resolveTenantSchool(String(request.params.school));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(passwordChangeFrontend,school))});
+app.get('/s/:school/admin-password-reset',async(request:any,p)=>{const school=await resolveTenantSchool(String(request.params.school));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(adminPasswordResetFrontend,school))});
+app.get('/login',async(request,p)=>schoolLoginDocument(request,p,loginFrontend));
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
-app.get('/admin-login',async(_r,p)=>p.type('text/html; charset=utf-8').send(adminLoginFrontend));
+app.get('/admin-login',async(request,p)=>schoolLoginDocument(request,p,adminLoginFrontend,true));
 app.get('/admin-password-reset',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend));
-app.get('/teacher-login',async(_r,p)=>p.redirect('/login',302));
-app.get('/headteacher-login',async(_r,p)=>p.redirect('/login',302));
-app.get('/bursar-login',async(_r,p)=>p.redirect('/login',302));
-app.get('/registrar-login',async(_r,p)=>p.redirect('/login',302));
-app.get('/demo',async(_r,p)=>p.redirect('/login',302));
-app.get('/main',async(_r,p)=>p.redirect('/login',302));
-app.get('/quick-login',async(_r,p)=>p.redirect('/login',302));
-app.get('/parent',async(_r,p)=>p.type('text/html; charset=utf-8').send(parentFrontend));
-app.get('/teacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
-app.get('/headteacher',async(_r,p)=>p.type('text/html; charset=utf-8').send(teacherFrontend));
+app.get('/teacher-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/headteacher-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/bursar-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/registrar-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/demo',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/main',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/quick-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
+app.get('/parent',async(request:any,p)=>{const slug=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;if(!slug)return p.type('text/html; charset=utf-8').send(parentFrontend);const school=await resolveTenantSchool(String(slug));if(!request.query?.school)return p.redirect(schoolWorkspaceUrl(school.tenant_slug,'/parent'));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(parentFrontend,school))});
+app.get('/teacher',async(request:any,p)=>{const slug=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;if(!slug)return p.type('text/html; charset=utf-8').send(teacherFrontend);const school=await resolveTenantSchool(String(slug));if(!request.query?.school)return p.redirect(schoolWorkspaceUrl(school.tenant_slug,'/teacher'));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(teacherFrontend,school))});
+app.get('/headteacher',async(request:any,p)=>{const slug=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;if(!slug)return p.type('text/html; charset=utf-8').send(teacherFrontend);const school=await resolveTenantSchool(String(slug));if(!request.query?.school)return p.redirect(schoolWorkspaceUrl(school.tenant_slug,'/headteacher'));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(teacherFrontend,school))});
 app.get('/bursar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
 app.get('/registrar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
-app.get('/student',async(_r,p)=>p.type('text/html; charset=utf-8').send(studentFrontend));
+app.get('/student',async(request:any,p)=>{const slug=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;if(!slug)return p.type('text/html; charset=utf-8').send(studentFrontend);const school=await resolveTenantSchool(String(slug));if(!request.query?.school)return p.redirect(schoolWorkspaceUrl(school.tenant_slug,'/student'));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(studentFrontend,school))});
 app.get('/admissions',async(_r,p)=>p.type('text/html; charset=utf-8').send(admissionsFrontend));
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
@@ -1939,7 +1931,8 @@ async function handleSchoolAdminLogin(request:any,reply:any){
 
   const session=await createSchoolStaffSession(coreContext,'admin_email');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure);
+  rememberSchoolLogin(reply,coreContext);
+  reply.header('set-cookie',[String(reply.getHeader('set-cookie')),'rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure]);
 
   await audit(user.organisation_id,user.id,'school.admin_signed_in','school_session',null,{
     role:'school_admin',email:user.email,school:school.school_name
@@ -1953,8 +1946,8 @@ async function handleSchoolAdminLogin(request:any,reply:any){
     user:{id:user.id,email:user.email,firstName:coreContext.first_name,lastName:coreContext.last_name},
     school:{id:school.tenant_slug,name:school.school_name},
     requiresPasswordChange:Boolean(user.must_change_password),
-    passwordChangeUrl:'/change-password',
-    redirectTo:'/'
+    passwordChangeUrl:'/s/'+encodeURIComponent(school.tenant_slug)+'/change-password',
+    redirectTo:schoolWorkspaceUrl(school.tenant_slug)
   });
 }
 
@@ -2021,7 +2014,8 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
 
   const session=await createSchoolStaffSession(coreContext,'staff_id');
   const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure);
+  rememberSchoolLogin(reply,coreContext);
+  reply.header('set-cookie',[String(reply.getHeader('set-cookie')),'rx_school_session='+encodeURIComponent(session.localToken)+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+(8*60*60)+secure]);
 
   const redirectTo=roleWorkspace(membership);
   await audit(user.organisation_id,user.id,'staff.signed_in','school_session',null,{
@@ -2036,23 +2030,14 @@ async function handleSchoolStaffIdLogin(request:any,reply:any){
     user:{id:user.id,staffId:user.employee_number??user.staff_id,firstName:coreContext.first_name,lastName:coreContext.last_name},
     school:{id:school.tenant_slug,name:school.school_name},
     requiresPasswordChange:Boolean(user.must_change_password),
-    passwordChangeUrl:'/change-password',
-    redirectTo
+    passwordChangeUrl:'/s/'+encodeURIComponent(school.tenant_slug)+'/change-password',
+    redirectTo:schoolWorkspaceUrl(school.tenant_slug,redirectTo)
   });
 }
 
 app.post('/api/auth/staff-id-login',async(request,reply)=>withSchoolAuthThrottle(db,'school_staff',request,()=>handleSchoolStaffIdLogin(request,reply)));
 
-app.post('/api/auth/logout',async(request,reply)=>{
-  const token=requestSessionToken(request);
-  if(token&&token.startsWith('rxs_')){
-    const hash=createHash('sha256').update(token).digest('hex');
-    await db.query('UPDATE school_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL',[hash]);
-  }
-  const secure=config.NODE_ENV==='production'?'; Secure':'';
-  reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
-  return reply.send({signedOut:true});
-});
+app.post('/api/auth/logout',signOutSchoolSession);
 
 app.post('/api/auth/preview',async(_r,p)=>{
   const base=config.CORE_OS_URL.replace(/\/$/,'');

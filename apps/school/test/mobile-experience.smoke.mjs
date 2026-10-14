@@ -44,7 +44,7 @@ function harness(role='teacher',handler,options={}){
   return response([]);
  };
  window.fetch=fetch;
- const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage(options.sessions??{[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(options.saved),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:options.search||'',replace(){}},URL,URLSearchParams,Set,AbortController,Date:options.clock?.Date||Date,setTimeout:options.clock?.setTimeout||setTimeout,clearTimeout:options.clock?.clearTimeout||clearTimeout,addEventListener:()=>{},FileReader:class{}});
+ const context=vm.createContext({window,document,navigator:{onLine:true},fetch,sessionStorage:storage(options.sessions??{[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'rxs_test'}),localStorage:storage(options.saved),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:options.search??'?school=test-school',replace(){}},URL,URLSearchParams,Set,AbortController,Date:options.clock?.Date||Date,setTimeout:options.clock?.setTimeout||setTimeout,clearTimeout:options.clock?.clearTimeout||clearTimeout,addEventListener:()=>{},FileReader:class{}});
  vm.runInContext(schoolSignInStartupScript+mobileWorkflowScript+mobileExperienceScript,context);
  const click=id=>document.getElementById(id).click();
  const submit=id=>document.getElementById(id).onsubmit({preventDefault(){}});
@@ -55,7 +55,7 @@ function harness(role='teacher',handler,options={}){
 test('mobile teacher login resolves school UUIDs, keeps failed credentials, prevents duplicate requests and opens first password change',async()=>{
  let attempts=0,finish;
  const h=harness('teacher',async(path,opt)=>{
-  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha School',organisationId:'org-alpha'},{id:'beta',name:'Beta School',organisationId:'org-beta'}]);
+  if(path.startsWith('/api/auth/school-context?'))return response({id:'alpha',name:'Alpha School',organisationId:'org-alpha'});
   if(path==='/api/auth/staff-id-login'){
    attempts++;if(attempts===1)return new Promise(resolve=>finish=()=>resolve(response({error:{code:'SCHOOL_SIGN_IN_UNAVAILABLE',message:'The sign-in service is starting or unavailable. Please try again in a moment.'}},503)));
    return response({accessToken:'rxs_fixture_fresh',school:{id:'alpha'},requiresPasswordChange:true});
@@ -88,18 +88,18 @@ test('mobile resumes a required staff password change after the app is reopened'
 });
 
 test('unavailable schools cannot submit a mobile staff login',async()=>{
- const h=harness('teacher',async path=>path==='/api/auth/schools'?response([]):null,{sessions:{}});
- await waitFor(()=>h.document.getElementById('mError')?.textContent.includes('No schools'));
+ const h=harness('teacher',async path=>path.startsWith('/api/auth/school-context?')?response({error:{message:'This school link is unavailable.'}},404):null,{sessions:{},search:'?school=missing'});
+ await waitFor(()=>h.document.getElementById('mError')?.textContent.includes('unavailable'));
  assert.equal(h.document.getElementById('mLoginSubmit').disabled,true);await h.submit('mLoginForm');assert.equal(h.writes.length,0);
 });
 
-test('mobile teacher and parent directories recover without losing entries or posting credentials during loading',async()=>{
+test('mobile teacher and parent school contexts recover without losing entries or posting credentials during loading',async()=>{
  for(const role of ['teacher','parent']){
   const clock=virtualClock();let attempts=0;
   const h=harness(role,async path=>{
-   if(path!=='/api/auth/schools')return null;
+   if(!path.startsWith('/api/auth/school-context?'))return null;
    attempts++;if(attempts===1)throw Error('Dropped connection');
-   return attempts===2?response({error:{message:'Service starting'}},503):response([{id:'alpha',name:'Alpha'}]);
+   return attempts===2?response({error:{message:'Service starting'}},503):response({id:'alpha',name:'Alpha'});
   },{sessions:{},search:'?school=alpha',clock});
   await waitFor(()=>h.document.getElementById('mLoginForm'));
   if(role==='teacher'){h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','KeepEnteredPassword123!')}
@@ -111,9 +111,9 @@ test('mobile teacher and parent directories recover without losing entries or po
  }
 });
 
-test('mobile reloads an unavailable school list on the same form with staff credentials retained',async()=>{
+test('mobile reloads an unavailable school context on the same form with staff credentials retained',async()=>{
  let available=false;const clock=virtualClock();
- const h=harness('teacher',async path=>path==='/api/auth/schools'?(available?response([{id:'alpha',name:'Alpha'}]):response({},503)):null,{sessions:{},search:'?school=alpha',clock});
+ const h=harness('teacher',async path=>path.startsWith('/api/auth/school-context?')?(available?response({id:'alpha',name:'Alpha'}):response({},503)):null,{sessions:{},search:'?school=alpha',clock});
  await waitFor(()=>h.document.getElementById('mLoginForm'));h.change('mLoginStaff','STF-000001');h.change('mLoginPassword','KeepEnteredPassword123!');
  await waitFor(()=>h.document.getElementById('mLoginReload')?.hidden===false);
  available=true;await h.click('mLoginReload');await waitFor(()=>h.document.getElementById('mLoginSubmit')?.disabled===false);
@@ -124,7 +124,7 @@ test('mobile sign-in automatically wakes Core before sending a staff password to
  let probes=0;const order=[];
  const h=harness('teacher',async(path,options)=>{
   order.push(path);
-  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha'}]);
+  if(path.startsWith('/api/auth/school-context?'))return response({id:'alpha',name:'Alpha'});
   if(path==='/api/system/core-status')return response({core:{url:'https://core.example.test',healthy:++probes>1,status:probes>1?200:429}});
   if(path==='https://core.example.test/health/live'){assert.equal(options.credentials,'omit');assert.equal(options.body,undefined);return{ok:false,status:0,json:()=>assert.fail()}}
   if(path==='/api/auth/staff-id-login')return response({accessToken:'rxs_fixture_fresh',school:{id:'alpha'}});
@@ -137,7 +137,7 @@ test('mobile sign-in automatically wakes Core before sending a staff password to
 test('mobile preserves staff entries without posting a password if the original bridge never becomes ready',async()=>{
  const clock=virtualClock();
  const h=harness('teacher',async path=>{
-  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha'}]);
+  if(path.startsWith('/api/auth/school-context?'))return response({id:'alpha',name:'Alpha'});
   if(path==='/api/system/core-status')return response({core:{url:'https://core.example.test',healthy:false,status:429}});
   if(path==='https://core.example.test/health/live')return response(null,429);
  },{sessions:{},search:'?school=alpha',clock});
@@ -149,7 +149,7 @@ test('mobile preserves staff entries without posting a password if the original 
 test('mobile teacher sign-in recovers automatically after a dropped first connection and a minute of cold-start replies',async()=>{
  const clock=virtualClock();let probes=0;
  const h=harness('teacher',async(path)=>{
-  if(path==='/api/auth/schools')return response([{id:'alpha',name:'Alpha'}]);
+  if(path.startsWith('/api/auth/school-context?'))return response({id:'alpha',name:'Alpha'});
   if(path==='/api/system/core-status'){
    if(++probes===1)throw Error('connection dropped');
    return response({core:{url:'https://core.example.test',healthy:clock.now()>=60000,status:clock.now()>=60000?200:429}});
@@ -240,7 +240,7 @@ test('parent UI switches linked children and does not offer paid fee actions',as
 test('mobile session expiry returns teachers and parents to their own mobile sign-in screens',async()=>{
  for(const role of ['teacher','parent']){
   let target;const window={fetch:async()=>response({error:{message:'Expired'}},401)};
-  const context={window,URL,URLSearchParams,Date,setTimeout,clearTimeout,sessionStorage:storage({[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'test'}),localStorage:storage({rx_school_id:'test-school'}),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:'',replace:url=>target=url}};
+  const context={window,URL,URLSearchParams,Headers,Date,setTimeout,clearTimeout,sessionStorage:storage({[role==='teacher'?'rx_teacher_token':'rx_parent_token']:'test'}),localStorage:storage({rx_school_id:'test-school'}),location:{origin:'https://school.example',href:'https://school.example/mobile/'+role,pathname:'/mobile/'+role,search:'?school=test-school',replace:url=>target=url}};
   vm.runInNewContext(schoolSessionScript(role),context);await assert.rejects(()=>window.fetch('/api/'+role+'/context'));
   assert.equal(target,'/mobile/'+role+'?school=test-school&expired=1');
  }
