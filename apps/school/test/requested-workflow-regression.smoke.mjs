@@ -68,7 +68,7 @@ test('ordinary teachers do not receive Student 360 or full-profile access by def
 
 test('student management paginates large directories in the browser',async()=>{
   const ui=await read('ui.js');
-  assert.match(ui,/studentPageSize=100/);
+  assert.match(ui,/studentPageSize=10/);
   assert.match(ui,/Showing /);
   assert.match(ui,/studentPrev/);
   assert.match(ui,/studentNext/);

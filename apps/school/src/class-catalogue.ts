@@ -20,10 +20,12 @@ export const schoolClassCatalogueQuery = `
   ORDER BY y.start_date DESC,g.level_order,c.name,c.stream,c.id`;
 
 export async function registerSchoolClassCatalogue(app:any,deps:any){
-  const {db,config,authorize}=deps;
+  const {db,config,authorize,schoolRoleProfile}=deps;
   app.get('/api/classes',async(request:any)=>{
     const a=await authorize(request,db,config,'academic.view');
     const q=z.object({academicYearId:schoolRecordId.optional(),includeAllYears:z.enum(['true','false']).default('false')}).parse(request.query);
-    return(await db.query(schoolClassCatalogueQuery,[a.core.organisation_id,q.academicYearId??null,q.includeAllYears==='true'])).rows;
+    const teacher=schoolRoleProfile&&(await schoolRoleProfile(db,a.core.organisation_id,a.role))?.portal_mode==='teacher';
+    const sql=teacher?schoolClassCatalogueQuery.replace('ORDER BY y.start_date',"AND y.status='active' AND y.is_locked=false AND c.is_active=true ORDER BY y.start_date"):schoolClassCatalogueQuery;
+    return(await db.query(sql,[a.core.organisation_id,q.academicYearId??null,!teacher&&q.includeAllYears==='true'])).rows;
   });
 }

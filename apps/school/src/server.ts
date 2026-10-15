@@ -33,6 +33,10 @@ import { checkMessagingConnections, initializePaystack, normalizeMessagePhone, p
 import { registerFinanceLeaveRoutes } from './finance-leave-routes.js';
 import { registerAccountingRoutes } from './accounting-routes.js';
 import { registerHrPayrollRoutes } from './hr-payroll-routes.js';
+import { activateYearPeriod, activateTermPeriod, attendanceByClass, registerTeachingPeriodGuard } from './academic-periods.js';
+import {registerTimetableAgentRoutes} from './timetable-routes.js';
+import {registerOperationsReports} from './operations-reports.js';
+import {registerTeacherOversight} from './teacher-oversight.js';
 import { registerSchoolRemediationRoutes } from './school-remediation-routes.js';
 import { registerReportFeePolicyRoutes, reportDeliveryPolicy, studentsWithOutstandingFees } from './report-fee-policy.js';
 import {
@@ -141,6 +145,7 @@ const fail=(statusCode:number,message:string)=>Object.assign(new Error(message),
 // Cookie-authenticated unsafe requests must originate from this School host. This protects
 // state-changing routes against cross-site request forgery while still allowing trusted
 // server-to-server requests that do not send a browser Origin header.
+await registerTeachingPeriodGuard(app,{db,config,authorize,schoolRoleProfile,fail});
 app.addHook('preHandler',async request=>{
   if(['GET','HEAD','OPTIONS'].includes(request.method))return;
   const cookie=String(request.headers.cookie||'');
@@ -233,10 +238,10 @@ async function createSchoolStaffSession(coreContext:any,source:'core_exchange'|'
 }
 
 async function activeYear(org:string){
-  return maybeOne<any>(db,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' ORDER BY start_date DESC LIMIT 1",[org]);
+  return maybeOne<any>(db,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' AND is_locked=false ORDER BY start_date DESC LIMIT 1",[org]);
 }
 async function activeTerm(org:string){
-  return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND t.status='active' ORDER BY t.term_no LIMIT 1",[org]);
+  return maybeOne<any>(db,"SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND y.status='active' AND y.is_locked=false AND t.status='active' AND t.is_locked=false ORDER BY t.term_no LIMIT 1",[org]);
 }
 
 async function ensureTeachingRole(a:any){
@@ -261,7 +266,7 @@ function requireCoreServiceRequest(request:any){
 const ALL_COMMERCIAL_MODULES=[
   'school.core','school.admissions','school.students','school.academics','school.attendance','school.teaching',
   'school.timetable','school.fees','school.payments','school.finance','school.parent_portal','school.student_portal',
-  'school.communications','school.staff','school.controls','school.analytics'
+  'school.communications','school.staff','school.controls','school.analytics','school.mobile'
 ];
 
 function normalizedLicence(entitlement:any){
@@ -397,6 +402,7 @@ function licenceWithWarning(licence:any){
 
 function requiredCommercialModule(path:string){
   const p=path.split('?')[0] || path;
+  if(/^\/api\/mobile\//.test(p))return 'school.mobile';
   if(/^\/api\/(admissions|public\/admissions)/.test(p))return 'school.admissions';
   if(/^\/api\/(students|student-status|guardians)/.test(p))return 'school.students';
   if(/^\/api\/attendance/.test(p))return 'school.attendance';
@@ -408,7 +414,7 @@ function requiredCommercialModule(path:string){
   if(/^\/api\/parent\//.test(p))return 'school.parent_portal';
   if(/^\/api\/student\//.test(p))return 'school.student_portal';
   if(/^\/api\/(announcements|communications|notification)/.test(p))return 'school.communications';
-  if(/^\/api\/(staff|leave)/.test(p))return 'school.staff';
+  if(/^\/api\/(staff|leave|hr|payroll)/.test(p))return 'school.staff';
   if(/^\/api\/(roles|approvals|system\/audit)/.test(p))return 'school.controls';
   if(/^\/api\/(reports|analytics)/.test(p))return 'school.analytics';
   if(/^\/api\/(academic-years|terms|grade-levels|classes|subjects|assessments|grading|promotions|report-cards)/.test(p))return 'school.academics';
@@ -536,6 +542,8 @@ app.post('/api/internal/provision',async request=>{
       accountant:['fees.view','finance.','tax.','students.view','reports.view','academic.view','screen.dashboard','screen.finance','screen.student_statements'],
       registrar:['academic.','students.','reports.','admissions.','timetable.','communications.','promotion.','portals.','screen.dashboard','screen.setup','screen.admissions','screen.students','screen.academic_manager','screen.promotions','screen.report_cards','screen.timetable','screen.communications','screen.portals','students.profile','students.360']
     };
+    for(const role of ['headteacher','registrar'])roleRules[role]!.push('payroll.view','payroll.manage','payroll.publish');
+    for(const role of ['bursar','accountant'])roleRules[role]!.push('payroll.view','payroll.process','reports.operations');
     const caps=(await client.query('SELECT key FROM school_capabilities')).rows.map((x:any)=>String(x.key));
     for(const [role,prefixes] of Object.entries(roleRules)){
       for(const key of caps){
@@ -714,6 +722,7 @@ app.get('/api/internal/backup-snapshot',async request=>{
 });
 
 registerSchoolReportingRoutes(app,{db,requireCoreServiceRequest});
+await registerOperationsReports(app,{db,config,authorize,effectiveCapabilities,schoolRoleProfile,schoolLicence,fail});
 app.get('/api/internal/tenants',async request=>{
   requireCoreServiceRequest(request);
   const rows=(await db.query(`
@@ -1752,7 +1761,17 @@ app.get('/school-app.js',async(_r,p)=>p.header('cache-control','no-store, max-ag
 // Versioned presentation assets are shared by every School portal.
 app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolDesignCss));
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
-await registerSchoolMobile(app,{resolveSchool:async request=>{const school=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;return school?resolveTenantSchool(String(school)):null}});
+async function assertMobileLicence(school:any){
+  const licence=await schoolLicence(school.organisation_id);
+  if(licence.status!=='legacy'&&(!licence.licensed||!licence.modules.includes('school.mobile')))throw fail(403,'The mobile app is included from the Growth plan. Use your school web portal or ask your administrator to review the plan.');
+}
+await registerSchoolMobile(app,{resolveSchool:async request=>{const school=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;return school?resolveTenantSchool(String(school)):null},assertAccess:assertMobileLicence});
+app.addHook('preHandler',async request=>{
+  if(!String(request.url).startsWith('/api/mobile/'))return;
+  const body:any=request.body||{},query:any=request.query||{};
+  const slug=body.schoolSlug||query.school||String(request.headers['x-revolt-school']||'');
+  if(slug)await assertMobileLicence(await resolveTenantSchool(slug));
+});
 // Human-readable tenant URLs keep the school code in the address while every request
 // still resolves the tenant from the database. This avoids a separate deployment per school.
 app.get('/s/:school/login',async(request:any,p)=>schoolLoginDocument(request,p,loginFrontend));
@@ -2335,11 +2354,12 @@ app.get('/api/dashboard',async request=>{
   return{
     students,classes,subjects,staff_users:staffUsers,present_today:presentToday,absent_today:absentToday,
     payments_received:paymentsReceived,fees_billed:feesBilled,activeYear:y,activeTerm:t,
+    attendanceByClass:await attendanceByClass(db,a.core.organisation_id).catch(()=>{warnings.push('class attendance');return[]}),
     degraded:warnings.length>0,warnings
   };
 });
 
-app.get('/api/academic-years',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM academic_years WHERE organisation_id=$1 ORDER BY start_date DESC',[a.core.organisation_id])).rows});
+app.get('/api/academic-years',async request=>{const a=await authorize(request,db,config,'academic.view');const teacher=(await schoolRoleProfile(db,a.core.organisation_id,a.role))?.portal_mode==='teacher';return (await db.query("SELECT * FROM academic_years WHERE organisation_id=$1 AND ($2::boolean=false OR (status='active' AND is_locked=false)) ORDER BY start_date DESC",[a.core.organisation_id,teacher])).rows});
 
 app.post('/api/academic-years',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
@@ -2352,6 +2372,7 @@ app.post('/api/academic-years',async(request,reply)=>{
     if(source&&new Date(created.start_date)>new Date(source.start_date)){
       await ensureRolloverClassStructure(client,a.core.organisation_id,source.id,created.id);
     }
+    if(!source)return activateYearPeriod(client,a.core.organisation_id,created.id,a.core.id);
     return created;
   });
   await audit(a.core.organisation_id,a.core.id,'academic_year.created','academic_year',row.id,{fixedTerms:true});
@@ -2569,6 +2590,7 @@ app.post('/api/academic-years/:id/activate',async request=>{
   const a=await authorize(request,db,config,'academic.edit');
   const {id}=z.object({id:schoolRecordId}).parse(request.params);
   const result=await tx(db,async c=>{
+    await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",['academic:'+a.core.organisation_id]);
     const target=await one<any>(c,'SELECT * FROM academic_years WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
     const source=await maybeOne<any>(c,"SELECT * FROM academic_years WHERE organisation_id=$1 AND status='active' AND id<>$2 ORDER BY start_date DESC LIMIT 1",[a.core.organisation_id,id]);
     let rollover:any={processed:0,promoted:0,repeated:0,completed:0,unresolved:[]};
@@ -2578,15 +2600,14 @@ app.post('/api/academic-years/:id/activate',async request=>{
       await ensureRolloverClassStructure(c,a.core.organisation_id,source.id,target.id);
       rollover=await autoRolloverReleasedReports(c,a.core.organisation_id,source.id,target.id,a.core.id);
     }
-    await c.query("UPDATE academic_years SET status='closed' WHERE organisation_id=$1 AND status='active' AND id<>$2",[a.core.organisation_id,id]);
-    const row=await one<any>(c,"UPDATE academic_years SET status='active' WHERE id=$1 AND organisation_id=$2 RETURNING *",[id,a.core.organisation_id]);
+    const row=await activateYearPeriod(c,a.core.organisation_id,id,a.core.id);
     return{...row,rollover};
   });
   await audit(a.core.organisation_id,a.core.id,'academic_year.activated','academic_year',id,{rollover:result.rollover});
   return result;
 });
 
-app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:schoolRecordId.optional()}).parse(request.query);return (await db.query('SELECT * FROM terms WHERE organisation_id=$1 AND ($2::uuid IS NULL OR academic_year_id=$2) ORDER BY start_date',[a.core.organisation_id,q.academicYearId??null])).rows});
+app.get('/api/terms',async request=>{const a=await authorize(request,db,config,'academic.view');const q=z.object({academicYearId:schoolRecordId.optional()}).parse(request.query);const teacher=(await schoolRoleProfile(db,a.core.organisation_id,a.role))?.portal_mode==='teacher';return (await db.query("SELECT t.* FROM terms t JOIN academic_years y ON y.id=t.academic_year_id WHERE t.organisation_id=$1 AND ($2::uuid IS NULL OR t.academic_year_id=$2) AND ($3::boolean=false OR (t.status='active' AND t.is_locked=false AND y.status='active' AND y.is_locked=false)) ORDER BY t.start_date",[a.core.organisation_id,q.academicYearId??null,teacher])).rows});
 
 app.post('/api/terms',async(request,reply)=>{
   const a=await authorize(request,db,config,'academic.create');
@@ -2596,7 +2617,8 @@ app.post('/api/terms',async(request,reply)=>{
 
 app.post('/api/terms/:id/activate',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
-  return tx(db,async c=>{const target=await one<any>(c,'SELECT * FROM terms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);await c.query("UPDATE terms SET status='closed' WHERE organisation_id=$1 AND academic_year_id=$2 AND status='active' AND id<>$3",[a.core.organisation_id,target.academic_year_id,id]);return one(c,"UPDATE terms SET status='active' WHERE id=$1 RETURNING *",[id])});
+  const row=await tx(db,c=>activateTermPeriod(c,a.core.organisation_id,id,a.core.id));
+  await audit(a.core.organisation_id,a.core.id,'term.activated','term',id);return row;
 });
 
 app.get('/api/grade-levels',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM grade_levels WHERE organisation_id=$1 ORDER BY level_order',[a.core.organisation_id])).rows});
@@ -2612,9 +2634,9 @@ app.post('/api/grade-levels',async(request,reply)=>{
     throw error;
   }
 });
-await registerSchoolClassCatalogue(app,{db,config,authorize});
+await registerSchoolClassCatalogue(app,{db,config,authorize,schoolRoleProfile});
 app.post('/api/classes',async(request,reply)=>{
-  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:schoolRecordId,gradeLevelId:schoolRecordId,name:z.string().trim().min(2).max(120),stream:z.string().trim().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:schoolRecordId.optional()}).parse(request.body);
+  const a=await authorize(request,db,config,'academic.create');const b=z.object({academicYearId:schoolRecordId,gradeLevelId:schoolRecordId.optional(),stage:z.enum(['primary','jhs']).optional(),levelOrder:z.number().int().min(1).max(99).optional(),name:z.string().trim().min(2).max(120),stream:z.string().trim().max(40).optional(),capacity:z.number().int().positive().optional(),classTeacherOsUserId:schoolRecordId.optional()}).parse(request.body);
   const cleanName=b.name.trim(),cleanStream=b.stream?.trim()||null;
   const duplicate=await maybeOne<any>(db,`SELECT id FROM classrooms
     WHERE organisation_id=$1 AND academic_year_id=$2
@@ -2622,7 +2644,20 @@ app.post('/api/classes',async(request,reply)=>{
       AND COALESCE(lower(trim(stream)),'')=COALESCE(lower(trim($4::text)),'')
     LIMIT 1`,[a.core.organisation_id,b.academicYearId,cleanName,cleanStream]);
   if(duplicate)throw fail(409,'This class already exists for the selected academic year');
-  const row=await one<any>(db,'INSERT INTO classrooms(organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,b.gradeLevelId,cleanName,cleanStream,b.capacity??null,b.classTeacherOsUserId??null]);
+  const row=await tx(db,async client=>{
+    const year=await one<any>(client,'SELECT id,is_locked,status FROM academic_years WHERE id=$1 AND organisation_id=$2',[b.academicYearId,a.core.organisation_id]);if(year.is_locked||year.status==='closed')throw fail(423,'Reopen the academic year before creating a class');
+    let gradeId=b.gradeLevelId;
+    if(gradeId)await one(client,'SELECT id FROM grade_levels WHERE id=$1 AND organisation_id=$2 AND is_active=true',[gradeId,a.core.organisation_id]);
+    else{
+      if(!b.stage||!b.levelOrder)throw fail(400,'Choose the school stage and class progression order');
+      const existing=await maybeOne<any>(client,'SELECT * FROM grade_levels WHERE organisation_id=$1 AND level_order=$2',[a.core.organisation_id,b.levelOrder]);
+      if(existing&&existing.stage!==b.stage)throw fail(409,'This progression order already belongs to another school stage. Choose a unique progression order.');
+      if(existing){gradeId=existing.id;await client.query('UPDATE grade_levels SET is_active=true WHERE id=$1',[gradeId])}
+      else gradeId=(await one<any>(client,'INSERT INTO grade_levels(organisation_id,code,name,stage,level_order) VALUES($1,$2,$3,$4,$5) RETURNING id',[a.core.organisation_id,'CL'+b.levelOrder,cleanName.slice(0,80),b.stage,b.levelOrder])).id;
+    }
+    if(b.classTeacherOsUserId)await one(client,`SELECT m.os_user_id FROM school_memberships m JOIN school_roles r ON r.organisation_id=m.organisation_id AND r.key=m.role WHERE m.organisation_id=$1 AND m.os_user_id=$2 AND m.status='active' AND r.can_teach=true AND r.is_active=true`,[a.core.organisation_id,b.classTeacherOsUserId]);
+    return one<any>(client,'INSERT INTO classrooms(organisation_id,academic_year_id,grade_level_id,name,stream,capacity,class_teacher_os_user_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[a.core.organisation_id,b.academicYearId,gradeId,cleanName,cleanStream,b.capacity??null,b.classTeacherOsUserId??null]);
+  });
   await audit(a.core.organisation_id,a.core.id,'class.created','classroom',row.id);return reply.code(201).send(row);
 });
 app.get('/api/subjects',async request=>{const a=await authorize(request,db,config,'academic.view');return (await db.query('SELECT * FROM subjects WHERE organisation_id=$1 ORDER BY name',[a.core.organisation_id])).rows});
@@ -2712,6 +2747,7 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
     academicYearId:schoolRecordId,
     termId:schoolRecordId.nullable().optional(),
     classTeacherOsUserId:schoolRecordId.nullable().optional(),
+    classTeacherTeachesAllSubjects:z.boolean().default(false),
     subjects:z.array(z.object({
       subjectId:schoolRecordId,
       weeklyPeriods:z.number().int().min(1).max(20),
@@ -2727,6 +2763,7 @@ app.put('/api/academic-manager/classes/:classroomId/setup',async request=>{
   if(b.termId)await one<any>(db,'SELECT id FROM terms WHERE id=$1 AND organisation_id=$2 AND academic_year_id=$3',
     [b.termId,a.core.organisation_id,b.academicYearId]);
 
+  if(b.classTeacherTeachesAllSubjects){if(!b.classTeacherOsUserId)throw fail(400,'Assign the Class Teacher before assigning every subject');b.subjects.forEach(s=>{s.teacherOsUserId=b.classTeacherOsUserId})}
   const subjectIds=[...new Set(b.subjects.map(x=>x.subjectId))];
   if(subjectIds.length!==b.subjects.length)throw fail(400,'Each subject can appear only once in a class setup');
   if(subjectIds.length){
@@ -3013,11 +3050,11 @@ app.get('/api/students/directory',async request=>{
     status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional(),
     classroomId:schoolRecordId.optional(),
     page:z.coerce.number().int().min(1).max(100000).default(1),
-    pageSize:z.coerce.number().int().min(20).max(200).default(100)
+    pageSize:z.coerce.number().int().min(5).max(100).default(10)
   }).parse(request.query);
-  const search=q.q?('%'+q.q+'%'):null;
+  const search=q.q||null;
   const where=`s.organisation_id=$1
-    AND ($2::text IS NULL OR concat_ws(' ',s.admission_no,s.first_name,s.middle_name,s.last_name) ILIKE $2)
+    AND ($2::text IS NULL OR NOT EXISTS(SELECT 1 FROM regexp_split_to_table(trim($2::text),'\\s+') needle WHERE concat_ws(' ',s.admission_no,s.first_name,s.middle_name,s.last_name,(SELECT name FROM classrooms WHERE id=ae.classroom_id),s.status) NOT ILIKE '%'||needle||'%'))
     AND ($3::text IS NULL OR s.status=$3)
     AND ($4::uuid IS NULL OR ae.classroom_id=$4)`;
   const params=[a.core.organisation_id,search,q.status??null,q.classroomId??null];
@@ -3055,7 +3092,7 @@ app.get('/api/students/directory',async request=>{
 
 app.get('/api/students',async request=>{
   const a=await authorize(request,db,config,'students.view');const q=z.object({q:z.string().max(100).optional(),classroomId:schoolRecordId.optional(),status:z.enum(['active','inactive','suspended','graduated','transferred','withdrawn']).optional()}).parse(request.query);const s=q.q?('%'+q.q+'%'):null;
-  return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR (s.first_name||' '||s.last_name||' '||s.admission_no) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
+  return (await db.query(`SELECT DISTINCT s.*,c.id classroom_id,c.name classroom_name,g.name grade_name,e.academic_year_id FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id LEFT JOIN grade_levels g ON g.id=c.grade_level_id WHERE s.organisation_id=$1 AND ($2::text IS NULL OR concat_ws(' ',s.first_name,s.last_name,s.admission_no,c.name,s.status) ILIKE $2) AND ($3::uuid IS NULL OR c.id=$3) AND ($4::text IS NULL OR s.status=$4) ORDER BY s.last_name,s.first_name`,[a.core.organisation_id,s,q.classroomId??null,q.status??null])).rows;
 });
 app.post('/api/students',async(request,reply)=>{
   const a=await authorize(request,db,config,'students.create');
@@ -3870,111 +3907,7 @@ function minuteTime(value:number){
 function overlapsTime(aStart:number,aEnd:number,bStart:number,bEnd:number){
   return aStart<bEnd&&aEnd>bStart;
 }
-async function buildAutoTimetablePlan(organisationId:string,academicYearId:string,termId:string|null){
-  const settings=await maybeOne<any>(db,`SELECT * FROM timetable_settings
-    WHERE organisation_id=$1 AND academic_year_id=$2 AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
-    ORDER BY term_id NULLS LAST LIMIT 1`,[organisationId,academicYearId,termId]);
-  const dayStart=timeMinutes(settings?.school_day_start||'07:30');
-  const dayEnd=timeMinutes(settings?.school_day_end||'15:30');
-  const period=Math.max(15,Number(settings?.default_period_minutes||40));
-  const maxTeacherPeriods=Math.max(1,Number(settings?.max_teacher_periods_per_day||8));
-  const breaks=(await db.query(`SELECT * FROM timetable_breaks
-    WHERE organisation_id=$1 AND academic_year_id=$2 AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)`,
-    [organisationId,academicYearId,termId])).rows;
-
-  const requirements=(await db.query(`SELECT cs.id class_subject_id,cs.classroom_id,cs.subject_id,cs.weekly_periods,
-      c.name classroom_name,c.class_teacher_os_user_id,s.name subject_name,
-      COALESCE((
-        SELECT ta.teacher_os_user_id FROM teacher_assignments ta
-        WHERE ta.organisation_id=cs.organisation_id AND ta.academic_year_id=cs.academic_year_id
-          AND ta.classroom_id=cs.classroom_id AND ta.subject_id=cs.subject_id AND ta.is_active=true
-          AND (ta.term_id IS NOT DISTINCT FROM $3::uuid OR ta.term_id IS NULL)
-        ORDER BY CASE WHEN ta.term_id IS NOT NULL THEN 0 ELSE 1 END,ta.created_at DESC LIMIT 1
-      ),c.class_teacher_os_user_id) teacher_os_user_id,
-      (SELECT count(*)::int FROM timetable_entries tt
-        WHERE tt.organisation_id=cs.organisation_id AND tt.academic_year_id=cs.academic_year_id
-          AND tt.classroom_id=cs.classroom_id AND tt.subject_id=cs.subject_id
-          AND ($3::uuid IS NULL OR tt.term_id=$3 OR tt.term_id IS NULL)) existing_periods
-    FROM class_subjects cs JOIN classrooms c ON c.id=cs.classroom_id JOIN subjects s ON s.id=cs.subject_id
-    WHERE cs.organisation_id=$1 AND cs.academic_year_id=$2 AND cs.is_active=true AND c.is_active=true
-    ORDER BY c.name,s.name`,[organisationId,academicYearId,termId])).rows;
-
-  const existing=(await db.query(`SELECT id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time
-    FROM timetable_entries WHERE organisation_id=$1 AND academic_year_id=$2
-      AND ($3::uuid IS NULL OR term_id=$3 OR term_id IS NULL)`,[organisationId,academicYearId,termId])).rows.map((r:any)=>({
-        ...r,startMin:timeMinutes(r.start_time),endMin:timeMinutes(r.end_time)
-      }));
-  const proposed:any[]=[];
-  const unscheduled:any[]=[];
-  const dailyTeacherCount=new Map<string,number>();
-  for(const r of existing){
-    if(r.teacher_os_user_id){
-      const key=r.teacher_os_user_id+'|'+r.day_of_week;
-      dailyTeacherCount.set(key,(dailyTeacherCount.get(key)||0)+1);
-    }
-  }
-  function slotBlocked(day:number,start:number,end:number,classroomId:string,teacherId:string|null){
-    if(breaks.some((b:any)=>(b.day_of_week==null||Number(b.day_of_week)===day)&&overlapsTime(start,end,timeMinutes(b.start_time),timeMinutes(b.end_time))))return true;
-    const all=[...existing,...proposed];
-    return all.some((r:any)=>Number(r.day_of_week)===day&&overlapsTime(start,end,Number(r.startMin??timeMinutes(r.start_time)),Number(r.endMin??timeMinutes(r.end_time)))&&(r.classroom_id===classroomId||(teacherId&&r.teacher_os_user_id===teacherId)));
-  }
-  for(const req of requirements){
-    const target=Math.max(1,Number(req.weekly_periods||3));
-    let remaining=Math.max(0,target-Number(req.existing_periods||0));
-    if(!remaining)continue;
-    if(!req.teacher_os_user_id){
-      unscheduled.push({classroomId:req.classroom_id,subjectId:req.subject_id,classroomName:req.classroom_name,subjectName:req.subject_name,remaining,reason:'No subject teacher or class teacher is assigned'});
-      continue;
-    }
-    let cursor=(requirements.indexOf(req)%5)+1;
-    while(remaining>0){
-      let placed=false;
-      for(let offset=0;offset<5&&!placed;offset++){
-        const day=((cursor-1+offset)%5)+1;
-        const loadKey=req.teacher_os_user_id+'|'+day;
-        if((dailyTeacherCount.get(loadKey)||0)>=maxTeacherPeriods)continue;
-        for(let start=dayStart;start+period<=dayEnd;start+=period){
-          const end=start+period;
-          if(slotBlocked(day,start,end,req.classroom_id,req.teacher_os_user_id))continue;
-          proposed.push({
-            classroom_id:req.classroom_id,subject_id:req.subject_id,teacher_os_user_id:req.teacher_os_user_id,
-            day_of_week:day,start_time:minuteTime(start),end_time:minuteTime(end),startMin:start,endMin:end,
-            classroom_name:req.classroom_name,subject_name:req.subject_name
-          });
-          dailyTeacherCount.set(loadKey,(dailyTeacherCount.get(loadKey)||0)+1);
-          remaining--;cursor=day%5+1;placed=true;break;
-        }
-      }
-      if(!placed){
-        unscheduled.push({classroomId:req.classroom_id,subjectId:req.subject_id,classroomName:req.classroom_name,subjectName:req.subject_name,remaining,reason:'No conflict-free slot is available within the scheduling rules'});
-        break;
-      }
-    }
-  }
-  return{settings:{schoolDayStart:minuteTime(dayStart),schoolDayEnd:minuteTime(dayEnd),periodMinutes:period,maxTeacherPeriodsPerDay:maxTeacherPeriods},suggestions:proposed,unscheduled};
-}
-app.post('/api/timetable/auto-schedule/preview',async request=>{
-  const a=await authorize(request,db,config,'timetable.manage');
-  const b=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional()}).parse(request.body);
-  return buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
-});
-app.post('/api/timetable/auto-schedule/apply',async request=>{
-  const a=await authorize(request,db,config,'timetable.manage');
-  const b=z.object({academicYearId:schoolRecordId,termId:schoolRecordId.nullable().optional()}).parse(request.body);
-  const plan=await buildAutoTimetablePlan(a.core.organisation_id,b.academicYearId,b.termId??null);
-  if(!plan.suggestions.length)return{created:0,unscheduled:plan.unscheduled};
-  await tx(db,async client=>{
-    for(const s of plan.suggestions){
-      await client.query(`INSERT INTO timetable_entries(
-        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)`,[
-        a.core.organisation_id,b.academicYearId,b.termId??null,s.classroom_id,s.subject_id,s.teacher_os_user_id,s.day_of_week,s.start_time,s.end_time
-      ]);
-    }
-  });
-  await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{created:plan.suggestions.length,unscheduled:plan.unscheduled.length});
-  return{created:plan.suggestions.length,unscheduled:plan.unscheduled};
-});
+await registerTimetableAgentRoutes(app,{db,config,authorize,one,tx,fail,audit});
 
 app.get('/api/timetable',async request=>{
   const a=await authorize(request,db,config,'timetable.view');
@@ -4059,189 +3992,6 @@ app.post('/api/timetable',async(request,reply)=>{
   return reply.code(201).send(row);
 });
 
-app.post('/api/timetable/auto-schedule',async(request,reply)=>{
-  const a=await authorize(request,db,config,'timetable.auto_schedule');
-  const b=z.object({
-    academicYearId:schoolRecordId,
-    termId:schoolRecordId.nullable().optional(),
-    teacherOsUserId:schoolRecordId.nullable().optional(),
-    classroomId:schoolRecordId.nullable().optional(),
-    regenerateAuto:z.boolean().default(true),
-    dryRun:z.boolean().default(false)
-  }).parse(request.body);
-
-  const settings=(await maybeOne<any>(db,`SELECT * FROM timetable_settings
-    WHERE organisation_id=$1 AND academic_year_id=$2
-      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
-    ORDER BY term_id NULLS LAST LIMIT 1`,
-    [a.core.organisation_id,b.academicYearId,b.termId??null]))??{
-      school_day_start:'07:30:00',school_day_end:'15:30:00',default_period_minutes:40,max_teacher_periods_per_day:8
-    };
-
-  const periodMinutes=Number(settings.default_period_minutes||40);
-  const maxTeacherPeriods=Number(settings.max_teacher_periods_per_day||8);
-  const toMinutes=(v:any)=>{const [hours=0,minutes=0]=String(v).slice(0,5).split(':').map(Number);return hours*60+minutes};
-  const toTime=(m:number)=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
-  const schoolStart=toMinutes(settings.school_day_start),schoolEnd=toMinutes(settings.school_day_end);
-
-  const breaks=(await db.query(`SELECT * FROM timetable_breaks
-    WHERE organisation_id=$1 AND academic_year_id=$2
-      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)
-    ORDER BY start_time`,[a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
-  const teacherUnavailability=(await db.query(`SELECT * FROM timetable_teacher_unavailability
-    WHERE organisation_id=$1 AND academic_year_id=$2
-      AND (term_id IS NOT DISTINCT FROM $3::uuid OR term_id IS NULL)`,
-    [a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
-
-  const requirements=(await db.query(`
-    SELECT cs.id class_subject_id,cs.classroom_id,c.name classroom_name,cs.subject_id,s.name subject_name,
-           cs.weekly_periods,cs.credit_hours,ta.teacher_os_user_id
-    FROM class_subjects cs
-    JOIN classrooms c ON c.id=cs.classroom_id AND c.is_active=true
-    JOIN subjects s ON s.id=cs.subject_id AND s.is_active=true
-    LEFT JOIN LATERAL (
-      SELECT x.teacher_os_user_id
-      FROM teacher_assignments x
-      WHERE x.organisation_id=cs.organisation_id
-        AND x.academic_year_id=cs.academic_year_id
-        AND x.classroom_id=cs.classroom_id
-        AND x.subject_id=cs.subject_id
-        AND x.is_active=true
-        AND (x.term_id IS NOT DISTINCT FROM $3::uuid OR x.term_id IS NULL)
-      ORDER BY CASE WHEN x.term_id IS NOT DISTINCT FROM $3::uuid THEN 0 ELSE 1 END,x.created_at DESC
-      LIMIT 1
-    ) ta ON true
-    WHERE cs.organisation_id=$1 AND cs.academic_year_id=$2 AND cs.is_active=true
-      AND ($4::uuid IS NULL OR ta.teacher_os_user_id=$4)
-      AND ($5::uuid IS NULL OR cs.classroom_id=$5)
-    ORDER BY c.name,s.name`,[a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null,b.classroomId??null])).rows;
-
-  if(b.regenerateAuto&&!b.dryRun){
-    await db.query(`DELETE FROM timetable_entries
-      WHERE organisation_id=$1 AND academic_year_id=$2
-        AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
-        AND schedule_source='auto' AND is_locked=false
-        AND ($4::uuid IS NULL OR teacher_os_user_id=$4)
-        AND ($5::uuid IS NULL OR classroom_id=$5)`,
-      [a.core.organisation_id,b.academicYearId,b.termId??null,b.teacherOsUserId??null,b.classroomId??null]);
-  }
-
-  const existing=(await db.query(`SELECT * FROM timetable_entries
-    WHERE organisation_id=$1 AND academic_year_id=$2
-      AND ($3::uuid IS NULL OR term_id IS NOT DISTINCT FROM $3::uuid)
-    ORDER BY day_of_week,start_time`,
-    [a.core.organisation_id,b.academicYearId,b.termId??null])).rows;
-
-  const slots:any[]=[];
-  for(let day=1;day<=5;day++){
-    let start=schoolStart;
-    while(start+periodMinutes<=schoolEnd){
-      const end=start+periodMinutes;
-      const blocked=breaks
-        .filter((br:any)=>br.day_of_week==null||Number(br.day_of_week)===day)
-        .map((br:any)=>({start:toMinutes(br.start_time),end:toMinutes(br.end_time)}))
-        .find((br:any)=>start<br.end&&end>br.start);
-      if(blocked){
-        start=Math.max(start+1,blocked.end);
-        continue;
-      }
-      slots.push({day,start,end});
-      start=end;
-    }
-  }
-
-  const occupancy=existing.map((x:any)=>({
-    classroomId:x.classroom_id,teacherId:x.teacher_os_user_id,subjectId:x.subject_id,
-    day:Number(x.day_of_week),start:toMinutes(x.start_time),end:toMinutes(x.end_time)
-  }));
-  const overlaps=(x:any,y:any)=>x.day===y.day&&x.start<y.end&&x.end>y.start;
-  const teacherLoad=new Map<string,number>();
-  const subjectDayCount=new Map<string,number>();
-  const classDayLoad=new Map<string,number>();
-
-  for(const x of occupancy){
-    if(x.teacherId)teacherLoad.set(x.teacherId+'|'+x.day,(teacherLoad.get(x.teacherId+'|'+x.day)||0)+1);
-    subjectDayCount.set(x.classroomId+'|'+x.subjectId+'|'+x.day,(subjectDayCount.get(x.classroomId+'|'+x.subjectId+'|'+x.day)||0)+1);
-    classDayLoad.set(x.classroomId+'|'+x.day,(classDayLoad.get(x.classroomId+'|'+x.day)||0)+1);
-  }
-
-  const created:any[]=[];
-  const unscheduled:any[]=[];
-  for(const req of requirements){
-    if(!req.teacher_os_user_id){
-      unscheduled.push({classroomId:req.classroom_id,classroomName:req.classroom_name,subjectId:req.subject_id,subjectName:req.subject_name,reason:'No subject teacher assigned'});
-      continue;
-    }
-
-    const required=Math.max(Number(req.weekly_periods||1),Math.ceil((Number(req.credit_hours||0)*60)/periodMinutes));
-    const already=existing.filter((x:any)=>x.classroom_id===req.classroom_id&&x.subject_id===req.subject_id&&x.teacher_os_user_id===req.teacher_os_user_id).length;
-    let remaining=Math.max(0,required-already);
-
-    while(remaining>0){
-      const candidates=slots.filter(slot=>{
-        const probe={...slot,classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id};
-        if((teacherLoad.get(req.teacher_os_user_id+'|'+slot.day)||0)>=maxTeacherPeriods)return false;
-        const unavailable=teacherUnavailability.some((u:any)=>u.teacher_os_user_id===req.teacher_os_user_id&&Number(u.day_of_week)===slot.day&&slot.start<toMinutes(u.end_time)&&slot.end>toMinutes(u.start_time));
-        if(unavailable)return false;
-        return !occupancy.some((o:any)=>overlaps(probe,o)&&(o.classroomId===req.classroom_id||o.teacherId===req.teacher_os_user_id));
-      }).sort((x,y)=>{
-        const sx=(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+x.day)||0)*100+
-          (teacherLoad.get(req.teacher_os_user_id+'|'+x.day)||0)*10+
-          (classDayLoad.get(req.classroom_id+'|'+x.day)||0);
-        const sy=(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+y.day)||0)*100+
-          (teacherLoad.get(req.teacher_os_user_id+'|'+y.day)||0)*10+
-          (classDayLoad.get(req.classroom_id+'|'+y.day)||0);
-        return sx-sy||x.day-y.day||x.start-y.start;
-      });
-
-      const chosen=candidates[0];
-      if(!chosen){
-        unscheduled.push({
-          classroomId:req.classroom_id,classroomName:req.classroom_name,subjectId:req.subject_id,subjectName:req.subject_name,
-          teacherOsUserId:req.teacher_os_user_id,remainingPeriods:remaining,
-          reason:'No conflict-free period remains within the configured school day and teacher workload'
-        });
-        break;
-      }
-
-      const proposal={
-        organisation_id:a.core.organisation_id,academic_year_id:b.academicYearId,term_id:b.termId??null,
-        classroom_id:req.classroom_id,classroom_name:req.classroom_name,subject_id:req.subject_id,subject_name:req.subject_name,
-        teacher_os_user_id:req.teacher_os_user_id,day_of_week:chosen.day,start_time:toTime(chosen.start),end_time:toTime(chosen.end),
-        room:null,schedule_source:'auto',is_locked:false
-      };
-      const row=b.dryRun?proposal:await one<any>(db,`INSERT INTO timetable_entries(
-        organisation_id,academic_year_id,term_id,classroom_id,subject_id,teacher_os_user_id,day_of_week,start_time,end_time,room,schedule_source,is_locked
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,'auto',false) RETURNING *`,[
-        a.core.organisation_id,b.academicYearId,b.termId??null,req.classroom_id,req.subject_id,req.teacher_os_user_id,
-        chosen.day,toTime(chosen.start),toTime(chosen.end)
-      ]);
-      created.push({...proposal,...row});
-      const occ={classroomId:req.classroom_id,teacherId:req.teacher_os_user_id,subjectId:req.subject_id,day:chosen.day,start:chosen.start,end:chosen.end};
-      occupancy.push(occ);
-      teacherLoad.set(req.teacher_os_user_id+'|'+chosen.day,(teacherLoad.get(req.teacher_os_user_id+'|'+chosen.day)||0)+1);
-      subjectDayCount.set(req.classroom_id+'|'+req.subject_id+'|'+chosen.day,(subjectDayCount.get(req.classroom_id+'|'+req.subject_id+'|'+chosen.day)||0)+1);
-      classDayLoad.set(req.classroom_id+'|'+chosen.day,(classDayLoad.get(req.classroom_id+'|'+chosen.day)||0)+1);
-      remaining--;
-    }
-  }
-
-  if(!b.dryRun){
-    await audit(a.core.organisation_id,a.core.id,'timetable.auto_scheduled','timetable',null,{
-      academicYearId:b.academicYearId,termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,classroomId:b.classroomId??null,created:created.length,unscheduled:unscheduled.length
-    });
-    await changeLog({
-      organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'timetable.auto_scheduled',
-      resourceType:'timetable',performedOn:'Academic year '+b.academicYearId,
-      oldValue:{existingPeriods:existing.length},newValue:{createdPeriods:created.length,unscheduled},
-      metadata:{termId:b.termId??null,teacherOsUserId:b.teacherOsUserId??null,classroomId:b.classroomId??null,periodMinutes}
-    });
-  }
-  return reply.code(b.dryRun?200:201).send({
-    created:created.length,suggestions:created,unscheduled,periodMinutes,schoolDayStart:toTime(schoolStart),schoolDayEnd:toTime(schoolEnd),
-    preservedManual:existing.filter((x:any)=>x.schedule_source!=='auto'||x.is_locked).length,dryRun:b.dryRun
-  });
-});
 
 app.get('/api/staff/core-users',async request=>{
   const a=await authorize(request,db,config,'staff.view');
@@ -4484,16 +4234,27 @@ app.patch('/api/grade-levels/:id',async request=>{
 
 app.patch('/api/classes/:id',async request=>{
   const a=await authorize(request,db,config,'academic.edit');const {id}=z.object({id:schoolRecordId}).parse(request.params);
-  const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:schoolRecordId.nullable().optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
+  const b=z.object({name:z.string().min(2).max(120).optional(),stream:z.string().max(40).nullable().optional(),capacity:z.number().int().positive().nullable().optional(),classTeacherOsUserId:schoolRecordId.nullable().optional(),stage:z.enum(['primary','jhs']).optional(),levelOrder:z.number().int().min(1).max(99).optional(),isActive:z.boolean().optional()}).refine(v=>Object.keys(v).length>0).parse(request.body);
   const before=await one<any>(db,'SELECT * FROM classrooms WHERE id=$1 AND organisation_id=$2',[id,a.core.organisation_id]);
   if(Object.hasOwn(b,'classTeacherOsUserId')&&b.classTeacherOsUserId){
+    const member=await maybeOne<any>(db,"SELECT role FROM school_memberships WHERE organisation_id=$1 AND os_user_id=$2 AND status='active'",[a.core.organisation_id,b.classTeacherOsUserId]);if(!member||(await schoolRoleProfile(db,a.core.organisation_id,member.role))?.can_teach!==true)throw fail(400,'Choose an active teaching staff member from this school');
     const other=await maybeOne<any>(db,`SELECT name FROM classrooms
       WHERE organisation_id=$1 AND academic_year_id=$2 AND is_active=true
         AND class_teacher_os_user_id=$3 AND id<>$4 LIMIT 1`,
       [a.core.organisation_id,before.academic_year_id,b.classTeacherOsUserId,id]);
     if(other)throw fail(409,`This teacher is already Class Teacher for ${other.name}. A teacher can be Class Teacher for only one active class.`);
   }
-  const row=await one<any>(db,`UPDATE classrooms SET name=COALESCE($1,name),stream=CASE WHEN $2 THEN $3 ELSE stream END,capacity=CASE WHEN $4 THEN $5 ELSE capacity END,class_teacher_os_user_id=CASE WHEN $6 THEN $7 ELSE class_teacher_os_user_id END,is_active=COALESCE($8,is_active) WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.name??null,Object.hasOwn(b,'stream'),b.stream??null,Object.hasOwn(b,'capacity'),b.capacity??null,Object.hasOwn(b,'classTeacherOsUserId'),b.classTeacherOsUserId??null,b.isActive??null,id,a.core.organisation_id]);
+  const row=await tx(db,async client=>{
+    if(b.stage||b.levelOrder){
+      const level=await one<any>(client,'SELECT * FROM grade_levels WHERE id=$1 AND organisation_id=$2',[before.grade_level_id,a.core.organisation_id]);
+      const order=b.levelOrder??level.level_order,stage=b.stage??level.stage;
+      let target=await maybeOne<any>(client,'SELECT * FROM grade_levels WHERE organisation_id=$1 AND level_order=$2',[a.core.organisation_id,order]);
+      if(target&&target.stage!==stage)throw fail(409,'This progression order already belongs to a different school stage. Choose another order.');
+      if(!target)target=await one<any>(client,'INSERT INTO grade_levels(organisation_id,code,name,stage,level_order) VALUES($1,$2,$3,$4,$5) RETURNING *',[a.core.organisation_id,'CL'+order,(b.name||before.name).slice(0,80),stage,order]);
+      await client.query('UPDATE classrooms SET grade_level_id=$1 WHERE id=$2 AND organisation_id=$3',[target.id,id,a.core.organisation_id]);
+    }
+    return one<any>(client,`UPDATE classrooms SET name=COALESCE($1,name),stream=CASE WHEN $2 THEN $3 ELSE stream END,capacity=CASE WHEN $4 THEN $5 ELSE capacity END,class_teacher_os_user_id=CASE WHEN $6 THEN $7 ELSE class_teacher_os_user_id END,is_active=COALESCE($8,is_active) WHERE id=$9 AND organisation_id=$10 RETURNING *`,[b.name??null,Object.hasOwn(b,'stream'),b.stream??null,Object.hasOwn(b,'capacity'),b.capacity??null,Object.hasOwn(b,'classTeacherOsUserId'),b.classTeacherOsUserId??null,b.isActive??null,id,a.core.organisation_id]);
+  });
   await audit(a.core.organisation_id,a.core.id,'class.updated','classroom',id);
   await changeLog({organisationId:a.core.organisation_id,actorOsUserId:a.core.id,action:'class.updated',resourceType:'classroom',resourceId:id,performedOn:row.name,oldValue:before,newValue:row});
   return row;
@@ -6225,7 +5986,7 @@ app.get('/api/teacher/context',async request=>{
   const roleProfile=await schoolRoleProfile(db,a.core.organisation_id,a.role);
   if(!roleProfile?.can_teach)throw fail(403,'Teacher workspace access is not enabled for this role');
   const capabilities=await effectiveCapabilities(db,a.core.organisation_id,a.role);
-  return{core:a.core,schoolRole:a.role,roleProfile,school,capabilities};
+  return{core:a.core,schoolRole:a.role,roleProfile,school,capabilities,license:licenceWithWarning(await schoolLicence(a.core.organisation_id))};
 });
 app.get('/api/teacher/classes',async request=>{
   const a=await authorize(request,db,config,'academic.view');
@@ -6266,6 +6027,7 @@ app.get('/api/teacher/classes',async request=>{
     WHERE c.organisation_id=$1 AND c.is_active=true
     ORDER BY c.name,ts.is_class_teacher DESC,s.name NULLS FIRST`,[a.core.organisation_id,a.core.id,term?.id??null,teachingYear?.id??null])).rows;
 });
+await registerTeacherOversight(app,{db,config,authorize,one,activeTerm,effectiveClassTeacher,fail});
 app.get('/api/teacher/students',async request=>{
   const a=await authorize(request,db,config,'students.view');
   await ensureTeachingRole(a);
@@ -6338,7 +6100,7 @@ app.get('/api/teacher/dashboard',async request=>{
   const classIds=(row.classroom_ids||[]).filter(Boolean);
   const notices=await one<any>(db,`SELECT count(*)::int total,count(*) FILTER(WHERE read_at IS NULL)::int unread
     FROM staff_notifications WHERE organisation_id=$1 AND recipient_os_user_id=$2`,[a.core.organisation_id,a.core.id]);
-  if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,pendingAssessments:0,presentToday:0,absentToday:0,unreadNotifications:Number(notices.unread||0),term};
+  if(!classIds.length)return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,pendingAssessments:0,presentToday:0,absentToday:0,unreadNotifications:Number(notices.unread||0),term,attendanceByClass:[]};
   const q=await db.query(`SELECT
     (SELECT count(DISTINCT e.student_id)::int FROM enrolments e WHERE e.classroom_id=ANY($1::uuid[]) AND e.status='active') students,
     (SELECT count(*)::int FROM homework_assignments h WHERE h.teacher_os_user_id=$3 AND h.status<>'closed') homework,
@@ -6355,7 +6117,7 @@ app.get('/api/teacher/dashboard',async request=>{
     classTeacherClasses:Number(row.class_teacher_classes||0),
     students:q.rows[0]?.students??0,homework:q.rows[0]?.homework??0,assessments:q.rows[0]?.assessments??0,
     pendingAssessments:q.rows[0]?.pending_assessments??0,presentToday:q.rows[0]?.present_today??0,
-    absentToday:q.rows[0]?.absent_today??0,unreadNotifications:Number(notices.unread||0),term
+    absentToday:q.rows[0]?.absent_today??0,unreadNotifications:Number(notices.unread||0),term,attendanceByClass:await attendanceByClass(db,a.core.organisation_id,classIds)
   };
 });
 
@@ -7264,7 +7026,7 @@ app.get('/api/search',async request=>{
       SELECT 'student' type,s.id::text id,(s.first_name||' '||s.last_name) title,
              (s.admission_no||COALESCE(' • '||c.name,'')) subtitle,'students' section,1 rank
       FROM students s LEFT JOIN enrolments e ON e.student_id=s.id AND e.status='active' LEFT JOIN classrooms c ON c.id=e.classroom_id
-      WHERE s.organisation_id=$1 AND lower(s.first_name||' '||COALESCE(s.middle_name,'')||' '||s.last_name||' '||s.admission_no) LIKE lower($2)
+      WHERE s.organisation_id=$1 AND lower(concat_ws(' ',s.first_name,s.middle_name,s.last_name,s.admission_no,c.name,s.status)) LIKE lower($2)
       UNION ALL
       SELECT 'guardian',g.id::text,(g.first_name||' '||g.last_name),(g.phone||COALESCE(' • '||g.email,'')),'students',2
       FROM guardians g WHERE g.organisation_id=$1 AND lower(g.first_name||' '||g.last_name||' '||g.phone||' '||COALESCE(g.email,'')) LIKE lower($2)
@@ -7910,7 +7672,7 @@ await registerFinanceLeaveRoutes(app,{
   clearCoreUsersCache:(organisationId:string)=>coreUsersCache.delete(organisationId)
 });
 
-await registerHrPayrollRoutes(app,{db,config,authorize,one,maybeOne,tx,fail,audit,fetchCoreUsers});
+await registerHrPayrollRoutes(app,{db,config,authorize,one,maybeOne,tx,fail,audit,fetchCoreUsers,postFinanceJournal});
 await registerSchoolRemediationRoutes(app,{db,config,authorize,one,maybeOne,tx,fail,audit,assignMandatoryFees});
 
 await registerAccountingRoutes(app,{
@@ -7920,7 +7682,7 @@ await registerAccountingRoutes(app,{
 app.setErrorHandler(async(error:any,request,reply)=>{
   const invalidTimeValue=error instanceof RangeError&&/invalid time value/i.test(String(error.message||''));
   let status=Number(error.statusCode)||(error?.name==='ZodError'||invalidTimeValue?400:500);
-  if(error.code==='23505')status=409;
+  if(error.code==='23505'||error.code==='23P01')status=409;
   if(error.code==='23503')status=409;
   if(error.code==='23514')status=400;
   if(error.code==='22P02')status=400;
