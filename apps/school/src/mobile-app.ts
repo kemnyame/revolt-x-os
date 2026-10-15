@@ -69,10 +69,11 @@ export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_nam
 
 export { mobileRoleChoiceFrontend as schoolMobileFrontend };
 
-export async function registerSchoolMobile(app:FastifyInstance,options?:{resolveSchool:(request:any)=>Promise<{tenant_slug:string;school_name:string}|null>}){
+export async function registerSchoolMobile(app:FastifyInstance,options?:{resolveSchool:(request:any)=>Promise<{tenant_slug:string;school_name:string}|null>;assertAccess?:(school:any)=>Promise<void>}){
  async function page(request:any,reply:any,html:string){
   const school=await options?.resolveSchool(request);
   if(school){
+   await options?.assertAccess?.(school);
    if(!request.query?.school)return reply.redirect(schoolWorkspaceUrl(school.tenant_slug,String(request.url).split('?')[0]));
    html=schoolTenantDocument(html,school);
    for(const path of ['/mobile/teacher','/mobile/parent'])html=html.replaceAll('href="'+path+'"','href="'+schoolWorkspaceUrl(school.tenant_slug,path)+'"');

@@ -101,6 +101,14 @@ test('generic login recovers old active or expired sessions without the newer re
   }
 });
 
+test('an administrator page without a bound account ID is remembered as Admin Login',async t=>{
+  const app=await fixture(t),page=await app.inject('/s/alpha/admin-login');
+  const cookie=page.headers['set-cookie'].split(';')[0];
+  assert.ok(decodeURIComponent(cookie).endsWith('/s/alpha/admin-login'));
+  assert.equal((await app.inject({url:'/login',headers:{cookie}})).headers.location,'/s/alpha/admin-login');
+  assert.equal((await app.inject({url:'/',headers:{cookie}})).headers.location,'/s/alpha/admin-login');
+});
+
 test('an explicit school always wins and a generic admin page never binds a staff member as the administrator',async t=>{
   const app=await fixture(t),token=await issue('alpha');
   const headers={cookie:'rx_school_session='+token+'; rx_school_login='+encodeURIComponent('/s/beta/login')};

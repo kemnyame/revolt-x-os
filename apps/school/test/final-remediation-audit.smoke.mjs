@@ -12,7 +12,7 @@ test('submitted records use the successful green status family',async()=>{
 test('HR payroll supports staff-specific component overrides and full payslip details',async()=>{
   const ui=await read('ui.js');
   assert.match(ui,/data-pay-component-override/);
-  assert.match(ui,/Earnings & deductions/);
+  assert.match(await read('workflow-ui.js'),/Earnings & deductions/);
   assert.match(ui,/valueOverride/);
   assert.match(ui,/rateOverride/);
 });
