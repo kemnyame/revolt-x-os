@@ -77,8 +77,8 @@ export const schoolMobileManifest={id:'/mobile',name:'Revolt-X School',short_nam
 export { mobileRoleChoiceFrontend as schoolMobileFrontend };
 
 export async function registerSchoolMobile(app:FastifyInstance,options?:{resolveSchool:(request:any)=>Promise<{tenant_slug:string;school_name:string}|null>;assertAccess?:(school:any)=>Promise<void>}){
- async function page(request:any,reply:any,html:string){
-  const school=await options?.resolveSchool(request);
+ async function page(request:any,reply:any,html:string,resolvedSchool?:any){
+  const school=resolvedSchool??await options?.resolveSchool(request);
   if(school){
    await options?.assertAccess?.(school);
    reply.header('set-cookie',mobileSchoolCookie(request,school));
@@ -101,10 +101,10 @@ export async function registerSchoolMobile(app:FastifyInstance,options?:{resolve
  });
  app.get('/mobile/setup',async(request:any,reply)=>{
   const school=await options?.resolveSchool(request);
-  if(!school)return reply.redirect('/mobile');await options?.assertAccess?.(school);
+  if(!school)return reply.redirect('/mobile');
   const safe=(v:string)=>v.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
   const android=androidMobileIntent(school.tenant_slug),home=schoolWorkspaceUrl(school.tenant_slug,'/mobile');
-  return page(request,reply,'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/school.webmanifest"><title>Set up Revolt School</title></head><body><main class="m-app" style="max-width:600px;margin:auto;padding:32px;font-family:system-ui"><h1>'+safe(school.school_name)+'</h1><h2>Set up the mobile app</h2><p>This invitation connects this device to your school. Your usual sign-in details are required to access records.</p><p><a href="'+safe(android)+'">Open installed Android app</a></p><p><a href="'+safe(home)+'">Continue in browser</a></p><button id="mobileInstall" type="button" hidden>Install School app</button><p>On iPhone or iPad, choose Share, then Add to Home Screen after continuing in your browser.</p></main></body></html>');
+  return page(request,reply,'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/school.webmanifest"><title>Set up Revolt School</title></head><body><main class="m-app" style="max-width:600px;margin:auto;padding:32px;font-family:system-ui"><h1>'+safe(school.school_name)+'</h1><h2>Set up the mobile app</h2><p>This invitation connects this device to your school. Your usual sign-in details are required to access records.</p><p><a href="'+safe(android)+'">Open installed Android app</a></p><p><a href="'+safe(home)+'">Continue in browser</a></p><button id="mobileInstall" type="button" hidden>Install School app</button><p>On iPhone or iPad, choose Share, then Add to Home Screen after continuing in your browser.</p></main></body></html>',school);
  });
  app.get('/school-mobile.css',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('text/css; charset=utf-8').send(schoolMobileCss));
  app.get('/school-mobile.js',async(_request,reply)=>reply.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolMobileScript));
