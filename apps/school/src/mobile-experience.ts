@@ -65,6 +65,7 @@ function updateDock(){var tabs=role==='teacher'?[['home','Today'],['attendance',
 async function go(page,arg,force){
  if(state.saving)return;
  if(state.dirty&&!force){sheet('Leave this form?','<p>Your unsaved entries will stay here while you decide.</p>'+button('mKeepEditing','Keep editing')+button('mDiscard','Discard and continue','ghost'));E('mKeepEditing').onclick=closeSheet;E('mDiscard').onclick=function(){F.saved(state);closeSheet();go(page,arg,true)};return}
+ if(window.rxSchoolHistory)window.rxSchoolHistory.visit(page,arg);
  state.page=page;state.arg=arg;state.dirty=false;var seq=++state.seq;updateDock();loading();
  try{
   if(role==='parent'&&!state.child&&!['more','profile','inbox'].includes(page)){layout(empty('No linked children','Ask your school to link a child to your guardian account.'));return}
@@ -223,16 +224,17 @@ async function login(message){
  var reload=document.createElement('button');reload.id='mLoginReload';reload.type='button';reload.className='m-btn ghost';reload.textContent='Retry loading sign-in';reload.hidden=true;E('mLoginForm').appendChild(reload);
  async function loadLoginSchool(){
  E('mLoginSubmit').disabled=true;E('mError').hidden=true;reload.hidden=true;
- var requested=schoolFromLocation();
- if(!requested){if(recoverSchoolLocation(role))return;showError(Error('Your school could not be identified on this device. Ask your administrator to resend your sign-in invitation.'));return}
+ var requested=document.body.dataset.schoolId||schoolFromLocation();
+ if(!requested){if(recoverSchoolLocation(role))return;E('mLoginForm').hidden=true;layout('<div class="m-card"><h1>Activate this device</h1><p>Open the invitation sent by your school on this device and choose Set up mobile app. Your school will then be remembered when you reopen the app or sign out.</p><p>Your school invitation identifies the school automatically.</p></div>');return}
  try{
   var data=document.body.dataset,school=data.schoolId?{id:data.schoolId,name:data.schoolName}:null;
   if(!school)school=await window.RevoltSchoolSignIn.loadData('/api/auth/school-context?'+new URLSearchParams({school:requested}),{valid:function(value){return value&&value.id&&value.name},progress:function(message){E('mLoginSubmit').textContent=message}});
+  try{localStorage.setItem('rx_mobile_school',school.id);localStorage.setItem('rx_school_id',school.id)}catch(e){}
   E('mLoginSchool').value=school.id;E('mLoginSchoolName').textContent=school.name;E('mSchoolName').textContent=school.name;
   E('mLoginSubmit').disabled=false;E('mLoginSubmit').textContent='Sign in';
  }catch(error){showError(error);E('mLoginSubmit').disabled=true;reload.hidden=false;E('mLoginSubmit').textContent='Sign in'}
  }
- reload.onclick=loadLoginSchool;await loadLoginSchool();
+ reload.onclick=loadLoginSchool;await loadLoginSchool();if(!E('mLoginForm'))return;
  bindForm('mLoginForm',async function(){
   if(state.saving)return;
   var school=E('mLoginSchool').value;
@@ -250,7 +252,7 @@ async function login(message){
    sessionStorage.removeItem(role==='teacher'?'rx_school_session_expires_at':'rx_parent_session_expires_at');
    if(role==='teacher'){sessionStorage.setItem('rx_school_token',state.token);sessionStorage.setItem('rx_school_login_url','/s/'+encodeURIComponent(result.school&&result.school.id||school)+'/login')}
    sessionStorage.setItem(role==='teacher'?'rx_teacher_login_url':'rx_parent_login_url',schoolWorkspacePath('/mobile/'+role,result.school&&result.school.id||school));
-   localStorage.setItem('rx_school_id',result.school&&result.school.id||school);
+   localStorage.setItem('rx_school_id',result.school&&result.school.id||school);localStorage.setItem('rx_mobile_school',result.school&&result.school.id||school);
    state.dirty=false;
    if(result.requiresPasswordChange){setSaving(false);return passwordChange()}
    success=true;
@@ -267,12 +269,14 @@ async function boot(){
  try{
   if(role==='teacher'){state.ctx=await api('/api/teacher/context');var data=await Promise.all([can('academic.view')?api('/api/teacher/classes'):[],can('academic.view')?api('/api/terms'):[]]);state.classes=data[0];state.terms=data[1];E('mSchoolName').textContent=state.ctx.school.school_name}
   else{state.me=await api('/api/parent/me');var childId=sessionStorage.getItem('rx_mobile_child');state.child=state.me.students.find(function(c){return c.id===childId})||state.me.students[0]||null;E('mSchoolName').textContent=state.me.school.school_name}
+  if(window.rxSchoolHistory)window.rxSchoolHistory.bind({home:'home',restore:function(p,a){return go(p,a,true)},close:function(){if(!E('mDialog').hidden){closeSheet();return true}return false},canLeave:function(){if(state.saving){toast('Your record is being saved. Please wait.');return false}if(state.dirty&&!confirm('Discard unsaved changes and go back?'))return false;F.saved(state);return true}});
   E('mHeaderAction').hidden=false;await go('home',null,true);
  }catch(error){if(role==='teacher'&&error.status===403&&error.code==='PASSWORD_CHANGE_REQUIRED'){passwordChange()}else if(error.status===403){state.token='';sessionStorage.removeItem(role==='teacher'?'rx_teacher_token':'rx_parent_token');if(role==='teacher')sessionStorage.removeItem('rx_school_token');await login(error.message)}else if(error.status!==401){layout(heading('Your school is taking a moment',error.message)+button('mBootRetry','Try again')+button('mBootLogin','Return to sign-in','ghost'));E('mBootRetry').onclick=boot;E('mBootLogin').onclick=function(){state.token='';login()}}}
 }
 document.addEventListener('click',function(event){var target=event.target.closest('[data-go]');if(target){event.preventDefault();go(target.dataset.go)}if(event.target.closest('#mSwitchChild'))chooseChild()});
 E('mHeaderAction').onclick=function(){go('inbox')};
 window.rxMobileBack=function(){
+ if(window.rxSchoolHistory&&window.rxSchoolHistory.back())return true;
  if(state.saving){toast('Your record is being saved. Please wait.');return true}
  if(!E('mDialog').hidden){closeSheet();return true}
  if(!state.ctx&&!state.me||state.page==='home'){location.replace(schoolWorkspacePath('/mobile',schoolFromLocation()));return true}

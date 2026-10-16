@@ -8,11 +8,12 @@ function schoolFromLocation(){
 function recoverSchoolLocation(portal){
   if(schoolFromLocation()||location.pathname.startsWith('/s/')||new URLSearchParams(location.search).has('school'))return false;
   var family=portal==='teacher'?'school':portal==='staff'?'school':portal,hint='',school='',target;
+  if(location.pathname.startsWith('/mobile')){try{school=localStorage.getItem('rx_mobile_school')||''}catch(e){}}
   try{hint=sessionStorage.getItem('rx_'+family+'_login_url')||''}catch(e){}
   try{
     var saved=new URL(hint,location.origin),match=saved.pathname.match(/^\/s\/([^/]+)\/(login|admin-login)$/);
-    if(hint&&saved.origin===location.origin&&match){school=decodeURIComponent(match[1]);target=saved}
-    else if(hint&&saved.origin===location.origin&&(saved.pathname==='/'+portal||saved.pathname==='/mobile/'+portal))school=saved.searchParams.get('school')||'';
+    if(!school&&hint&&saved.origin===location.origin&&match){school=decodeURIComponent(match[1]);target=saved}
+    else if(!school&&hint&&saved.origin===location.origin&&(saved.pathname==='/'+portal||saved.pathname==='/mobile/'+portal))school=saved.searchParams.get('school')||'';
   }catch(e){}
   // These are navigation hints from earlier releases, never authentication or
   // account selection. The destination still resolves and verifies its tenant.
@@ -38,7 +39,9 @@ function escapeAttribute(value:unknown){return String(value??'').replace(/[&<>"'
 
 /** Only the locally resolved tenant is rendered into a dedicated school page. */
 export function schoolTenantDocument(html:string,school:{tenant_slug:string;school_name:string}){
-  return html.replace(/<body\b/, '<body data-school-id="'+escapeAttribute(school.tenant_slug)+'" data-school-name="'+escapeAttribute(school.school_name)+'"');
+  const mobileSetup='<p class="rx-mobile-setup-link" style="text-align:center;margin:18px"><a href="/mobile/setup?school='+encodeURIComponent(school.tenant_slug)+'">Set up mobile app for this school</a></p>';
+  if(html.includes('id="schoolCredentials"'))html=html.replace('</body>',mobileSetup+'</body>');
+  return html.replace('href="/school.webmanifest"','href="/school.webmanifest?school='+encodeURIComponent(school.tenant_slug)+'"').replace(/<body\b/, '<body data-school-id="'+escapeAttribute(school.tenant_slug)+'" data-school-name="'+escapeAttribute(school.school_name)+'"');
 }
 
 export function schoolWorkspaceUrl(school:string,path='/'){

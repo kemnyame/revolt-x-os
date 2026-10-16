@@ -125,7 +125,7 @@ public class MainActivity extends Activity {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) { return route(request.getUrl().toString()); }
             @Override public boolean shouldOverrideUrlLoading(WebView view, String url) { return route(url); }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) { closeChannel(); offline.setVisibility(View.GONE); showLoading("Opening your school…"); }
-            @Override public void onPageFinished(WebView view, String url) { if (SecurityRules.isSchoolUrl(url)) attachChannel(); CookieManager.getInstance().flush(); hideLoading(); }
+            @Override public void onPageFinished(WebView view, String url) { if (SecurityRules.isSchoolUrl(url)) { rememberSchool(url); attachChannel(); } CookieManager.getInstance().flush(); hideLoading(); }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) { closeChannel(); hideLoading(); offline.setVisibility(View.VISIBLE); } }
             @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, android.net.http.SslError error) { handler.cancel(); closeChannel(); hideLoading(); offline.setVisibility(View.VISIBLE); }
         });
@@ -161,7 +161,24 @@ public class MainActivity extends Activity {
             else external(url);
         });
         if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::goBack);
-        if (saved == null || web.restoreState(saved) == null || !SecurityRules.isMobilePage(web.getUrl())) web.loadUrl(SecurityRules.HOME); else hideLoading();
+        String invitation = SecurityRules.mobileLaunchUrl(getIntent().getDataString());
+        if (invitation != null) { rememberSchool(invitation); web.loadUrl(invitation); }
+        else if (saved == null || web.restoreState(saved) == null || !SecurityRules.isMobilePage(web.getUrl())) web.loadUrl(savedSchool()); else hideLoading();
+    }
+
+    private void rememberSchool(String url) {
+        String target = SecurityRules.mobileLaunchUrl(url);
+        if (target != null) getSharedPreferences("school-context", MODE_PRIVATE).edit().putString("launch", target).apply();
+    }
+    private String savedSchool() {
+        String target = SecurityRules.mobileLaunchUrl(getSharedPreferences("school-context", MODE_PRIVATE).getString("launch", null));
+        return target == null ? SecurityRules.HOME : target;
+    }
+    private String schoolHome() { return SecurityRules.mobileHomeUrl(savedSchool()); }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent);
+        String target = SecurityRules.mobileLaunchUrl(intent.getDataString());
+        if (target != null) { rememberSchool(target); web.loadUrl(target); }
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -171,7 +188,7 @@ public class MainActivity extends Activity {
     private boolean route(String url) { if (SecurityRules.isMobilePage(url)) return false; external(url); return true; }
     private void external(String url) { if (!SecurityRules.isExternalUrl(url)) return; try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (ActivityNotFoundException e) { toast("No application can open this link."); } }
     private void goBack() {
-        if (offline.getVisibility() == View.VISIBLE) { offline.setVisibility(View.GONE); showLoading("Opening your school…"); web.loadUrl(SecurityRules.HOME); return; }
+        if (offline.getVisibility() == View.VISIBLE) { offline.setVisibility(View.GONE); showLoading("Opening your school…"); web.loadUrl(schoolHome()); return; }
         if (SecurityRules.isMobilePage(web.getUrl())) {
             web.evaluateJavascript("(function(){return typeof window.rxMobileBack==='function'?window.rxMobileBack():false})()", handled -> { if (!"true".equals(handled)) browserBack(); });
         } else browserBack();
@@ -182,7 +199,7 @@ public class MainActivity extends Activity {
     private void showMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
         menu.getMenu().add(0,1,0,"Refresh"); menu.getMenu().add(0,2,1,"School home"); menu.getMenu().add(0,3,2,"Print / Save PDF"); menu.getMenu().add(0,4,3,"Open in browser");
-        menu.setOnMenuItemClickListener(item -> { switch (item.getItemId()) { case 1: mobileAction("rxMobileRefresh", () -> web.reload()); break; case 2: mobileAction("rxMobileHome", () -> web.loadUrl(SecurityRules.HOME)); break; case 3: printPage(); break; case 4: external(SecurityRules.isSchoolUrl(web.getUrl()) ? web.getUrl() : SecurityRules.HOME); break; } return true; }); menu.show();
+        menu.setOnMenuItemClickListener(item -> { switch (item.getItemId()) { case 1: mobileAction("rxMobileRefresh", () -> web.reload()); break; case 2: mobileAction("rxMobileHome", () -> web.loadUrl(schoolHome())); break; case 3: printPage(); break; case 4: external(SecurityRules.isSchoolUrl(web.getUrl()) ? web.getUrl() : schoolHome()); break; } return true; }); menu.show();
     }
     private void mobileAction(String action, Runnable fallback) { web.evaluateJavascript("(function(){return typeof window." + action + "==='function'?window." + action + "():false})()", handled -> { if (!"true".equals(handled)) fallback.run(); }); }
     private void printPage() { if (!SecurityRules.isSchoolUrl(web.getUrl())) return; PrintManager manager = (PrintManager)getSystemService(PRINT_SERVICE); if (manager != null) manager.print("Revolt School document",web.createPrintDocumentAdapter("Revolt School document"),new PrintAttributes.Builder().build()); }

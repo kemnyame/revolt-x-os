@@ -100,13 +100,13 @@ jobs:
           zip -q -j build/ci/unsigned.apk build/ci/dex/*.dex
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f 4 build/ci/unsigned.apk build/ci/aligned.apk
           keytool -genkeypair -keystore build/ci/demo-keystore.p12 -storetype PKCS12 -storepass revolt-demo-2026 -keypass revolt-demo-2026 -alias revolt-school-demo -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Revolt School Demo, O=Revolt-X Technologies"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks build/ci/demo-keystore.p12 --ks-key-alias revolt-school-demo --ks-pass pass:revolt-demo-2026 --key-pass pass:revolt-demo-2026 --out build/Revolt-School-3.1.0-demo.apk build/ci/aligned.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose build/Revolt-School-3.1.0-demo.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks build/ci/demo-keystore.p12 --ks-key-alias revolt-school-demo --ks-pass pass:revolt-demo-2026 --key-pass pass:revolt-demo-2026 --out build/Revolt-School-3.4.0-demo.apk build/ci/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose build/Revolt-School-3.4.0-demo.apk
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: revolt-school-android-3.1.0-demo
-          path: apps/school-android/build/Revolt-School-3.1.0-demo.apk
+          name: revolt-school-android-3.4.0-demo
+          path: apps/school-android/build/Revolt-School-3.4.0-demo.apk
           if-no-files-found: error
           retention-days: 14

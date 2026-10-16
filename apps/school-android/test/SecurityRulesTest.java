@@ -20,6 +20,13 @@ public class SecurityRulesTest {
         check(SecurityRules.safeFilename("...").equals("school-document"));
         check(SecurityRules.safeFilename(null).equals("school-document"));
         check(SecurityRules.safeFilename(new String(new char[200]).replace('\0','a')).length() == 120);
+        check(SecurityRules.mobileLaunchUrl(SecurityRules.HOME) == null);
+        String teacher = SecurityRules.ORIGIN + "/mobile/teacher?school=alpha";
+        check(teacher.equals(SecurityRules.mobileLaunchUrl(teacher + "&token=discard-me")));
+        check((SecurityRules.HOME + "?school=alpha").equals(SecurityRules.mobileHomeUrl(teacher)));
+        check((SecurityRules.HOME + "?school=alpha").equals(SecurityRules.mobileLaunchUrl(SecurityRules.ORIGIN + "/mobile/setup?school=alpha")));
+        check((SecurityRules.HOME + "?school=alpha").equals(SecurityRules.mobileLaunchUrl(SecurityRules.ORIGIN + "/s/alpha/login")));
+        for (String invalid : new String[]{"https://evil.test/mobile?school=alpha",SecurityRules.HOME + "?school=a%2Fb",SecurityRules.HOME + "?school=alpha&school=beta",SecurityRules.ORIGIN + "/s/alpha/login?school=beta",SecurityRules.HOME + "?school=",SecurityRules.ORIGIN + "/admin-login?school=alpha"}) check(SecurityRules.mobileLaunchUrl(invalid) == null);
         System.out.println("Android navigation and filename checks passed.");
     }
 }

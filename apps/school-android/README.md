@@ -21,6 +21,17 @@ The initial APK is intended for direct installation. Signing and package checks
 are performed during the build; physical Android device testing remains required.
 This is not a Play Store publication.
 
+## School activation and restart
+
+Version 3.4.0 opens school invitations through the launcher unlock gate. Open
+**Set up mobile app** from the school's sign-in page, then choose **Open installed
+Android app**. The public school address is saved separately from authentication,
+so closing the app or signing out preserves its school. Credentials and session
+values are never copied from invitation URLs into the saved launch address.
+
+Browser installations use a separate school-bound manifest and launch address.
+Back returns through app screens and asks before leaving the home screen.
+
 ## Build
 
 Use Java 17 and official Android platform 35/build tools 35.0.0. Set

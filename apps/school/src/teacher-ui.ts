@@ -78,6 +78,7 @@ async function openWorkspace(){
   E('myProfile').onclick=openTeacherProfile;
   E('signOut').onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_teacher_token');sessionStorage.removeItem('rx_school_token');token='';ctx=null;location.replace(window.rxSessionGuard.loginTarget())};
   E('loading').classList.add('hide');E('app').classList.remove('hide');
+  if(window.rxSchoolHistory)window.rxSchoolHistory.bind({home:'dashboard',restore:function(p){return page(p)},close:function(){var m=E('modal');if(m&&!m.classList.contains('hide')){close();return true}return false}});
   var first=visibleNav.find(function(n){return n[0]==='dashboard'})||visibleNav[0];if(first)page(first[0]);else E('content').innerHTML='<div class="panel"><h2>No Teacher permissions assigned</h2><p class="muted">Ask an administrator to update your role in Access Management.</p></div>'
 }
 async function startOnboardingAccess(){
@@ -107,7 +108,7 @@ async function boot(){
   }
 }
 
-async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}current=p;sessionStorage.setItem('rx_teacher_page',p);document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
+async function page(p){var n=nav.find(function(x){return x[0]===p});if(n&&!can(n[3])){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your assigned role does not permit this Teacher module.</p></div>';return}if(window.rxSchoolHistory)window.rxSchoolHistory.visit(p);current=p;sessionStorage.setItem('rx_teacher_page',p);document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('content').innerHTML='<p class="muted">Loading...</p>';try{
 if(p==='dashboard'){
  var pair=await Promise.all([raw('/api/teacher/dashboard').catch(function(e){return{assignedClasses:0,subjectAssignments:0,classTeacherClasses:0,students:0,homework:0,assessments:0,pendingAssessments:0,unreadNotifications:0,presentToday:0,absentToday:0,loadError:e.message}}),raw('/api/teacher/notifications?limit=10').catch(function(){return{alerts:[],unread:0}})]),d=pair[0],noticeState=pair[1],alerts=noticeState.alerts||[];
  var shortcuts=[['classes','My Classes','Your assigned classes and subjects'],['attendance','Take attendance','Open your daily class register'],['homework','Homework','Prepare and manage class work'],['lessonnotes','Lesson Notes','Plan your teaching']].filter(function(x){var n=nav.find(function(n){return n[0]===x[0]});return n&&can(n[3])});

@@ -1,6 +1,6 @@
 import { schoolSessionScript } from './session-ui.js';
 import { applySchoolDesign } from './school-design.js';
-import {workflowSharedUi,payrollManagementUi,schoolCatalogueUi} from './workflow-ui.js';
+import {workflowSharedUi,payrollManagementUi,schoolCatalogueUi,outstandingFeesUi} from './workflow-ui.js';
 
 const schoolFrontendDocument=`<!doctype html>
 <html lang="en">
@@ -68,6 +68,7 @@ var nav=[
 ['studentstatements','Student Statements','S','screen.student_statements.view','school.fees'],
 ['grading','Grading Scheme','G','screen.grading.view','school.academics'],
 ['finance','Finance & Accounts','₵','screen.finance.view','school.finance'],
+['debtors','Students Owing','₵','fees.view','school.fees'],
 ['hr','HR & Payroll','H','payroll.manage','school.staff'],
 ['payroll','Payroll Runs & Payslips','₵','','school.staff'],
 ['leave','Leave & Relief','L','screen.leave.view','school.staff'],
@@ -263,6 +264,7 @@ async function boot(){try{
   var signOutButton=E('signOut');if(signOutButton)signOutButton.onclick=async function(){try{await fetch('/api/auth/logout',{method:'POST',headers:token?{authorization:'Bearer '+token}:{}})}catch(e){}sessionStorage.removeItem('rx_school_token');sessionStorage.removeItem('rx_teacher_token');location.replace(window.rxSessionGuard.loginTarget())};
   setupGlobalSearch();
   E('loading').classList.add('hide');E('app').classList.remove('hide');var contentRoot=E('content');if(contentRoot){new MutationObserver(function(){enhancePagination(contentRoot)}).observe(contentRoot,{childList:true,subtree:true})}
+  if(window.rxSchoolHistory)window.rxSchoolHistory.bind({home:'dashboard',restore:function(p){return page(p)},close:function(){var m=E('modal');if(m&&!m.classList.contains('hide')){close();return true}return false}});
   var initialPath=location.pathname.match(/^\\/students\\/([^/?#]+)/);var requestedPage=new URLSearchParams(location.search).get('page');if(initialPath&&initialPath[1]){selectedStudentId=decodeURIComponent(initialPath[1]);await page('studentdetail');}else if(requestedPage&&nav.some(function(n){return n[0]===requestedPage&&navAllowed(n)}))await page(requestedPage);else await page('dashboard')
 }catch(e){
   E('loading').innerHTML='<div class="connection-card"><h2>School workspace unavailable</h2><p>'+esc(e.message)+'</p><div id="schoolConnectionStatus" class="muted">The School request did not complete. The app retries transient network delays automatically and can explicitly wake Core OS.</div><div class="actions" style="justify-content:center;margin-top:14px"><button id="wakeSchoolCore" class="primary">Wake Core OS</button><button id="checkSchoolCore" class="ghost">Check system status</button><button id="retrySchool" class="ghost">Retry</button><button id="returnSchoolLogin" class="ghost">Return to sign in</button></div></div>';
@@ -297,6 +299,7 @@ async function boot(){try{
 async function page(p){
  var navItem=nav.find(function(n){return n[0]===p});if(navItem&&!navAllowed(navItem)){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">This screen is not available under your current role or Revolt-X School plan.</p></div>';return}
  if(p==='studentdetail'&&!can('students.profile.view')){E('content').innerHTML='<div class="panel"><h2>Access restricted</h2><p class="muted">Your current School role cannot open full student profiles.</p></div>';return}
+ if(window.rxSchoolHistory)window.rxSchoolHistory.visit(p);
  current=p;sessionStorage.setItem('rx_school_admin_page',p);document.querySelectorAll('#nav button').forEach(function(b){b.classList.toggle('active',b.dataset.p===p)});E('pageTitle').textContent=(navItem||['',p])[1];E('content').innerHTML='<p class="muted">Loading...</p>';
  try{
  if(p==='dashboard'){
@@ -937,6 +940,7 @@ else if(p==='attendance'){
      id=e.target.dataset.voidPayment;if(id){var p0=payments.find(function(x){return x.id===id}),ref=prompt('Enter the ORIGINAL transaction reference:',p0&&p0.reference?p0.reference:'');if(!ref||!ref.trim())return;var reason=prompt('Reason for voiding this payment:');if(reason&&reason.trim())return raw('/api/payments/'+id+'/void',{method:'POST',body:JSON.stringify({originalReference:ref.trim(),reason:reason.trim()})}).then(function(){toast('Payment reversed');page('fees')}).catch(function(err){toast(err.message,true)})}
    }
  }
+ else if(p==='debtors'){await renderOutstandingFees()}
  else if(p==='finance'){
    var today=new Date().toISOString().slice(0,10),yearStart=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10);
    var rr=await Promise.all([
@@ -972,7 +976,7 @@ else if(p==='attendance'){
      return (summary?'<div class="grid">'+summary+'</div>':'')+'<div class="panel" style="margin-top:12px">'+table(rows,cols)+'</div>'
    }
    E('content').innerHTML='<div class="section"><div><h1>Accounts & Student Finance</h1><p class="muted">Student receipting, fee-to-income GL mapping, expenses, journals, taxes, budgets and financial reporting in one accounting workspace.</p></div><div class="actions">'+(financeCanTab('student')&&can('finance.receive_student_payment')?'<button id="receiveStudentPaymentTop" class="primary">Receive student payment</button>':'')+(financeCanTab('expenses')&&can('finance.post')?'<button id="newExpenseTop" class="ghost">Record expense</button>':'')+'</div></div>'+
-   (financeCanTab('overview')?'<div class="grid"><div class="panel stat"><span class="muted">Income</span><b>'+money(fd.income)+'</b></div><div class="panel stat"><span class="muted">Expenses</span><b>'+money(fd.expenses)+'</b></div><div class="panel stat"><span class="muted">Surplus / Deficit</span><b>'+money(fd.surplus)+'</b></div><div class="panel stat"><span class="muted">Cash & Clearing</span><b>'+money(fd.cash)+'</b></div><div class="panel stat"><span class="muted">Outstanding Fees</span><b>'+money(fd.outstandingFees)+'</b></div><div class="panel stat"><span class="muted">Paid Parent Requests</span><b>'+paymentRequests.filter(function(x){return x.status==="paid"}).length+'</b></div><div class="panel stat"><span class="muted">Successful Online Payments</span><b>'+paymentIntents.filter(function(x){return x.status==="success"}).length+'</b></div><div class="panel stat"><span class="muted">MoMo Clearing Balance</span><b>'+money(((paymentBalances.find(function(x){return x.method_key==="mobile_money"})||{}).balance)||0)+'</b></div><div class="panel stat"><span class="muted">Tax Outstanding</span><b>'+money(fd.taxOutstanding)+'</b><small>'+esc(fd.openTaxItems)+' open item(s)</small></div></div>':'')+
+   (financeCanTab('overview')?'<div class="grid"><div class="panel stat"><span class="muted">Income</span><b>'+money(fd.income)+'</b></div><div class="panel stat"><span class="muted">Expenses</span><b>'+money(fd.expenses)+'</b></div><div class="panel stat"><span class="muted">Surplus / Deficit</span><b>'+money(fd.surplus)+'</b></div><div class="panel stat"><span class="muted">Cash & Clearing</span><b>'+money(fd.cash)+'</b></div><div class="panel stat"><span class="muted">Outstanding Fees</span><button id="openStudentsOwing" class="mini">View students owing</button><b>'+money(fd.outstandingFees)+'</b></div><div class="panel stat"><span class="muted">Paid Parent Requests</span><b>'+paymentRequests.filter(function(x){return x.status==="paid"}).length+'</b></div><div class="panel stat"><span class="muted">Successful Online Payments</span><b>'+paymentIntents.filter(function(x){return x.status==="success"}).length+'</b></div><div class="panel stat"><span class="muted">MoMo Clearing Balance</span><b>'+money(((paymentBalances.find(function(x){return x.method_key==="mobile_money"})||{}).balance)||0)+'</b></div><div class="panel stat"><span class="muted">Tax Outstanding</span><b>'+money(fd.taxOutstanding)+'</b><small>'+esc(fd.openTaxItems)+' open item(s)</small></div></div>':'')+
     '<div class="staff-tabs">'+
      (financeCanTab('overview')?'<button class="staff-tab" data-fin-tab="overview">Overview</button>':'')+
      (financeCanTab('student')?'<button class="staff-tab" data-fin-tab="student">Student Payments</button>':'')+
@@ -1175,6 +1179,7 @@ else if(p==='attendance'){
    if(E('newBudget'))E('newBudget').onclick=function(){form('Create Budget',[{key:'academicYearId',label:'Academic year',type:'select',options:[{value:'',label:'Not linked'}].concat(years.map(function(y){return{value:y.id,label:y.name}}))},{key:'accountId',label:'Account',type:'select',options:accounts.filter(function(a){return a.account_type==='income'||a.account_type==='expense'}).map(function(a){return{value:a.id,label:a.code+' • '+a.name}})},{key:'periodStart',label:'From',type:'date'},{key:'periodEnd',label:'To',type:'date'},{key:'amount',label:'Budget amount',type:'number'},{key:'notes',label:'Notes',type:'textarea'}],{periodStart:yearStart,periodEnd:today},function(v){return raw('/api/finance/budgets',{method:'POST',body:JSON.stringify({academicYearId:v.academicYearId||null,accountId:v.accountId,periodStart:v.periodStart,periodEnd:v.periodEnd,amount:Number(v.amount),notes:v.notes||undefined})})})};
    if(E('newTaxType'))E('newTaxType').onclick=function(){form('Tax / Statutory Setup',[{key:'code',label:'Code'},{key:'name',label:'Tax name'},{key:'authority',label:'Authority'},{key:'rate',label:'Rate % (optional)',type:'number'},{key:'filingFrequency',label:'Filing frequency',type:'select',options:['monthly','quarterly','annual','other']}],{authority:'Ghana Revenue Authority',filingFrequency:'monthly'},function(v){return raw('/api/finance/tax-types',{method:'POST',body:JSON.stringify({code:v.code,name:v.name,authority:v.authority||undefined,rate:v.rate===''?null:Number(v.rate),filingFrequency:v.filingFrequency})})})};
    if(E('newTaxObligation'))E('newTaxObligation').onclick=function(){form('Record Tax Obligation',[{key:'taxTypeId',label:'Tax / statutory item',type:'select',options:taxes.types.filter(function(t){return t.is_active}).map(function(t){return{value:t.id,label:t.code+' • '+t.name}})},{key:'periodStart',label:'Period start',type:'date'},{key:'periodEnd',label:'Period end',type:'date'},{key:'dueDate',label:'Due date',type:'date'},{key:'amountDue',label:'Amount due',type:'number'},{key:'filingReference',label:'Filing reference'},{key:'notes',label:'Notes',type:'textarea'}],{},function(v){return raw('/api/finance/tax-obligations',{method:'POST',body:JSON.stringify({taxTypeId:v.taxTypeId,periodStart:v.periodStart,periodEnd:v.periodEnd,dueDate:v.dueDate,amountDue:Number(v.amountDue),filingReference:v.filingReference||undefined,notes:v.notes||undefined})})})};
+   if(E('openStudentsOwing'))E('openStudentsOwing').onclick=function(){page('debtors')};
    if(E('fullJournalHistory'))E('fullJournalHistory').onclick=function(){sessionStorage.setItem('rx_report_type','transactions');page('reporting')};
    if(E('newJournal'))E('newJournal').onclick=function(){var opts=accounts.filter(function(a){return a.is_active}).map(function(a){return'<option value="'+a.id+'">'+esc(a.code+' • '+a.name)+'</option>'}).join('');modal('<h2>Post Manual Journal</h2><label>Date</label><input id="jrDate" type="date" value="'+today+'"><label>Description</label><textarea id="jrDesc"></textarea><label>Reference</label><input id="jrRef"><div class="three"><div><label>Debit account</label><select id="jrDebit">'+opts+'</select></div><div><label>Credit account</label><select id="jrCredit">'+opts+'</select></div><div><label>Amount</label><input id="jrAmount" type="number" step="0.01"></div></div><button id="postJournal" class="primary">Post balanced journal</button>');if(E('postJournal'))E('postJournal').onclick=async function(){var amount=Number(E('jrAmount').value);if(!amount||amount<=0)return toast('Enter an amount',true);if(E('jrDebit').value===E('jrCredit').value)return toast('Debit and credit accounts must differ',true);await raw('/api/finance/journals',{method:'POST',body:JSON.stringify({entryDate:E('jrDate').value,description:E('jrDesc').value,reference:E('jrRef').value||undefined,lines:[{accountId:E('jrDebit').value,debit:amount,credit:0},{accountId:E('jrCredit').value,debit:0,credit:amount}]})});close();toast('Journal posted');page('finance')}};
    if(E('runFinanceReport'))E('runFinanceReport').onclick=async function(){var type=E('financeReport').value,start=E('financeStart').value,end=E('financeEnd').value;reportData=await raw('/api/finance/reports/'+type+'?start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end));E('financeReportOut').innerHTML=renderReport(reportData)};
@@ -1802,6 +1807,7 @@ else if(p==='attendance'){
 ${workflowSharedUi}
 ${payrollManagementUi}
 ${schoolCatalogueUi}
+${outstandingFeesUi}
 // Start boot immediately. Also surface a recoverable error instead of leaving the splash
 // screen forever if an unexpected browser-side exception occurs before boot completes.
 Promise.resolve().then(function(){return boot()}).catch(function(e){
