@@ -19,7 +19,7 @@ function recoverSchoolLocation(portal){
   // account selection. The destination still resolves and verifies its tenant.
   if(!school){try{school=localStorage.getItem('rx_school_id')||''}catch(e){}}
   if(!school||school.length>120||/[\s/\\?#<>]/.test(school))return false;
-  var mobile=location.pathname.startsWith('/mobile/');
+  var mobile=/^\/mobile(?:\/|$)/.test(location.pathname);
   if(mobile||family!=='school')target=new URL(location.pathname,location.origin);
   else if(!target||(location.pathname==='/admin-login'&&!target.pathname.endsWith('/admin-login')))target=new URL('/s/'+encodeURIComponent(school)+(location.pathname==='/admin-login'?'/admin-login':'/login'),location.origin);
   if(mobile||family!=='school')target.searchParams.set('school',school);

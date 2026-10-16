@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {registerSchoolMobile,schoolMobileScript} from '../dist/mobile-app.js';
 import {mobileSchoolResolver} from '../dist/mobile-binding.js';
 import {schoolNavigationScript,mobileControlScript} from '../dist/mobile-navigation.js';
+import {schoolLocationScript} from '../dist/tenant-ui.js';
 
 const alpha={tenant_slug:'alpha',school_name:'Alpha School'},beta={tenant_slug:'beta',school_name:'Beta School'};
 async function mobileApp(t){
@@ -24,6 +25,20 @@ test('app restart recovers school from its durable cookie or an older session an
  const legacy=await app.inject({url:'/mobile/teacher',headers:{authorization:'Bearer rxs_old'}});assert.equal(legacy.headers.location,'/mobile/teacher?school=alpha');
  const explicit=await app.inject({url:'/mobile/teacher?school=beta',headers:{cookie:'rx_mobile_school=alpha',authorization:'Bearer rxs_old'}});assert.equal(explicit.statusCode,200);assert.match(explicit.body,/data-school-id="beta"/);assert.match(explicit.headers['set-cookie'],/rx_mobile_school=beta/);
  const manifest=await app.inject({url:'/school.webmanifest',headers:{cookie:'rx_mobile_school=alpha'}});assert.match(manifest.headers['cache-control'],/no-store/);assert.equal(manifest.json().start_url,'/mobile?school=alpha');
+});
+test('mobile home stays in the app when only local school context survives',()=>{
+ for(const pathname of ['/mobile','/mobile/','/mobile/teacher','/mobile/parent']){
+  let destination='';
+  const context={location:{pathname,search:'',origin:'https://school.example',replace:path=>destination=path},localStorage:{getItem:key=>key==='rx_mobile_school'?'alpha':''},sessionStorage:{getItem:()=>''},URL,URLSearchParams};
+  vm.runInNewContext(schoolLocationScript+';recoverSchoolLocation("teacher")',context);
+  assert.equal(destination,pathname+'?school=alpha');
+ }
+});
+test('activation resolves its school and checks its mobile entitlement once',async t=>{
+ const app=Fastify(),calls={school:0,access:0};t.after(()=>app.close());
+ await registerSchoolMobile(app,{resolveSchool:async()=>{calls.school++;return alpha},assertAccess:async()=>{calls.access++}});
+ const response=await app.inject('/mobile/setup?school=alpha');
+ assert.equal(response.statusCode,200);assert.deepEqual(calls,{school:1,access:1});
 });
 test('opening an invitation persists mobile school identity before the first credential submission',()=>{
  const {document,window}=parseHTML('<body data-school-id="alpha"><main class="m-header"></main><a data-mobile-role href="/mobile/teacher">Teacher</a><link rel="manifest" href="/school.webmanifest"></body>'),saved=new Map(),events={};
