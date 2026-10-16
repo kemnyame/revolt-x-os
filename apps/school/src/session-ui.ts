@@ -1,3 +1,4 @@
+import {schoolNavigationScript} from './mobile-navigation.js';
 import {schoolLocationScript} from './tenant-ui.js';
 /** Authentication deadlines come from the server; no heartbeat extends idle sessions. */
 export function setSessionDeadline(request:any,value:Date|string|null|undefined){
@@ -18,6 +19,7 @@ export function schoolSessionLoginPath(core:any,next='/',expired=false){
 export function schoolSessionScript(portal:'staff'|'teacher'|'parent'|'student'){
   return String.raw`
 ${schoolLocationScript}
+${schoolNavigationScript}
 (function(){
   var portal=${JSON.stringify(portal)},originalFetch=window.fetch.bind(window),redirecting=false,deadline=0,timer=null;
   var family=portal==='teacher'?'staff':portal,deadlineKey='rx_'+(family==='staff'?'school':family)+'_session_expires_at';

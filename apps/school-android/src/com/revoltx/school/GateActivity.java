@@ -26,7 +26,11 @@ public final class GateActivity extends Activity {
     private void openSchool() {
         if (opening || isFinishing()) return;
         opening = true;
-        startActivity(new Intent(this, MainActivity.class));
+        Intent launch = new Intent(this, MainActivity.class);
+        String target = SecurityRules.mobileLaunchUrl(getIntent().getDataString());
+        if (target != null) launch.setData(android.net.Uri.parse(target));
+        launch.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(launch);
         finish();
     }
 

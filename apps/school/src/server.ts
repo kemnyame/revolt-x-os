@@ -1,3 +1,5 @@
+import {registerOutstandingFees} from './outstanding-fees.js';
+import {mobileSchoolResolver} from './mobile-binding.js';
 import {createSchoolTenantPages,rememberedSchoolContext} from './tenant-pages.js';
 import {schoolTenantDocument,schoolWorkspaceUrl} from './tenant-ui.js';
 import { registerSchoolClassCatalogue } from './class-catalogue.js';
@@ -722,6 +724,7 @@ app.get('/api/internal/backup-snapshot',async request=>{
 });
 
 registerSchoolReportingRoutes(app,{db,requireCoreServiceRequest});
+await registerOutstandingFees(app,{db,config,authorize,fail});
 await registerOperationsReports(app,{db,config,authorize,effectiveCapabilities,schoolRoleProfile,schoolLicence,fail});
 app.get('/api/internal/tenants',async request=>{
   requireCoreServiceRequest(request);
@@ -1765,7 +1768,7 @@ async function assertMobileLicence(school:any){
   const licence=await schoolLicence(school.organisation_id);
   if(licence.status!=='legacy'&&(!licence.licensed||!licence.modules.includes('school.mobile')))throw fail(403,'The mobile app is included from the Growth plan. Use your school web portal or ask your administrator to review the plan.');
 }
-await registerSchoolMobile(app,{resolveSchool:async request=>{const school=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;return school?resolveTenantSchool(String(school)):null},assertAccess:assertMobileLicence});
+await registerSchoolMobile(app,{resolveSchool:mobileSchoolResolver({db,requestSessionToken,resolveTenantSchool}),assertAccess:assertMobileLicence});
 app.addHook('preHandler',async request=>{
   if(!String(request.url).startsWith('/api/mobile/'))return;
   const body:any=request.body||{},query:any=request.query||{};
