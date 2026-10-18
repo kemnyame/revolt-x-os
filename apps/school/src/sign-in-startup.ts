@@ -1,19 +1,32 @@
 import type { SchoolConfig } from './config.js';
 
-/** A gateway response does not prove that the Core application is running. */
+/** Sign-in needs a ready authentication database, not just a running process.
+ * An operator-confirmed outage stops cold-start retries. A healthy readiness
+ * response always clears the notice for that request, so it cannot lock out a
+ * restored service. No credentials are sent by this public probe. */
 export async function probeSchoolSignInService(config: SchoolConfig, fetchCore: typeof fetch = fetch) {
   const base = config.CORE_OS_URL.replace(/\/$/, '');
   const started = Date.now();
+  const incident = config.CORE_SIGN_IN_OUTAGE_MESSAGE?.trim();
+  const unavailable = (status:number) => ({reachable:false,healthy:false,status,responseMs:Date.now()-started,url:base,
+    ...(incident?{retryable:false,message:incident,code:'SCHOOL_SIGN_IN_OUTAGE'}:{})});
   try {
-    const response = await fetchCore(base + '/health/live', {
+    const response = await fetchCore(base + '/health/ready', {
       method: 'GET', signal: AbortSignal.timeout(4500), cache: 'no-store'
     });
     const body = await response.json().catch(() => null) as any;
-    const ready = response.ok && body?.status === 'ok';
-    return { reachable: ready, healthy: ready, status: response.status, responseMs: Date.now() - started, url: base };
+    const ready = response.ok && body?.status === 'ready';
+    return ready?{reachable:true,healthy:true,status:response.status,responseMs:Date.now()-started,url:base}:unavailable(response.status);
   } catch {
-    return { reachable: false, healthy: false, status: 0, responseMs: Date.now() - started, url: base };
+    return unavailable(0);
   }
+}
+
+/** Direct API callers receive the same incident response as browser sign-in. */
+export async function assertCoreSignInAvailable(config:SchoolConfig,fetchCore:typeof fetch=fetch){
+  if(!config.CORE_SIGN_IN_OUTAGE_MESSAGE?.trim())return;
+  const status=await probeSchoolSignInService(config,fetchCore);
+  if(!status.healthy)throw Object.assign(new Error(config.CORE_SIGN_IN_OUTAGE_MESSAGE.trim()),{statusCode:503,code:'SCHOOL_SIGN_IN_OUTAGE'});
 }
 
 /** An interactive sign-in wakes the public health endpoint from the user's client.
@@ -24,7 +37,7 @@ export async function probeSchoolSignInService(config: SchoolConfig, fetchCore: 
 export const schoolSignInStartupScript = String.raw`
 (function(){
   var pending=null;
-  function unavailable(){var error=Error('The sign-in service could not start. Your entries are still here. Please try signing in again.');error.status=503;return error}
+  function unavailable(message){var error=Error(message||'Sign-in is unavailable because the authentication service did not recover. Your entries are still here. Contact your school administrator if this continues.');error.status=503;return error}
   function pause(milliseconds){return new Promise(function(resolve){setTimeout(resolve,milliseconds)})}
   async function read(url,timeout,external,providedController){
     var controller=providedController||(typeof AbortController==='function'?new AbortController():null);
@@ -56,13 +69,15 @@ export const schoolSignInStartupScript = String.raw`
       while(Date.now()<deadline){
         var status=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
         var core=status.body&&status.body.core;
+        if(status.ok&&status.body.database==='unavailable')throw unavailable('The School data service is unavailable. Your entries are still here. Contact your school administrator.');
         if(status.ok&&core&&core.healthy===true){
           if(announced&&progress)progress('Signing in…');return;
         }
+        if(status.ok&&core&&core.retryable===false)throw unavailable(core.message);
         if(status.ok&&core&&core.url!==undefined){
           url=publicHealthUrl(core.url);if(!url)throw unavailable();
         }
-        if(!announced){announced=true;if(progress)progress('Starting sign-in. This can take about a minute. Please keep this screen open…')}
+        if(!announced){announced=true;if(progress)progress('Connecting to sign-in. Waiting for the service to become ready…')}
         if(Date.now()>=deadline)break;
         if(url&&!wakeRequest&&Date.now()>=nextWakeAt){
           var controller=typeof AbortController==='function'?new AbortController():null;
@@ -81,18 +96,17 @@ export const schoolSignInStartupScript = String.raw`
   }
   async function loadData(url,options){
     options=options||{};
-    var deadline=Date.now()+90000,announced=false,recoveredCore=false,lastMessage='School sign-in could not load. Please try again.';
+    var deadline=Date.now()+90000,announced=false,lastMessage='School sign-in could not load. Please try again.';
+    if(options.core)await window.RevoltSchoolSignIn.ensureReady(options.progress,deadline-Date.now());
     while(Date.now()<deadline){
       var result=await read(url,Math.max(1,Math.min(15000,deadline-Date.now())),false);
       if(result.ok&&result.body!==null&&(!options.valid||options.valid(result.body)))return result.body;
       var message=result.body&&result.body.error&&result.body.error.message||result.body&&result.body.message;
+      if(result.body&&result.body.error&&result.body.error.code==='SCHOOL_SIGN_IN_OUTAGE')throw unavailable(message);
       if(!result.ok&&result.status>=400&&result.status<500&&result.status!==429){
         var error=Error(message||'This sign-in link could not be verified. Open the current link from your school record.');error.status=result.status;throw error;
       }
       if(!announced){announced=true;if(options.progress)options.progress('Loading sign-in. Please keep this screen open while the service reconnects…')}
-      if(options.core&&!recoveredCore){
-        recoveredCore=true;await window.RevoltSchoolSignIn.ensureReady(options.progress,deadline-Date.now());
-      }
       var delay=Math.max(3000,result.retryAfter||0);
       if(Date.now()+delay>=deadline)break;
       await pause(delay);

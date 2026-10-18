@@ -1,4 +1,5 @@
 import type { SchoolConfig } from './config.js';
+import {assertCoreSignInAvailable} from './sign-in-startup.js';
 
 type LoginKind = 'staff' | 'admin';
 type LoginOptions = {
@@ -41,6 +42,7 @@ export async function authenticateCoreSchoolLogin(
     throw loginError(503, 'School sign-in is not configured. Contact your school administrator.', 'SCHOOL_SIGN_IN_UNAVAILABLE');
   }
   const fetchCore = options.fetchCore ?? fetch;
+  await assertCoreSignInAvailable(config,fetchCore);
   const wait = options.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
   const now = options.now ?? Date.now;
   const deadline = now() + 55_000;

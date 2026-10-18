@@ -9,6 +9,8 @@ const schema = z.object({
   SCHOOL_DATABASE_URL: z.string().min(1),
   CORE_OS_URL: z.string().url(),
   CORE_SERVICE_KEY: z.preprocess(emptyToUndefined,z.string().min(32).optional()),
+  // Operator-confirmed incident notice. It is used only while Core readiness fails.
+  CORE_SIGN_IN_OUTAGE_MESSAGE: z.preprocess(emptyToUndefined,z.string().trim().max(400).optional()),
   CORS_ORIGINS: z.string().default('*'),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(30).default(5),
   PARENT_LOGIN_FAILURE_LIMIT: z.coerce.number().int().min(3).max(20).default(5),

@@ -1,4 +1,5 @@
 import {schoolWorkspaceUrl} from './tenant-ui.js';
+import {assertCoreSignInAvailable} from './sign-in-startup.js';
 import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -93,6 +94,7 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     reply.header('cache-control','no-store');
     const query=z.object({schoolId:schoolIdentifier,adminUserId:schoolRecordId}).parse(request.query);
     if(!options.config.CORE_SERVICE_KEY)throw Object.assign(new Error('Core service authentication is not configured'),{statusCode:503});
+    await assertCoreSignInAvailable(options.config,options.fetchCore);
     const q=new URLSearchParams(query);
     const response=await(options.fetchCore??fetch)(options.config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/admin-login-context?'+q,{
       headers:{'x-revolt-service-key':options.config.CORE_SERVICE_KEY},signal:AbortSignal.timeout(20000)

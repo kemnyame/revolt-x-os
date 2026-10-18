@@ -81,3 +81,15 @@ test('administrator login uses the same recovery and preserves its specific admi
     assert.equal(url,'https://core.example.test/v1/internal/school/authenticate-admin');assert.deepEqual(JSON.parse(options.body),body);return response(account)
   }});assert.deepEqual(result,account);
 });
+
+test('a confirmed outage rejects direct login without forwarding credentials and automatically permits a recovered Core',async()=>{
+  const incident='Central sign-in is unavailable. Contact your system provider.';
+  const marked={...config,CORE_SIGN_IN_OUTAGE_MESSAGE:incident};
+  for(const kind of ['staff','admin']){
+    const calls=[];
+    await assert.rejects(authenticateCoreSchoolLogin(marked,kind,credentials,{fetchCore:async(url,options)=>{calls.push({url,options});return response({status:'unavailable'},503)},wait:()=>assert.fail('Confirmed outages must not be retried')}),{statusCode:503,code:'SCHOOL_SIGN_IN_OUTAGE',message:incident});
+    assert.equal(calls.length,1);assert.equal(calls[0].url,'https://core.example.test/health/ready');assert.equal(calls[0].options.body,undefined);assert.equal(calls[0].options.headers,undefined);
+  }
+  const result=await authenticateCoreSchoolLogin(marked,'staff',credentials,{fetchCore:async url=>url.endsWith('/health/ready')?response({status:'ready'}):response(account)});
+  assert.deepEqual(result,account);
+});
