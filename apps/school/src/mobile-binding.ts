@@ -26,3 +26,13 @@ export function androidMobileIntent(slug:string){
  const path=schoolWorkspaceUrl(slug,'/mobile');
  return 'intent://revolt-x-school.onrender.com'+path+'#Intent;scheme=https;package=com.revoltx.school;S.browser_fallback_url='+encodeURIComponent('https://revolt-x-school.onrender.com'+path)+';end';
 }
+
+/** Verification outages are service failures. They do not imply that the
+ * school's paid plan is missing the mobile feature or extend licence grace. */
+export function mobileLicenceRestriction(licence:any,outageMessage?:string){
+ if(licence.status==='legacy')return null;
+ if(licence.status==='verification_required')return{status:503,message:outageMessage||'School mobile access cannot be verified because the central service is unavailable. Contact your school administrator so the system provider can restore it.'};
+ if(!licence.licensed)return{status:403,message:'This School licence is '+String(licence.status||'inactive').replace(/_/g,' ')+'. Contact your school administrator to restore access.'};
+ if(!licence.modules?.includes('school.mobile'))return{status:403,message:'The mobile app is included from the Growth plan. Use your school web portal or ask your administrator to review the plan.'};
+ return null;
+}

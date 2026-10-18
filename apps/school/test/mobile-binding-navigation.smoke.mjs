@@ -5,7 +5,7 @@ import Fastify from 'fastify';
 import {parseHTML} from 'linkedom';
 import {createHash} from 'node:crypto';
 import {registerSchoolMobile,schoolMobileScript} from '../dist/mobile-app.js';
-import {mobileSchoolResolver} from '../dist/mobile-binding.js';
+import {mobileSchoolResolver,mobileLicenceRestriction} from '../dist/mobile-binding.js';
 import {schoolNavigationScript,mobileControlScript} from '../dist/mobile-navigation.js';
 import {schoolLocationScript} from '../dist/tenant-ui.js';
 
@@ -57,4 +57,15 @@ test('browser Back restores app screens, then asks before leaving Home',async()=
 });
 test('optimized touch controls can be toggled and retained without storing account data',()=>{
  const {document}=parseHTML('<body><header class="m-header"></header></body>'),saved=new Map();vm.runInNewContext(mobileControlScript,{document,localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)}});const b=document.getElementById('rxOptimizeControls');assert.equal(b.textContent,'Optimize controls');b.click();assert.equal(b.getAttribute('aria-pressed'),'true');assert.equal(document.documentElement.getAttribute('data-mobile-controls'),'optimized');assert.deepEqual([...saved.keys()],['rx_mobile_controls']);b.click();assert.equal(b.getAttribute('aria-pressed'),'false');
+});
+
+test('an unverified Growth entitlement reports a service outage while Basic and expired licences keep their restrictions',async t=>{
+ const notice='Central sign-in is unavailable because its database hosting has expired.';
+ const app=Fastify();t.after(()=>app.close());let licence={licensed:false,status:'verification_required',plan:'growth',modules:['school.mobile']};
+ await registerSchoolMobile(app,{resolveSchool:async()=>alpha,assertAccess:async()=>{const restriction=mobileLicenceRestriction(licence,notice);if(restriction)throw Object.assign(Error(restriction.message),{statusCode:restriction.status})}});
+ const outage=await app.inject('/mobile/teacher?school=alpha');assert.equal(outage.statusCode,503);assert.match(outage.body,/database hosting has expired/);assert.doesNotMatch(outage.body,/Growth plan/);
+ licence={licensed:true,status:'outage_grace',plan:'growth',modules:['school.mobile']};assert.equal((await app.inject('/mobile/teacher?school=alpha')).statusCode,200);
+ licence={licensed:true,status:'active',plan:'basic',modules:[]};const basic=await app.inject('/mobile/teacher?school=alpha');assert.equal(basic.statusCode,403);assert.match(basic.body,/Growth plan/);
+ licence={licensed:false,status:'expired',plan:'growth',modules:['school.mobile']};const expired=await app.inject('/mobile/teacher?school=alpha');assert.equal(expired.statusCode,403);assert.match(expired.body,/licence is expired/);
+ licence={licensed:true,status:'active',plan:'growth',modules:['school.mobile']};assert.equal((await app.inject('/mobile/teacher?school=alpha')).statusCode,200);
 });
