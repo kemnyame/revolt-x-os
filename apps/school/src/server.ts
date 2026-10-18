@@ -1,5 +1,5 @@
 import {registerOutstandingFees} from './outstanding-fees.js';
-import {mobileSchoolResolver} from './mobile-binding.js';
+import {mobileSchoolResolver,mobileLicenceRestriction} from './mobile-binding.js';
 import {createSchoolTenantPages,rememberedSchoolContext} from './tenant-pages.js';
 import {schoolTenantDocument,schoolWorkspaceUrl} from './tenant-ui.js';
 import { registerSchoolClassCatalogue } from './class-catalogue.js';
@@ -1766,7 +1766,8 @@ app.get('/school-design.css',async(_r,p)=>p.header('cache-control','public, max-
 app.get('/school-design.js',async(_r,p)=>p.header('cache-control','public, max-age=3600').type('application/javascript; charset=utf-8').send(schoolDesignScript));
 async function assertMobileLicence(school:any){
   const licence=await schoolLicence(school.organisation_id);
-  if(licence.status!=='legacy'&&(!licence.licensed||!licence.modules.includes('school.mobile')))throw fail(403,'The mobile app is included from the Growth plan. Use your school web portal or ask your administrator to review the plan.');
+  const restriction=mobileLicenceRestriction(licence,config.CORE_SIGN_IN_OUTAGE_MESSAGE);
+  if(restriction)throw fail(restriction.status,restriction.message);
 }
 await registerSchoolMobile(app,{resolveSchool:mobileSchoolResolver({db,requestSessionToken,resolveTenantSchool}),assertAccess:assertMobileLicence});
 app.addHook('preHandler',async request=>{
