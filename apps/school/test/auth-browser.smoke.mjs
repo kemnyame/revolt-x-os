@@ -208,7 +208,7 @@ test('administrator-specific links lock the verified school and email and send t
 });
 test('an expired or replaced administrator link blocks sign-in instead of falling back to another account',async()=>{
   const b=await browser(adminLoginFrontend,{path:'/s/alpha/admin-login',search:'?admin=11111111-1111-4111-8111-111111111111',respond:()=>({ok:false,status:404,json:async()=>({error:{message:'School administrator login link is no longer valid'}})})});
-  assert.equal(b.element('signin').disabled,true);await b.element('signin').onclick();assert.equal(b.calls.length,2);assert.match(b.element('status').textContent,/no longer valid/);
+  assert.equal(b.element('signin').disabled,true);await b.element('signin').onclick();assert.equal(b.calls.filter(call=>call.url.startsWith('/api/auth/admin-login-context?')).length,1);assert.ok(b.calls.every(call=>call.body===undefined));assert.match(b.element('status').textContent,/no longer valid/);
 });
 
 test('expired administrator login explains expiry and a fresh sign-in replaces its old session deadline',async()=>{

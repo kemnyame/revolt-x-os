@@ -36,12 +36,19 @@ test('service startup failures do not consume the staff password failure allowan
   assert.equal(failures.length,2);assert.ok(failures.every(row=>row.failures===1));
 });
 const response=(payload,status=200)=>new Response(JSON.stringify(payload),{status,headers:{'content-type':'application/json'}});
-async function appFor(t,fetchCore,passwordChangedAudit){
+async function appFor(t,fetchCore,passwordChangedAudit,configOverrides={}){
   const app=Fastify();t.after(()=>app.close());
   app.setErrorHandler((error,_request,reply)=>reply.code(error instanceof z.ZodError?400:error.statusCode||500).send({error:{message:error instanceof z.ZodError?schoolAuthValidationMessage(error.issues):error.message}}));
-  registerSchoolAccessRoutes(app,{db,config,fetchCore,passwordChangedAudit,requireCoreServiceRequest:request=>{if(request.headers['x-revolt-service-key']!==config.CORE_SERVICE_KEY)throw Object.assign(new Error('Service credential required'),{statusCode:401})}});
+  registerSchoolAccessRoutes(app,{db,config:{...config,...configOverrides},fetchCore,passwordChangedAudit,requireCoreServiceRequest:request=>{if(request.headers['x-revolt-service-key']!==config.CORE_SERVICE_KEY)throw Object.assign(new Error('Service credential required'),{statusCode:401})}});
   return app;
 }
+
+test('administrator context reports a confirmed outage without an administrator-directory request',async t=>{
+  const incident='Central sign-in is unavailable. Contact your system provider.',calls=[];
+  const app=await appFor(t,async(url,options)=>{calls.push({url,options});return response({status:'unavailable'},503)},undefined,{CORE_SIGN_IN_OUTAGE_MESSAGE:incident});
+  const result=await app.inject('/api/auth/admin-login-context?schoolId=alpha&adminUserId='+user);
+  assert.equal(result.statusCode,503);assert.equal(result.json().error.message,incident);assert.equal(calls.length,1);assert.equal(calls[0].url,'https://core.example.test/health/ready');assert.equal(calls[0].options.headers,undefined);
+});
 
 test('reset accepts omitted and blank school IDs, uses the verified school and expires the cookie',async t=>{
   const sent=[],app=await appFor(t,async(_url,options)=>{sent.push(JSON.parse(options.body));return response({reset:true,email:'admin@example.test',userId:user,organisationId:org,organisationSlug:'alpha'})});

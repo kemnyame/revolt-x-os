@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import {parseHTML} from 'linkedom';
+import {loginFrontend} from '../dist/login-ui.js';
 import { probeSchoolSignInService, schoolSignInStartupScript } from '../dist/sign-in-startup.js';
 import { virtualClock } from './virtual-clock.mjs';
 
@@ -20,10 +22,10 @@ test('429 gateway responses do not report a running sign-in service',async()=>{
   assert.equal(result.status,429);assert.equal(result.reachable,false);assert.equal(result.healthy,false);
 });
 
-test('only a valid Core health response is ready, while startup HTML and connection failures remain unavailable',async()=>{
-  const ready=await probeSchoolSignInService({CORE_OS_URL:base},async()=>new Response(JSON.stringify({status:'ok'})));
+test('only valid Core database readiness permits sign-in, while process liveness and startup replies remain unavailable',async()=>{
+  const ready=await probeSchoolSignInService({CORE_OS_URL:base},async url=>{assert.equal(url,base+'/health/ready');return new Response(JSON.stringify({status:'ready'}))});
   assert.equal(ready.healthy,true);
-  for(const fetchCore of [async()=>new Response('<html>Starting</html>'),async()=>new Response(JSON.stringify({status:'unavailable'}),{status:503}),async()=>{throw Error('connection refused')}]){
+  for(const fetchCore of [async()=>new Response(JSON.stringify({status:'ok'})),async()=>new Response('<html>Starting</html>'),async()=>new Response(JSON.stringify({status:'unavailable'}),{status:503}),async()=>{throw Error('connection refused')}]){
     const result=await probeSchoolSignInService({CORE_OS_URL:base},fetchCore);assert.equal(result.reachable,false);assert.equal(result.healthy,false);
   }
 });
@@ -41,7 +43,7 @@ test('a sleeping Core is woken by a public opaque GET and verified through the o
   await c.ready(message=>messages.push(message));
   assert.deepEqual(c.calls.map(call=>call.url),['/api/system/core-status',base+'/health/live','/api/system/core-status']);
   const ping=c.calls[1].options;assert.equal(ping.method,'GET');assert.equal(ping.mode,'no-cors');assert.equal(ping.credentials,'omit');assert.equal(ping.body,undefined);assert.equal(ping.headers,undefined);assert.equal(ping.redirect,'error');
-  assert.match(messages[0],/Starting sign-in/);assert.equal(messages.at(-1),'Signing in…');
+  assert.match(messages[0],/Waiting for the service/);assert.equal(messages.at(-1),'Signing in…');
 });
 
 test('public Core availability alone cannot authorize password submission while School still cannot connect',async()=>{
@@ -120,4 +122,33 @@ test('startup stops when its overall deadline is exhausted',async()=>{
   let c;
   c=client(url=>{if(url!== '/api/system/core-status')c.advance(90000);return status(false)});
   await assert.rejects(c.ready(),error=>error.status===503);assert.equal(c.calls.length,2);
+});
+
+const incident='Central sign-in is unavailable. The system provider must restore the service. Your entries are still here.';
+test('a confirmed outage returns immediately without waking Core or retrying user credentials',async()=>{
+  const c=client(()=>response({database:'ready',core:{url:base,healthy:false,retryable:false,message:incident}}));
+  await assert.rejects(c.ready(),{status:503,message:incident});
+  assert.equal(c.calls.length,1);assert.equal(c.now(),0);assert.equal(c.timerCount(),0);
+});
+test('School database outages do not send users through a Core cold-start loop',async()=>{
+  const c=client(()=>response({database:'unavailable',core:{url:base,healthy:true}}));
+  await assert.rejects(c.ready(),error=>error.status===503&&/School data service/.test(error.message));assert.equal(c.calls.length,1);
+});
+test('healthy readiness overrides an old operator notice automatically',async()=>{
+  const config={CORE_OS_URL:base,CORE_SIGN_IN_OUTAGE_MESSAGE:incident};
+  const unavailable=await probeSchoolSignInService(config,async()=>new Response('{}',{status:503}));
+  assert.equal(unavailable.retryable,false);assert.equal(unavailable.message,incident);
+  const healthy=await probeSchoolSignInService(config,async()=>new Response(JSON.stringify({status:'ready'})));
+  assert.equal(healthy.healthy,true);assert.equal(healthy.message,undefined);assert.equal(healthy.retryable,undefined);
+});
+test('a failed staff sign-in preserves the entered ID and password and releases its button',async()=>{
+  const {document}=parseHTML(loginFrontend);document.body.dataset.schoolId='alpha';document.body.dataset.schoolName='Alpha School';
+  const calls=[],clock=virtualClock(),fetch=async(url,options)=>{calls.push({url,options});assert.equal(url,'/api/system/core-status');return response({database:'ready',core:{url:base,healthy:false,retryable:false,message:incident}})};
+  const context={document,window:{fetch},fetch,URL,URLSearchParams,AbortController,location:{pathname:'/s/alpha/login',origin:'https://school.example.test',search:'',replace:()=>assert.fail('A failed login must stay on the form')},sessionStorage:{getItem:()=>'',setItem:()=>assert.fail('A failed login must not save a token'),removeItem(){}},localStorage:{getItem:()=>''},...clock};
+  vm.runInNewContext(loginFrontend.match(/<script>([\s\S]*?)<\/script>/i)[1],context);
+  await Promise.resolve();
+  document.getElementById('staffId').value='STF-000001';document.getElementById('password').value='FixturePassword123!';
+  await document.getElementById('signin').onclick();
+  assert.equal(calls.length,1);assert.equal(document.getElementById('status').textContent,incident);
+  assert.equal(document.getElementById('staffId').value,'STF-000001');assert.equal(document.getElementById('password').value,'FixturePassword123!');assert.equal(document.getElementById('signin').disabled,false);
 });
