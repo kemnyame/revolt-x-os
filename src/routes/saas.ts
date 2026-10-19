@@ -635,7 +635,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
 
       await revokeLinkedSchoolSessions(q,config,user.id,undefined,id);
       if(previousAdminUserId&&previousAdminUserId!==user.id)await revokeLinkedSchoolSessions(q,config,previousAdminUserId,undefined,id);
-      await setSchoolCredential(q,id,user.id,passwordHash,false);
+      await setSchoolCredential(q,id,user.id,passwordHash,true);
       await clearSchoolResetTokens(q,user.id,id);
       await q.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND organisation_id=$2 AND revoked_at IS NULL',[user.id,id]);
       return { user, membershipId: membership.id };
@@ -693,7 +693,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       },
       adminLoginUrl,
       passwordConfigured:true,
-      mustChangePassword:false,
+      mustChangePassword:true,
       schoolSync
     };
   });

@@ -28,9 +28,10 @@ export const osLoginFrontend=String.raw`<!doctype html>
 function E(id){return document.getElementById(id)}
 ${osLoginRequestScript}
 function msg(text,bad){E('message').innerHTML='<div class="'+(bad?'error':'success')+'">'+String(text).replace(/[<>&]/g,'')+'</div>'}
-function save(x){sessionStorage.removeItem('rx_os_session_expires_at');sessionStorage.setItem('rx_access',x.accessToken);sessionStorage.setItem('rx_refresh',x.refreshToken||'');location.replace('/')}
+function save(x){sessionStorage.removeItem('rx_os_session_expires_at');sessionStorage.setItem('rx_access',x.accessToken);sessionStorage.setItem('rx_refresh',x.refreshToken||'');location.replace(x.requiresPasswordChange?'/change-password':'/')}
 function tab(which){['login','register','recovery'].forEach(function(name){E(name+'View').classList.toggle('hidden',name!==which)});E('loginTab').classList.toggle('active',which==='login');E('registerTab').classList.toggle('active',which==='register');E('message').innerHTML=''}
 if(new URLSearchParams(location.search).get('expired')==='1')msg('Your session expired. Please sign in again.',false);
+if(new URLSearchParams(location.search).get('passwordChanged')==='1')msg('Your password has been changed. Sign in with your new password.',false);
 if(new URLSearchParams(location.search).get('passwordReset')==='1')msg('Your OS password has been reset. Sign in with your new OS password.',false);
 E('forgotBtn').onclick=function(){E('recoveryEmail').value=E('loginEmail').value.trim();tab('recovery');E('recoveryEmail').focus()};
 E('backToLogin').onclick=function(){tab('login')};

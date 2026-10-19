@@ -18,12 +18,13 @@ describe('live commercial control admin access', () => {
     expect(commercialControlFrontend).not.toContain("Valid for '+x.expiresInHours+' hours");
   });
 
-  it('supports setting a new School administrator with a final password', () => {
+  it('supports an administrator-assigned temporary School password requiring a change', () => {
     expect(commercialControlFrontend).toContain('Set New Admin');
     expect(commercialControlFrontend).toContain('id="newAdminPassword"');
     expect(commercialControlFrontend).toContain('id="newAdminPasswordConfirm"');
     expect(commercialControlFrontend).toContain("/v1/commercial-control/schools/'+id+'/admin");
     expect(commercialControlFrontend).toContain('password:p');
+    expect(commercialControlFrontend).toContain('They must change it at first sign-in.');
   });
 
   it('shows temporary administrator credentials after paid-invoice school creation', () => {
