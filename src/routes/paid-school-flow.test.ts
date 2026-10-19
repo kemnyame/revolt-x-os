@@ -292,7 +292,7 @@ it('rejects duplicates only within a school and keeps profile edits, status and 
 
 it('OS user administration also scopes school creation and profile updates to the current school',async()=>{
   const alpha=(await paidSchool('alpha')).result,beta=(await paidSchool('beta')).result;
-  const add=async(school:any)=>{const r=await send('POST','/v1/users',{email:'staff@example.test',firstName:'School',lastName:school.organisation.slug,roleKey:'owner'},school.organisation.id);expect(r.statusCode,r.body).toBe(201);return r.json()};
+  const add=async(school:any)=>{const r=await send('POST','/v1/users',{email:'staff@example.test',firstName:'School',lastName:school.organisation.slug,roleKey:'owner',temporaryPassword:'AssignedSchoolStaff123!'},school.organisation.id);expect(r.statusCode,r.body).toBe(201);return r.json()};
   const a=await add(alpha),b=await add(beta);expect(a.employee_number).toBe(b.employee_number);expect(a.user_id).not.toBe(b.user_id);
   const change=await app.inject({method:'PATCH',url:'/v1/users/'+a.id,headers:{'x-test-provider':alpha.organisation.id},payload:{firstName:'Local change'}});expect(change.statusCode,change.body).toBe(200);expect(change.json().email).toBe('staff@example.test');
   const read=await send('GET','/v1/users',undefined,beta.organisation.id);expect(read.statusCode,read.body).toBe(200);expect(read.json().find((x:any)=>x.id===b.user_id).first_name).toBe('School');

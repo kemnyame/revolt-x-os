@@ -28,6 +28,12 @@ npm run dev
 
 The first organisation and owner are created with `POST /v1/auth/register-organisation`. Passwords require at least 12 characters with upper-case, lower-case and numeric characters. Use the returned bearer token for tenant APIs.
 
+## Administrator-created accounts
+
+Create users in People & Access with a temporary password of at least 12 characters including uppercase, lowercase and a number. `POST /v1/users` requires `temporaryPassword` alongside the user's name, email and role.
+
+The first sign-in returns `requiresPasswordChange: true` and a restricted five-minute session. The user must set a different personal password at `/change-password`; workspace APIs and refresh are blocked until this is completed. `POST /v1/auth/change-password` accepts `currentPassword` and `newPassword`, revokes existing OS sessions and requires a new sign-in. School credentials remain separate. An administrator-assigned School administrator password also requires a change on first sign-in.
+
 ## Architectural boundaries
 
 All tables holding business state carry an `organisation_id`, and every endpoint derives the tenant from a verified session rather than accepting it from request data. Future modules must use module credentials, `/v1` APIs and `outbox_events`; they must not add vertical tables or logic to Core OS. AI providers and prompts belong behind `AI_GATEWAY_URL`, never in this service.

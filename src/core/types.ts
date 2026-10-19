@@ -4,6 +4,7 @@ export interface AuthContext {
   sessionId: string;
   permissions: string[];
   preview?: boolean;
+  passwordChangeRequired?: boolean;
 }
 
 declare module 'fastify' {

@@ -34,7 +34,7 @@ it('OS sign-in honours Retry-After before retrying',async()=>{
   let calls=0;const f=fixture(async()=>++calls===1?new Response('{}',{status:429,headers:{'retry-after':'20'}}):response(account));
   expect(await f.login(credentials)).toEqual(account);expect(f.now()).toBe(20000);
 });
-it('the actual OS login form validates inputs, blocks duplicate submission and stores the fresh session',async()=>{
+it.each([false,true])('the OS login form stores a fresh session and routes password-change-required=%s correctly',async(requiresPasswordChange)=>{
   let calls=0,finish:(value:Response)=>void=()=>{};const f=fixture(async()=>{calls++;return new Promise<Response>(resolve=>{finish=resolve})});
   const elements=new Map<string,any>(),sessions=new Map<string,string>(),redirects:string[]=[];
   const element=(id:string)=>{if(!elements.has(id))elements.set(id,{value:'',disabled:false,textContent:'',classList:{toggle(){}},focus(){}});return elements.get(id)};
@@ -43,6 +43,6 @@ it('the actual OS login form validates inputs, blocks duplicate submission and s
   await element('loginBtn').onclick();expect(calls).toBe(0);
   element('loginEmail').value=credentials.email;element('loginPassword').value=credentials.password;
   const pending=element('loginBtn').onclick();await element('loginBtn').onclick();expect(calls).toBe(1);
-  finish(response(account));await pending;
-  expect(sessions.get('rx_access')).toBe(account.accessToken);expect(sessions.get('rx_refresh')).toBe(account.refreshToken);expect(redirects).toEqual(['/']);
+  finish(response({...account,requiresPasswordChange}));await pending;
+  expect(sessions.get('rx_access')).toBe(account.accessToken);expect(sessions.get('rx_refresh')).toBe(account.refreshToken);expect(redirects).toEqual([requiresPasswordChange?'/change-password':'/']);
 });

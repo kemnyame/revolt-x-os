@@ -24,6 +24,7 @@ import { commercialControlFrontend } from './commercial-control2-ui.js';
 import {safeRequestUrl} from './auth/request-log.js';
 import {osPasswordResetFrontend} from './os-password-reset-ui.js';
 import { osLoginFrontend } from './login-ui.js';
+import {osPasswordChangeFrontend} from './os-password-change-ui.js';
 
 function friendlyValidationMessage(error: ZodError) {
   const issue = error.issues[0] as any;
@@ -105,17 +106,26 @@ export async function buildApp({ db, config }: { db: Db; config: Config }) {
     request.auth = await verifyAccessToken(config, t);
     const activeSession = await db.query(
       request.auth.preview
-        ? `SELECT s.expires_at FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()`
-        : `SELECT s.expires_at FROM sessions s JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
+        ? `SELECT s.expires_at,s.password_change_required,u.must_change_password FROM sessions s JOIN users u ON u.id=s.user_id JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now()`
+        : `SELECT s.expires_at,s.password_change_required,u.must_change_password FROM sessions s JOIN users u ON u.id=s.user_id JOIN organisation_memberships m ON m.user_id=s.user_id AND m.organisation_id=s.organisation_id WHERE s.id=$1 AND s.user_id=$2 AND s.organisation_id=$3 AND s.revoked_at IS NULL AND s.expires_at>now() AND m.status='active'`,
       [request.auth.sessionId, request.auth.userId, request.auth.organisationId]
     );
     if (!activeSession.rowCount) throw new AppError(401, 'UNAUTHORIZED', 'Session is no longer active');
-    const expiresAt=activeSession.rows[0]?.expires_at;
+    const state=activeSession.rows[0];
+    if(state?.password_change_required||state?.must_change_password||request.auth.passwordChangeRequired){
+      request.auth.passwordChangeRequired=true;
+      request.auth.permissions=[];
+      const path=request.url.split('?')[0];
+      if(!['/v1/auth/context','/v1/auth/change-password','/v1/auth/logout'].includes(path!))
+        throw new AppError(403,'PASSWORD_CHANGE_REQUIRED','Choose your own password before entering the workspace');
+    }
+    const expiresAt=state?.expires_at;
     if(expiresAt)reply.header('x-revolt-session-expires-at',new Date(expiresAt).toISOString());
   });
 
   app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(osFrontend));
   app.get('/login', async (_request, reply) => reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(osLoginFrontend));
+  app.get('/change-password',async(_request,reply)=>reply.header('cache-control','no-store').type('text/html; charset=utf-8').send(osPasswordChangeFrontend));
   app.get('/password-reset',async(_request,reply)=>reply.header('cache-control','no-store').header('referrer-policy','no-referrer').type('text/html; charset=utf-8').send(osPasswordResetFrontend));
   app.get('/commercial-control', async (_request, reply) => reply.type('text/html; charset=utf-8').send(commercialControlFrontend));
   app.get('/health/live', async () => ({ status: 'ok' }));

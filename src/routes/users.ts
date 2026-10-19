@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { randomBytes } from 'node:crypto';
+import {newPasswordSchema} from '../auth/password-change.js';
 import type { Db } from '../db/index.js';
 import { maybeOne, one, transaction } from '../db/index.js';
 import {createSchoolAccount,findSchoolAccount,nextSchoolStaffId} from '../auth/school-accounts.js';
@@ -38,28 +38,28 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
       lastName: z.string().min(1).max(100),
       jobTitle: z.string().max(160).optional(),
       employeeNumber: z.string().max(80).optional(),
-      roleKey: z.string().default('member')
+      roleKey: z.string().default('member'),
+      temporaryPassword:newPasswordSchema
     }).parse(request.body);
 
     try {
       const result = await transaction(db, async c => {
-        const generated = randomBytes(24).toString('base64url');
+        const passwordHash=await bcrypt.hash(b.temporaryPassword,12);
         const school=await maybeOne(c,`SELECT 1 FROM organisations o WHERE o.id=$1 AND
           (o.settings->>'application'='school' OR EXISTS(SELECT 1 FROM saas_customers sc WHERE sc.customer_organisation_id=o.id AND sc.customer_type='school'))`,[a.organisationId]);
         if(school&&await findSchoolAccount(c,a.organisationId,b.email))throw conflict('Email is already in use in this school');
-        const user = school?await createSchoolAccount(c,a.organisationId,{email:b.email,firstName:b.firstName,lastName:b.lastName,status:'invited'}):await one<{ id: string }>(
+        const user = school?await createSchoolAccount(c,a.organisationId,{email:b.email,firstName:b.firstName,lastName:b.lastName,status:'active'}):await one<{ id: string }>(
           c,
-          `INSERT INTO users(email,password_hash,first_name,last_name,status)
-           VALUES($1,$2,$3,$4,'invited')
-           ON CONFLICT(email) DO UPDATE SET first_name=EXCLUDED.first_name,last_name=EXCLUDED.last_name,updated_at=now()
+          `INSERT INTO users(email,password_hash,first_name,last_name,status,must_change_password)
+           VALUES($1,$2,$3,$4,'active',true)
            RETURNING id`,
-          [b.email.toLowerCase(), await bcrypt.hash(generated, 12), b.firstName, b.lastName]
+          [b.email.toLowerCase(), passwordHash, b.firstName, b.lastName]
         );
-        if(school)await setSchoolCredential(c,a.organisationId,user.id,await bcrypt.hash(generated,12),true);
+        if(school)await setSchoolCredential(c,a.organisationId,user.id,passwordHash,true);
         const membership = await one<any>(
           c,
           `INSERT INTO organisation_memberships(organisation_id,user_id,job_title,employee_number,status)
-           VALUES($1,$2,$3,$4,'invited')
+           VALUES($1,$2,$3,$4,'active')
            RETURNING *`,
           [a.organisationId, user.id, b.jobTitle ?? null, b.employeeNumber ?? (school?await nextSchoolStaffId(c,a.organisationId):null)]
         );
@@ -77,17 +77,17 @@ export async function userRoutes(app: FastifyInstance, { db }: { db: Db }) {
           organisationId: a.organisationId,
           actorUserId: a.userId,
           sessionId: a.sessionId,
-          action: 'user.invited',
+          action: 'user.created',
           resourceType: 'membership',
           resourceId: membership.id,
           afterState: { email: b.email, role: b.roleKey }
         });
-        await emitEvent(c, a.organisationId, 'core.user.invited.v1', 'membership', membership.id, { membershipId: membership.id, email: b.email });
-        return membership;
+        await emitEvent(c, a.organisationId, 'core.user.created.v1', 'membership', membership.id, { membershipId: membership.id, email: b.email });
+        return {...membership,requiresPasswordChange:true};
       });
       return reply.code(201).send(result);
     } catch (e: any) {
-      if (e.code === '23505') throw conflict('User is already a member or employee number is in use');
+      if (e.code === '23505') throw conflict('Email, membership or employee number is already in use in this workspace');
       throw e;
     }
   });
