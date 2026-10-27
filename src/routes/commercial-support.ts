@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
+import {deliverSchoolAccessEmail} from '../auth/password-reset-email.js';
+import {clearSchoolResetTokens} from '../auth/school-credentials.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Config } from '../config.js';
@@ -284,14 +286,15 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
     const setupToken = randomBytes(32).toString('base64url');
 
     await transaction(db, async c => {
-      await c.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [user.id]);
-      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '30 minutes')", [user.id, tokenHash(setupToken)]);
+      await clearSchoolResetTokens(c,user.id,id);
+      await c.query("INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose) VALUES($1,$2,now()+interval '30 minutes',$3,'school_admin')", [user.id, tokenHash(setupToken),id]);
     });
 
     const resetLink = new URL(schoolBase(config) + '/s/' + encodeURIComponent(org.slug) + '/admin-password-reset');
     resetLink.searchParams.set('token', setupToken);
     resetLink.searchParams.set('school', org.slug);
     const resetUrl = resetLink.toString();
+    const emailDelivery=await deliverSchoolAccessEmail(config,{organisationId:id,schoolSlug:org.slug,schoolName:org.name,email:user.email,kind:'password_reset',userId:user.id,resetToken:setupToken});
     await audit(db, {
       organisationId: a.organisationId, actorUserId: a.userId, sessionId: a.sessionId,
       action: 'commercial.school_admin_password_reset.created', resourceType: 'user', resourceId: user.id,
@@ -302,6 +305,7 @@ export async function commercialSupportRoutes(app: FastifyInstance, { db, config
       school: { id: org.id, name: org.name, slug: org.slug },
       administrator: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name },
       resetUrl,
+      emailDelivery,
       setupUrl: resetUrl,
       expiresInMinutes: 30,
       expiresInHours: 0.5,

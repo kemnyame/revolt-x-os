@@ -3,7 +3,7 @@ import { teacherFrontend } from '../dist/teacher-ui.js';
 import { parentFrontend } from '../dist/parent-ui.js';
 import { studentFrontend } from '../dist/student-ui.js';
 import { admissionsFrontend } from '../dist/admissions-ui.js';
-import { loginFrontend } from '../dist/login-ui.js';
+import { loginFrontend,adminPasswordResetFrontend,staffPasswordSetupFrontend } from '../dist/login-ui.js';
 import { schoolDesignScript } from '../dist/school-design.js';
 import { mobileExperienceScript, mobileExperienceFrontend } from '../dist/mobile-experience.js';
 import { mobileWorkflowScript } from '../dist/mobile-workflows.js';
@@ -38,6 +38,8 @@ for(const [name,html] of [
   ['Student',studentFrontend],
   ['Admissions',admissionsFrontend],
   ['Login',loginFrontend],
+  ['Administrator password reset',adminPasswordResetFrontend],
+  ['Staff password setup',staffPasswordSetupFrontend],
   ['Mobile teacher',mobileExperienceFrontend('teacher')],
   ['Mobile parent',mobileExperienceFrontend('parent')]
 ]){

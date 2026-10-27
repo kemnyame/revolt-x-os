@@ -58,7 +58,7 @@ export async function requestPasswordReset(db:Db,email:string,m:RequestMeta={}):
 }
 export async function resetPassword(db:Db,t:string,p:string,m:RequestMeta={},options:{
   schoolId?:string|undefined;
-  purpose?:'account'|'school_admin'|undefined;
+  purpose?:'account'|'school_admin'|'school_staff'|undefined;
   revokeSchoolSessions?:(userId:string,organisationId?:string)=>Promise<void>;
 }={}){
   const ph=await bcrypt.hash(p,12);

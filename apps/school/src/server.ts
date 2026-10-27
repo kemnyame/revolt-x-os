@@ -1,3 +1,4 @@
+import {sendAuthEmail,schoolAccessEmail,authEmailStatus} from './auth-email.js';
 import {registerOutstandingFees} from './outstanding-fees.js';
 import {mobileSchoolResolver,mobileLicenceRestriction} from './mobile-binding.js';
 import {createSchoolTenantPages,rememberedSchoolContext} from './tenant-pages.js';
@@ -26,7 +27,7 @@ import { parentFrontend } from './parent-ui.js';
 import { teacherFrontend } from './teacher-ui.js';
 import { studentFrontend } from './student-ui.js';
 import { admissionsFrontend } from './admissions-ui.js';
-import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, passwordChangeFrontend } from './login-ui.js';
+import { loginFrontend, adminLoginFrontend, adminPasswordResetFrontend, staffPasswordSetupFrontend, passwordChangeFrontend } from './login-ui.js';
 import { registerSchoolReportingRoutes } from './school-reporting.js';
 import {safeRequestUrl} from './request-log.js';
 import { registerSchoolAccessRoutes, schoolIdentifier, schoolAuthValidationMessage, withSchoolAuthThrottle, ensureSchoolLoginMembership } from './school-access.js';
@@ -64,6 +65,7 @@ new Script(schoolAppScript,{filename:'school-app.js'});
 
 const app=Fastify({logger:config.NODE_ENV==='test'?false:{serializers:{req:(r:any)=>({method:r.method,url:safeRequestUrl(r.url),hostname:r.hostname,remoteAddress:r.ip})}},trustProxy:true});
 app.log.info({
+  authEmail:authEmailStatus(config),
   emailProvider:config.EMAIL_PROVIDER,
   emailDeliveryMode:providerStatus(config).email.mode,
   whatsappProvider:providerStatus(config).whatsapp.provider,
@@ -1786,6 +1788,7 @@ app.get('/login',async(request,p)=>schoolLoginDocument(request,p,loginFrontend))
 app.get('/change-password',async(_r,p)=>p.type('text/html; charset=utf-8').send(passwordChangeFrontend));
 app.get('/admin-login',async(request,p)=>schoolLoginDocument(request,p,adminLoginFrontend,true));
 app.get('/admin-password-reset',async(_r,p)=>p.header('cache-control','no-store, max-age=0').type('text/html; charset=utf-8').send(adminPasswordResetFrontend));
+app.get('/s/:school/staff-password-setup',async(request:any,p)=>{const school=await resolveTenantSchool(String(request.params.school));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(staffPasswordSetupFrontend,school))});
 app.get('/teacher-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
 app.get('/headteacher-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
 app.get('/bursar-login',async(request:any,p)=>p.redirect(request.query?.school?'/s/'+encodeURIComponent(String(request.query.school))+'/login':'/login',302));
@@ -1800,6 +1803,7 @@ app.get('/bursar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFro
 app.get('/registrar',async(_r,p)=>p.type('text/html; charset=utf-8').send(schoolFrontend));
 app.get('/student',async(request:any,p)=>{const slug=request.query?.school||rememberedSchoolContext(request)?.organisation_slug;if(!slug)return p.type('text/html; charset=utf-8').send(studentFrontend);const school=await resolveTenantSchool(String(slug));if(!request.query?.school)return p.redirect(schoolWorkspaceUrl(school.tenant_slug,'/student'));return p.header('cache-control','no-store').type('text/html; charset=utf-8').send(schoolTenantDocument(studentFrontend,school))});
 app.get('/admissions',async(_r,p)=>p.type('text/html; charset=utf-8').send(admissionsFrontend));
+app.get('/api/system/auth-email/status',async request=>{await authorize(request,db,config,'system.logs.view');return authEmailStatus(config)});
 app.get('/health/live',async()=>({status:'ok',service:'revolt-x-school'}));
 app.get('/health/ready',async(_r,p)=>{try{await db.query('SELECT 1');return{status:'ready'}}catch{return p.code(503).send({status:'unavailable'})}});
 
@@ -4069,7 +4073,7 @@ app.post('/api/staff/users',async(request,reply)=>{
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,firstName:b.firstName,lastName:b.lastName,
-    email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:temporaryPassword
+    emailDelivery:await emailStaffAccess(a.core.organisation_id,a.core.id,payload.id,payload.employee_number??payload.login_staff_id??null,'welcome'),email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,jobTitle:b.jobTitle||role.name,schoolRole:b.schoolRole,roleName:role.name,temporaryPassword:temporaryPassword
   });
 });
 
@@ -4130,9 +4134,22 @@ app.post('/api/staff/teachers',async(request,reply)=>{
   });
   return reply.code(201).send({
     osUserId:payload.user_id,membershipId:schoolMembership.id,email:b.email??null,staffId:payload.employee_number??payload.login_staff_id,firstName:b.firstName,lastName:b.lastName,
-    jobTitle:b.jobTitle,temporaryPassword:temporaryPassword
+    emailDelivery:await emailStaffAccess(a.core.organisation_id,a.core.id,payload.id,payload.employee_number??payload.login_staff_id??null,'welcome'),jobTitle:b.jobTitle,temporaryPassword:temporaryPassword
   });
 });
+async function emailStaffAccess(organisationId:string,actorUserId:string,membershipId:string,staffId:string|null,kind:'welcome'|'password_reset'){
+  if(!authEmailStatus(config).configured)return{status:'pending_configuration'};
+  try{
+    const school=await maybeOne<any>(db,'SELECT tenant_slug,school_name FROM school_profiles WHERE organisation_id=$1',[organisationId]);
+    if(!school)return{status:'school_unavailable'};
+    const response=await fetch(config.CORE_OS_URL.replace(/\/$/,'')+'/v1/internal/school/users/'+encodeURIComponent(membershipId)+'/password-setup',{method:'POST',headers:{...coreServiceHeaders(),'content-type':'application/json'},body:JSON.stringify({organisationId,actorUserId,expiresInMinutes:30}),signal:AbortSignal.timeout(20000)});
+    const setup:any=await response.json().catch(()=>null);
+    if(!response.ok||!setup?.email||!setup?.setupToken)return{status:setup?.email===null?'email_missing':'unavailable'};
+    const sent=await sendAuthEmail(config,schoolAccessEmail(config,{email:setup.email,schoolSlug:school.tenant_slug,schoolName:school.school_name,name:[setup.firstName,setup.lastName].filter(Boolean).join(' '),staffId,kind,resetToken:setup.setupToken}));
+    await audit(organisationId,actorUserId,'school_user.access_email_submitted','school_membership',membershipId,{provider:sent.provider,providerMessageId:sent.messageId});
+    return{status:'accepted'};
+  }catch{await audit(organisationId,actorUserId,'school_user.access_email_failed','school_membership',membershipId,{reviewRequired:true}).catch(()=>{});return{status:'needs_review'};}
+}
 app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   const a=await authorize(request,db,config,'staff.password_reset');
   if(!config.CORE_SERVICE_KEY)throw fail(503,'Core service authentication is not configured');
@@ -4162,7 +4179,7 @@ app.post('/api/staff/users/:membershipId/password-reset',async request=>{
   await audit(a.core.organisation_id,a.core.id,'school_user.password_reset','school_membership',membershipId,{
     osUserId:coreUser.id,staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null
   });
-  return{status:'reset',staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,temporaryPassword:temporaryPassword};
+  return{status:'reset',emailDelivery:await emailStaffAccess(a.core.organisation_id,a.core.id,membershipId,coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,'password_reset'),staffId:coreUser.employee_number??payload.staffId??coreUser.login_staff_id??null,temporaryPassword:temporaryPassword};
 });
 
 app.get('/api/staff/module-memberships',async request=>{

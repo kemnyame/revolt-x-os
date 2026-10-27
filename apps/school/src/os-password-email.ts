@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {SchoolConfig} from './config.js';
-import {sendMessage} from './providers.js';
+import {sendAuthEmail} from './auth-email.js';
 
 const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]!));
 
@@ -18,5 +18,5 @@ export function osPasswordResetMessage(config:SchoolConfig,email:string,resetTok
 }
 
 export async function sendOsPasswordReset(config:SchoolConfig,email:string,resetToken:string){
-  await sendMessage(config,osPasswordResetMessage(config,email,resetToken));
+  await sendAuthEmail(config,osPasswordResetMessage(config,email,resetToken));
 }

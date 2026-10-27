@@ -18,6 +18,7 @@ const schema = z.object({
   AI_GATEWAY_TOKEN: z.string().optional(),
   SCHOOL_SERVICE_KEY: z.string().min(32).optional(),
   SCHOOL_APP_URL: z.string().url().optional().or(z.literal('')),
+  SCHOOL_ACCESS_EMAILS: z.enum(['false','true']).default('false').transform(value=>value==='true'),
   SCHOOL_DEFAULT_STAFF_PASSWORD: z.string().min(12).default('Welcome@2026!'),
   OWNER_PASSWORD_RESET: z.string().optional(),
   OS_PASSWORD_RECOVERY_USER_ID:z.preprocess(unsetEmpty,z.string().uuid().optional()),

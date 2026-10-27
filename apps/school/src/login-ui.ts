@@ -397,3 +397,17 @@ export const adminPasswordResetFrontend=applySchoolDesign(`<!doctype html>
 </body>
 </html>`,'login');
 
+
+// Same accessible password form, with a strictly separate School staff endpoint.
+export const staffPasswordSetupFrontend=adminPasswordResetFrontend
+ .replaceAll('Reset Administrator Password','Set your School password')
+ .replaceAll('Reset your administrator password.','Choose your School password.')
+ .replaceAll('This secure link was generated from Revolt-X OS for the organisation administrator recorded against your school licence.','Use the secure email sent to the address registered on your School account.')
+ .replaceAll('Administrator password reset','School password setup')
+ .replaceAll('new administrator password','new School password')
+ .replaceAll('/api/auth/admin-password-reset','/api/auth/staff-password-setup')
+ .replaceAll('/admin-login','/login')
+ .replaceAll('Back to Admin Login','Back to School Login')
+ .replaceAll('School Admin Login','School Login')
+ .replaceAll('j.adminLoginUrl','j.staffLoginUrl')
+ .replaceAll('Generate a new reset link from Revolt-X OS Commercial Control.','Ask your School administrator to send a new setup email.');

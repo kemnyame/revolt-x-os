@@ -65,6 +65,30 @@ test('invalid reset input is actionable and never reaches Core',async t=>{
   assert.equal(schoolAuthValidationMessage(schoolIdentifier.safeParse('').error.issues),'Select your school before signing in.');
 });
 
+test('staff setup binds the School purpose and revokes only that School session',async t=>{
+  const otherOrg='33333333-3333-4333-8333-333333333333';
+  await db.query('INSERT INTO school_sessions(token_hash,os_user_id,organisation_id) VALUES($1,$2,$3),($4,$2,$5)',['alpha-session',user,org,'beta-session',otherOrg]);
+  const sent=[],app=await appFor(t,async(url,options)=>{sent.push({url,body:JSON.parse(options.body)});return response({reset:true,userId:user,organisationId:org,organisationSlug:'alpha'})});
+  const r=await app.inject({method:'POST',url:'/api/auth/staff-password-setup',payload:{token:'t'.repeat(43),newPassword:'NewSecurePass123',schoolId:'alpha'}});
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().staffLoginUrl,'/s/alpha/login');assert.match(r.headers['set-cookie'],/Max-Age=0/);
+  assert.equal(sent.length,1);assert.equal(sent[0].url,'https://core.example.test/v1/auth/password-reset/confirm');assert.equal(sent[0].body.purpose,'school_staff');assert.equal(sent[0].body.schoolId,'alpha');
+  const rows=(await db.query('SELECT organisation_id,revoked_at FROM school_sessions')).rows;assert.ok(rows.find(r=>r.organisation_id===org).revoked_at);assert.equal(rows.find(r=>r.organisation_id===otherOrg).revoked_at,null);
+});
+
+test('staff setup rejects incomplete or expired links without revoking sessions',async t=>{
+  await db.query('INSERT INTO school_sessions(token_hash,os_user_id,organisation_id) VALUES($1,$2,$3)',['old',user,org]);
+  let calls=0;const app=await appFor(t,async()=>{calls++;return response({error:{message:'Expired'}},401)});
+  const payload={token:'t'.repeat(43),newPassword:'NewSecurePass123',schoolId:'alpha'};
+  assert.equal((await app.inject({method:'POST',url:'/api/auth/staff-password-setup',payload:{...payload,schoolId:''}})).statusCode,400);assert.equal(calls,0);
+  assert.equal((await app.inject({method:'POST',url:'/api/auth/staff-password-setup',payload})).statusCode,401);assert.equal(calls,1);assert.equal((await db.query('SELECT revoked_at FROM school_sessions')).rows[0].revoked_at,null);
+});
+
+test('School account email endpoint requires the Core service credential before processing identity data',async t=>{
+  const app=await appFor(t,()=>assert.fail('Unauthenticated email requests must not reach Core'));
+  const r=await app.inject({method:'POST',url:'/api/internal/school-access-email',payload:{email:'untrusted@example.test'}});
+  assert.equal(r.statusCode,401);assert.match(r.json().error.message,/Service credential required/);
+});
+
 test('expired reset and unavailable Core leave local sessions unchanged',async t=>{
   await db.query('INSERT INTO school_sessions(token_hash,os_user_id) VALUES($1,$2)',['old',user]);
   let unavailable=false;

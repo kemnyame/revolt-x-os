@@ -250,6 +250,17 @@ it('school staff creation and temporary resets preserve the existing OS account 
   expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'StaffPersonalSchool123'})).statusCode).toBe(200);expect((await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash).toBe(osHash);
 },15000);
 
+it('email setup links expire after 30 minutes and remain single-use, purpose-bound and School-bound',async()=>{
+  const {result}=await paidSchool(),osHash=(await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash;
+  const created=await internal('users',{organisationId:result.organisation.id,actorUserId:result.administrator.id,email:'setup@example.test',firstName:'Setup',lastName:'Teacher',roleKey:'owner',temporaryPassword:'StaffFirstTemporary123'});expect(created.statusCode,created.body).toBe(201);const membership=created.json();
+  const setup=await internal('users/'+membership.id+'/password-setup',{organisationId:result.organisation.id,actorUserId:result.administrator.id,expiresInMinutes:30});expect(setup.statusCode,setup.body).toBe(200);expect(setup.json()).toMatchObject({email:'setup@example.test',expiresInMinutes:30,expiresInHours:0.5});
+  const token=setup.json().setupToken,tokenRow=(await client.query("SELECT purpose,organisation_id,extract(epoch FROM (expires_at-now())) seconds FROM password_reset_tokens WHERE user_id=$1 AND used_at IS NULL",[membership.user_id])).rows[0];expect(tokenRow.purpose).toBe('school_staff');expect(tokenRow.organisation_id).toBe(result.organisation.id);expect(Number(tokenRow.seconds)).toBeGreaterThan(1750);expect(Number(tokenRow.seconds)).toBeLessThanOrEqual(1800);
+  const confirm=(purpose:string,schoolId:string)=>send('POST','/v1/auth/password-reset/confirm',{token,password:'SchoolPersonalPass123',purpose,schoolId});
+  expect((await confirm('account','alpha')).statusCode).toBe(401);expect((await confirm('school_admin','alpha')).statusCode).toBe(401);expect((await confirm('school_staff','another-school')).statusCode).toBe(401);
+  const accepted=await confirm('school_staff','alpha');expect(accepted.statusCode,accepted.body).toBe(200);expect((await confirm('school_staff','alpha')).statusCode).toBe(401);
+  expect((await internal('authenticate-staff',{schoolId:'alpha',staffId:membership.employee_number,password:'SchoolPersonalPass123'})).statusCode).toBe(200);expect((await client.query('SELECT password_hash FROM users WHERE id=$1',[actor])).rows[0].password_hash).toBe(osHash);
+},15000);
+
 it('staff login accepts both assigned Staff ID forms and school UUIDs while keeping each school password isolated',async()=>{
   const alpha=(await paidSchool('alpha')).result,beta=(await paidSchool('beta')).result;
   async function add(result:any,password:string){

@@ -113,3 +113,8 @@ Revolt-X School supports Brevo for automated transactional email. Set:
 - `BREVO_FROM_NAME` (for example, `Revolt-X School`)
 
 When configured, the existing communication outbox and notification rules send guardian/staff notifications through Brevo, including fee-payment confirmations, fee-payment requests, report workflow alerts and released report-card notifications. Provider message IDs are stored in the communication outbox for audit and retry.
+
+
+## Gmail account emails
+
+Login details and password setup/reset emails have a separate immediate Gmail sender. They do not use the ICDD hourly queue. Complete the one-time Google authorization and configure the connection as described in [Gmail account email setup](docs/GMAIL-ACCOUNT-EMAIL.md). Credentials remain outside source control. Existing general communication settings and backlog messages are not changed.

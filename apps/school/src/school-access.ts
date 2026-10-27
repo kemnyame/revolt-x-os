@@ -3,6 +3,7 @@ import {assertCoreSignInAvailable} from './sign-in-startup.js';
 import { schoolRecordId } from './record-id.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import {sendAuthEmail,schoolAccessEmail,authEmailStatus} from './auth-email.js';
 import {sendOsPasswordReset} from './os-password-email.js';
 import {createHash} from 'node:crypto';
 import type { SchoolConfig } from './config.js';
@@ -140,6 +141,24 @@ export function registerSchoolAccessRoutes(app: FastifyInstance, options: {
     catch{throw Object.assign(new Error('OS recovery email delivery is unavailable'),{statusCode:503});}
     return{sent:true};
   });
+  app.post('/api/internal/school-access-email',async(request,reply)=>{
+    options.requireCoreServiceRequest(request);reply.header('cache-control','no-store');
+    const body=z.object({organisationId:schoolRecordId,schoolSlug:schoolIdentifier,schoolName:z.string().min(1).max(200),email:z.string().trim().toLowerCase().email(),name:z.string().max(200).optional(),kind:z.enum(['welcome','password_reset']),resetToken:z.string().min(32).max(500).regex(/^[A-Za-z0-9_-]+$/).optional(),userId:schoolRecordId.optional(),administrator:z.boolean().default(true)}).parse(request.body);
+    const school=await maybeOne(options.db,'SELECT organisation_id FROM school_profiles WHERE organisation_id=$1 AND lower(tenant_slug)=lower($2)',[body.organisationId,body.schoolSlug]);
+    if(!school)throw Object.assign(new Error('The school email context could not be verified.'),{statusCode:404});
+    if(!authEmailStatus(options.config).configured)throw Object.assign(new Error('The school Gmail sender has not been connected.'),{statusCode:503});
+    try{await sendAuthEmail(options.config,schoolAccessEmail(options.config,body))}catch{throw Object.assign(new Error('Account email delivery is unavailable.'),{statusCode:503});}
+    return{sent:true};
+  });
+  app.post('/api/auth/staff-password-setup',async(request,reply)=>withSchoolAuthThrottle(options.db,'staff_setup',request,async()=>{
+    reply.header('cache-control','no-store');const body=z.object({token:z.string().min(32).max(500).regex(/^[A-Za-z0-9_-]+$/),newPassword:schoolPassword,schoolId:schoolIdentifier}).parse(request.body);
+    const response=await(options.fetchCore??fetch)(options.config.CORE_OS_URL.replace(/\/$/,'')+'/v1/auth/password-reset/confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:body.token,password:body.newPassword,schoolId:body.schoolId,purpose:'school_staff'}),signal:AbortSignal.timeout(20000)}).catch(()=>null);
+    const result:any=await response?.json().catch(()=>null);
+    if(!response?.ok||result?.reset!==true||typeof result.userId!=='string'||typeof result.organisationId!=='string')throw Object.assign(new Error('This setup link is invalid, expired or unavailable. Ask your School administrator for a new email.'),{statusCode:response?.status&&response.status>=400?response.status:503});
+    await revokeSchoolUserSessions(options.db,result.userId,undefined,result.organisationId);
+    const secure=options.config.NODE_ENV==='production'?'; Secure':'';reply.header('set-cookie','rx_school_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'+secure);
+    const slug=result.organisationSlug||body.schoolId;return{reset:true,schoolId:slug,staffLoginUrl:'/s/'+encodeURIComponent(slug)+'/login'};
+  }));
   app.post('/api/internal/revoke-user-sessions', async request => {
     options.requireCoreServiceRequest(request);
     const body = z.object({ userId: schoolRecordId, keepSessionHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),organisationId:schoolRecordId.optional() }).parse(request.body);

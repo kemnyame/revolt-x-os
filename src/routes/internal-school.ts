@@ -472,7 +472,8 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
     const p=z.object({membershipId:databaseRecordId}).parse(request.params);
     const b=z.object({
       organisationId:databaseRecordId,
-      actorUserId:databaseRecordId
+      actorUserId:databaseRecordId,
+      expiresInMinutes:z.number().int().min(15).max(1440).default(1440)
     }).parse(request.body);
 
     return transaction(db,async c=>{
@@ -492,11 +493,11 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
       const tokenHash=createHash('sha256').update(token).digest('hex');
       await clearSchoolResetTokens(c,membership.user_id,b.organisationId);
       await c.query(`INSERT INTO password_reset_tokens(user_id,token_hash,expires_at,organisation_id,purpose)
-        VALUES($1,$2,now()+interval '24 hours',$3,'school_staff')`,[membership.user_id,tokenHash,b.organisationId]);
+        VALUES($1,$2,now()+make_interval(mins=>$4),$3,'school_staff')`,[membership.user_id,tokenHash,b.organisationId,b.expiresInMinutes]);
       await audit(c,{
         organisationId:b.organisationId,actorUserId:b.actorUserId,sessionId:null,
         action:'school_service.teacher_password_setup_created',resourceType:'user',resourceId:membership.user_id,
-        afterState:{email:membership.email,membershipId:membership.id,expiresInHours:24}
+        afterState:{email:membership.email,membershipId:membership.id,expiresInHours:b.expiresInMinutes/60,expiresInMinutes:b.expiresInMinutes}
       });
       return{
         userId:membership.user_id,
@@ -505,7 +506,7 @@ export async function internalSchoolRoutes(app:FastifyInstance,{db,config}:{db:D
         firstName:membership.first_name,
         lastName:membership.last_name,
         setupToken:token,
-        expiresInHours:24
+        expiresInHours:b.expiresInMinutes/60,expiresInMinutes:b.expiresInMinutes
       };
     });
   });

@@ -1,3 +1,4 @@
+import {deliverSchoolAccessEmail} from '../auth/password-reset-email.js';
 import {createSchoolAccount,findSchoolAccount} from '../auth/school-accounts.js';
 import {revokeLinkedSchoolSessions} from '../auth/school-sessions.js';
 import {setSchoolCredential,clearSchoolResetTokens} from '../auth/school-credentials.js';
@@ -461,6 +462,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
         firstName: created.schoolDetails.adminFirstName,
         lastName: created.schoolDetails.adminLastName,
         existingUser: !created.newAdministrator,
+        emailDelivery:await deliverSchoolAccessEmail(config,{organisationId:created.organisation.id,schoolSlug:created.organisation.slug,schoolName:created.organisation.name,email:created.schoolDetails.adminEmail,kind:'welcome',name:[created.schoolDetails.adminFirstName,created.schoolDetails.adminLastName].join(' '),userId:created.admin.id}),
         temporaryPassword: created.temporaryAdminPassword,
         mustChangePassword: true
       },
@@ -669,6 +671,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       schoolSync={ok:false,pending:true,message:String(error?.message||error)};
     }
 
+    const emailDelivery=await deliverSchoolAccessEmail(config,{organisationId:id,schoolSlug:customer.slug,schoolName:customer.name,email:b.email,kind:'welcome',name:[b.firstName,b.lastName].join(' '),userId:created.user.id});
     const adminLoginUrl=schoolApplicationBase(config)+schoolAdminLoginPath(customer.slug,created.user.id);
     await audit(db,{
       organisationId:a.organisationId,actorUserId:a.userId,sessionId:a.sessionId,
@@ -694,6 +697,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       adminLoginUrl,
       passwordConfigured:true,
       mustChangePassword:true,
+      emailDelivery,
       schoolSync
     };
   });
@@ -749,6 +753,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
       );
     });
 
+    const emailDelivery=await deliverSchoolAccessEmail(config,{organisationId:id,schoolSlug:org.slug,schoolName:org.name,email:user.email,kind:'password_reset',name:[user.first_name,user.last_name].filter(Boolean).join(' '),userId:user.id,resetToken});
     const adminLoginUrl=schoolApplicationBase(config)+schoolAdminLoginPath(org.slug,user.id);
     const resetUrl=schoolApplicationBase(config)+'/s/'+encodeURIComponent(org.slug)+'/admin-password-reset?token='+encodeURIComponent(resetToken);
     await audit(db,{
@@ -767,6 +772,7 @@ export async function saasRoutes(app: FastifyInstance, { db, config }: { db: Db;
     });
     return{
       administrator:{id:user.id,email:user.email,firstName:user.first_name,lastName:user.last_name},
+      emailDelivery,
       adminLoginUrl,
       resetUrl,
       setupUrl:resetUrl,

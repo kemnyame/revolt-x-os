@@ -52,7 +52,7 @@ export async function authRoutes(app:FastifyInstance,options:{db:Db;config:Confi
    reply.header('cache-control','no-store');
    const body=z.object({token:z.string().trim().min(32).max(500).regex(/^[A-Za-z0-9_-]+$/),password,
      schoolId:z.preprocess(v=>v==null||(typeof v==='string'&&!v.trim())?undefined:v,z.string().trim().min(1).max(120).optional()),
-     purpose:z.enum(['account','school_admin']).optional()
+     purpose:z.enum(['account','school_admin','school_staff']).optional()
    }).parse(request.body);
    return resetPassword(options.db,body.token,body.password,meta(request),{
      schoolId:body.schoolId,purpose:body.purpose,
