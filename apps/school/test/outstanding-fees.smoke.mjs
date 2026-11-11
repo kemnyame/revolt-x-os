@@ -1,8 +1,11 @@
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import Fastify from 'fastify';
+import {parseHTML} from 'linkedom';
 import {operationsFixture,id,fail} from './helpers/operations-fixture.mjs';
 import {registerOutstandingFees} from '../dist/outstanding-fees.js';
+import {schoolAppScript,schoolFrontend} from '../dist/ui.js';
 let f,app;
 const school=id(1),other=id(2),year=id(30),old=id(31),term=id(32),cls=id(40),grade=id(41),fee=id(50),waived=id(51);
 before(async()=>{
@@ -41,4 +44,67 @@ test('CSV and PDF export every matching student, while school and role boundarie
  const pdf=await app.inject('/api/fees/outstanding?format=pdf');assert.equal(pdf.statusCode,200,pdf.body);assert.equal(pdf.rawPayload.subarray(0,4).toString(),'%PDF');
  const other=await app.inject({url:'/api/fees/outstanding',headers:{'x-role':'other'}});assert.equal(other.json().summary.students,0);
  const teacher=await app.inject({url:'/api/fees/outstanding',headers:{'x-role':'teacher'}});assert.equal(teacher.statusCode,403);
+});
+
+test('Finance Reports shows and exports the students owing report only with fees access',async()=>{
+ const {document}=parseHTML(schoolFrontend);
+ // linkedom exposes a getter-only select value. Model a normal browser selection.
+ Object.defineProperty(Object.getPrototypeOf(document.createElement('select')),'value',{
+  configurable:true,
+  get(){return (this.querySelector('option[selected]')||this.querySelector('option'))?.value||''},
+  set(value){this.querySelectorAll('option').forEach(option=>option.toggleAttribute('selected',option.value===value))}
+ });
+ const requests=[];
+ const browser={
+  document,URL,URLSearchParams,Headers,AbortController,
+  location:new URL('https://school.example.test/'),sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},
+  setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,
+  async fetch(path){
+   requests.push(path);
+   if(path.startsWith('/api/fees/outstanding?')){
+    const response=await app.inject(path);
+    return new Response(response.rawPayload,{status:response.statusCode});
+   }
+   if(path==='/api/academic-years')return Response.json([{id:year,name:'2026/27'}]);
+   if(path==='/api/terms')return Response.json([{id:term,name:'First Term',academic_year_id:year}]);
+   if(path==='/api/classes?includeAllYears=true')return Response.json([{id:cls,name:'Class 1',academic_year_id:year}]);
+   if(path.startsWith('/api/finance/reports/trial-balance'))return Response.json({rows:[{name:'Cash',debit:100}]});
+   if(path==='/api/finance/taxes')return Response.json({types:[],obligations:[]});
+   return Response.json([]);
+  }
+ };
+ browser.window=browser;
+ const startup=schoolAppScript.indexOf('// Start boot immediately.');
+ assert.ok(startup>0);
+ vm.runInNewContext(schoolAppScript.slice(0,startup)+
+  'window.showFinance=function(profile){ctx=profile;return page("finance")};})();',browser);
+ const profile={capabilities:['screen.finance.view','finance.reports.view','fees.view'],license:{status:'legacy'},profile:{currency:'GHS'}};
+ const field=name=>document.getElementById(name);
+ await browser.showFinance(profile);
+ const select=field('financeReport');
+ assert.ok(select?.querySelector('option[value="students-owing"]'));
+ select.value='students-owing';
+ await select.onchange();
+ const output=field('financeReportOut');
+ assert.match(output.textContent,/Students owing14/);
+ assert.match(output.textContent,/GHS 1,225\.00/);
+ assert.equal(output.querySelectorAll('tbody tr').length,10);
+ assert.equal(field('financeReportActions').classList.contains('hide'),true);
+ field('debtClass').value=cls;
+ field('debtSearch').value='Learner 15';
+ await field('debtLoad').onclick();
+ assert.equal(output.querySelectorAll('tbody tr').length,1);
+ assert.match(output.textContent,/S-15/);
+ await field('debtCsv').onclick();
+ const exported=new URL(requests.at(-1),browser.location).searchParams;
+ assert.equal(exported.get('format'),'csv');
+ assert.equal(exported.get('classroomId'),cls);
+ assert.equal(exported.get('q'),'Learner 15');
+ select.value='trial-balance';
+ select.onchange();
+ await field('runFinanceReport').onclick();
+ assert.match(output.textContent,/Cash/);
+ assert.equal(field('debtCsv'),null);
+ await browser.showFinance({...profile,capabilities:profile.capabilities.filter(cap=>cap!=='fees.view')});
+ assert.equal(field('financeReport').querySelector('option[value="students-owing"]'),null);
 });

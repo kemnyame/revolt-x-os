@@ -1034,7 +1034,14 @@ else if(p==='attendance'){
    '<div id="fin-eod" class="fin-pane hide"><div class="section compact"><div><h3>End of Day</h3><p class="muted">Close the finance day, run accounting integrity checks and generate permanent snapshots of all financial reports. The system also performs an automatic catch-up for the previous day when the service wakes.</p></div></div>'+
      '<div class="panel"><div class="three"><div><label>Business date</label><input id="eodBusinessDate" type="date" value="'+today+'"></div><div style="display:flex;align-items:end">'+(can("finance.eod.run")?'<button id="runEodNow" class="primary" style="width:100%">Run End of Day</button>':'<div class="muted">You do not have permission to run EOD.</div>')+'</div><div><div class="notice">EOD generates Trial Balance, Income Statement, Balance Sheet, Cash/Bank Movement, Receivables, Fee Collections, Expense Analysis, Tax Summary, Budget Variance, General Ledger, Student Opening/Closing Balances and an Accounting Integrity Check.</div></div></div></div>'+
      '<div class="panel" style="margin-top:12px"><h3>EOD History</h3>'+table(eodRuns,[{key:"business_date",label:"Business Date"},{key:"status",render:function(r){return badge(r.status)}},{key:"total_debit",label:"Total Debit",render:function(r){return money(r.total_debit)}},{key:"total_credit",label:"Total Credit",render:function(r){return money(r.total_credit)}},{key:"issue_count",label:"Issues"},{key:"completed_at",label:"Completed",render:function(r){return esc(r.completed_at?new Date(r.completed_at).toLocaleString():"—")}}],function(r){return'<button class="mini primary-lite" data-open-eod="'+r.id+'">View Reports</button>'})+'</div></div>'+
-   '<div id="fin-reports" class="fin-pane hide"><div class="panel"><div class="three"><div><label>Financial report</label><select id="financeReport"><option value="income-statement">Income Statement</option><option value="balance-sheet">Balance Sheet</option><option value="trial-balance">Trial Balance</option><option value="cashflow">Cash Flow</option><option value="receivables-aging">Receivables Ageing</option><option value="fee-collections">Fee Collections</option><option value="expense-analysis">Expense Analysis</option><option value="budget-variance">Budget Variance</option><option value="tax-summary">Tax Summary</option><option value="general-ledger">General Ledger</option></select></div><div><label>From</label><input id="financeStart" type="date" value="'+yearStart+'"></div><div><label>To</label><input id="financeEnd" type="date" value="'+today+'"></div></div><div class="actions"><button id="runFinanceReport" class="primary">Run report</button><button id="printFinanceReport" class="ghost">Print / Save PDF</button><button id="exportFinanceReport" class="ghost">Export CSV</button></div></div><div id="financeReportOut"><div class="empty">Choose a report and click Run report.</div></div></div>';
+   '<div id="fin-reports" class="fin-pane hide"><div class="panel"><div class="three"><div><label for="financeReport">Financial report</label><select id="financeReport">'+
+     '<option value="income-statement">Income Statement</option><option value="balance-sheet">Balance Sheet</option><option value="trial-balance">Trial Balance</option><option value="cashflow">Cash Flow</option><option value="receivables-aging">Receivables Ageing</option>'+
+     (can('fees.view')&&moduleEnabled('school.fees')?'<option value="students-owing">Students Owing</option>':'')+
+     '<option value="fee-collections">Fee Collections</option><option value="expense-analysis">Expense Analysis</option><option value="budget-variance">Budget Variance</option><option value="tax-summary">Tax Summary</option><option value="general-ledger">General Ledger</option></select></div>'+
+     '<div id="financeStartField"><label for="financeStart">From</label><input id="financeStart" type="date" value="'+yearStart+'"></div>'+
+     '<div id="financeEndField"><label for="financeEnd">To</label><input id="financeEnd" type="date" value="'+today+'"></div></div>'+
+     '<div id="financeReportActions" class="actions"><button id="runFinanceReport" class="primary">Run report</button><button id="printFinanceReport" class="ghost">Print / Save PDF</button><button id="exportFinanceReport" class="ghost">Export CSV</button></div></div>'+
+     '<div id="financeReportOut"><div class="empty">Choose a report and click Run report.</div></div></div>';
    E('content').querySelectorAll('[data-fin-tab]').forEach(function(b){b.onclick=function(){E('content').querySelectorAll('.staff-tab').forEach(function(x){x.classList.toggle('active',x===b)});E('content').querySelectorAll('.fin-pane').forEach(function(x){x.classList.add('hide')});E('fin-'+b.dataset.finTab).classList.remove('hide')}});var firstFinanceTab=E('content').querySelector('[data-fin-tab]');if(firstFinanceTab)firstFinanceTab.click();
    function activateFinTab(name){var b=E('content').querySelector('[data-fin-tab="'+name+'"]');if(b)b.click()}
    function renderStudentSearch(rows){
@@ -1182,7 +1189,30 @@ else if(p==='attendance'){
    if(E('openStudentsOwing'))E('openStudentsOwing').onclick=function(){page('debtors')};
    if(E('fullJournalHistory'))E('fullJournalHistory').onclick=function(){sessionStorage.setItem('rx_report_type','transactions');page('reporting')};
    if(E('newJournal'))E('newJournal').onclick=function(){var opts=accounts.filter(function(a){return a.is_active}).map(function(a){return'<option value="'+a.id+'">'+esc(a.code+' • '+a.name)+'</option>'}).join('');modal('<h2>Post Manual Journal</h2><label>Date</label><input id="jrDate" type="date" value="'+today+'"><label>Description</label><textarea id="jrDesc"></textarea><label>Reference</label><input id="jrRef"><div class="three"><div><label>Debit account</label><select id="jrDebit">'+opts+'</select></div><div><label>Credit account</label><select id="jrCredit">'+opts+'</select></div><div><label>Amount</label><input id="jrAmount" type="number" step="0.01"></div></div><button id="postJournal" class="primary">Post balanced journal</button>');if(E('postJournal'))E('postJournal').onclick=async function(){var amount=Number(E('jrAmount').value);if(!amount||amount<=0)return toast('Enter an amount',true);if(E('jrDebit').value===E('jrCredit').value)return toast('Debit and credit accounts must differ',true);await raw('/api/finance/journals',{method:'POST',body:JSON.stringify({entryDate:E('jrDate').value,description:E('jrDesc').value,reference:E('jrRef').value||undefined,lines:[{accountId:E('jrDebit').value,debit:amount,credit:0},{accountId:E('jrCredit').value,debit:0,credit:amount}]})});close();toast('Journal posted');page('finance')}};
-   if(E('runFinanceReport'))E('runFinanceReport').onclick=async function(){var type=E('financeReport').value,start=E('financeStart').value,end=E('financeEnd').value;reportData=await raw('/api/finance/reports/'+type+'?start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end));E('financeReportOut').innerHTML=renderReport(reportData)};
+   var financeReportSelect=E('financeReport'),financeReportOutput=E('financeReportOut'),financeReportRequest=0;
+   financeReportSelect.onchange=function(){
+     financeReportRequest++;
+     reportData=null;
+     var studentsOwing=financeReportSelect.value==='students-owing';
+     E('financeStartField').classList.toggle('hide',studentsOwing);
+     E('financeEndField').classList.toggle('hide',studentsOwing);
+     E('financeReportActions').classList.toggle('hide',studentsOwing);
+     if(studentsOwing)return renderOutstandingFees(financeReportOutput);
+     financeReportOutput.innerHTML='<div class="empty">Choose a report and click Run report.</div>';
+   };
+   E('runFinanceReport').onclick=async function(){
+     var request=++financeReportRequest,type=financeReportSelect.value,start=E('financeStart').value,end=E('financeEnd').value;
+     reportData=null;
+     financeReportOutput.innerHTML='<p class="muted">Generating report...</p>';
+     try{
+       var data=await raw('/api/finance/reports/'+type+'?start='+encodeURIComponent(start)+'&end='+encodeURIComponent(end));
+       if(request!==financeReportRequest||!financeReportOutput.isConnected)return;
+       reportData=data;
+       financeReportOutput.innerHTML=renderReport(data);
+     }catch(error){
+       if(request===financeReportRequest&&financeReportOutput.isConnected)financeReportOutput.innerHTML='<div class="notice">'+esc(error.message)+'</div>';
+     }
+   };
    if(E('printFinanceReport'))E('printFinanceReport').onclick=function(){if(!reportData)return toast('Run a report first',true);window.print()};
    if(E('exportFinanceReport'))E('exportFinanceReport').onclick=function(){if(!reportData||!reportData.rows)return toast('Run a report first',true);var rows=reportData.rows;if(!rows.length)return toast('Report has no rows',true);var keys=Object.keys(rows[0]),csv=[keys.join(',')].concat(rows.map(function(r){return keys.map(function(k){return '"'+String(r[k]==null?'':r[k]).replace(/"/g,'""')+'"'}).join(',')})).join('\\n'),blob=new Blob([csv],{type:'text/csv'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=E('financeReport').value+'.csv';a.click();URL.revokeObjectURL(url)};
    var runEodButton=E('runEodNow');if(runEodButton)runEodButton.onclick=async function(){

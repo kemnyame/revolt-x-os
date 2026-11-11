@@ -90,12 +90,86 @@ async function ensureSchoolSetupCatalogSections(){
 `;
 
 export const outstandingFeesUi=String.raw`
-async function renderOutstandingFees(){
- var values=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes?includeAllYears=true')]),years=values[0],terms=values[1],classes=values[2],pageNo=1,requestNo=0;
- E('content').innerHTML='<h1>Students Owing</h1><p class="muted">All students with a positive balance, including earlier terms and academic years. Available deposits are shown separately and deducted from the amount owing.</p><div class="panel"><div class="three"><div><label>Academic year</label><select id="debtYear"><option value="">All years</option>'+years.map(function(y){return'<option value="'+y.id+'">'+esc(y.name)+'</option>'}).join('')+'</select></div><div><label>Term</label><select id="debtTerm"><option value="">All terms</option></select></div><div><label>Class</label><select id="debtClass"><option value="">All classes</option></select></div></div><div class="toolbar"><input id="debtSearch" placeholder="Student name, ID, class, guardian or phone"><button class="primary" id="debtLoad">Find students owing</button><button class="ghost" id="debtCsv">Export Excel / CSV</button><button class="ghost" id="debtPdf">Export PDF</button></div></div><div id="debtResults" style="margin-top:14px"></div>';
- function periods(){var y=E('debtYear').value;E('debtTerm').innerHTML='<option value="">All terms</option>'+terms.filter(function(t){return!y||t.academic_year_id===y}).map(function(t){return'<option value="'+t.id+'">'+esc(t.name)+' · '+esc((years.find(function(y){return y.id===t.academic_year_id})||{}).name||'')+'</option>'}).join('');E('debtClass').innerHTML='<option value="">All classes</option>'+classes.filter(function(c){return!y||c.academic_year_id===y}).map(function(c){return'<option value="'+c.id+'">'+esc(c.name)+' · '+esc(c.academic_year_name||'')+'</option>'}).join('')}
- function url(format){var q=new URLSearchParams({page:String(pageNo),pageSize:'10',format:format||'json'});[['debtYear','academicYearId'],['debtTerm','termId'],['debtClass','classroomId'],['debtSearch','q']].forEach(function(x){if(E(x[0]).value)q.set(x[1],E(x[0]).value)});return'/api/fees/outstanding?'+q.toString()}
- async function load(){var seq=++requestNo;E('debtResults').innerHTML='<p>Loading balances...</p>';try{var x=await raw(url());if(seq!==requestNo)return;E('debtResults').innerHTML='<div class="grid"><div class="panel stat"><span>Students owing</span><b>'+x.summary.students+'</b></div><div class="panel stat"><span>Total amount owing</span><b>'+payrollMoney(x.summary.amount_owing,ctx.profile&&ctx.profile.currency)+'</b></div></div><div class="panel" style="margin-top:12px">'+table(x.rows,[{key:'admission_no',label:'Student ID'},{key:'student',label:'Student'},{key:'class',label:'Class'},{key:'guardian',label:'Guardian'},{key:'phone',label:'Phone'},{key:'unpaid_fees',label:'Unpaid fees',render:function(r){return payrollMoney(r.unpaid_fees)}},{key:'available_credit',label:'Credit',render:function(r){return payrollMoney(r.available_credit)}},{key:'amount_owing',label:'Amount owing',render:function(r){return'<b>'+payrollMoney(r.amount_owing)+'</b>'}}],function(r){return'<button class="mini" data-debt-details="'+r.id+'">Fee breakdown</button>'})+'<div class="rx-pagination"><button class="mini" id="debtPrev"'+(x.page<=1?' disabled':'')+'>Previous</button><span>Page '+x.page+' of '+x.pages+'</span><button class="mini" id="debtNext"'+(x.page>=x.pages?' disabled':'')+'>Next</button></div></div>';E('debtPrev').onclick=function(){pageNo--;load()};E('debtNext').onclick=function(){pageNo++;load()};E('debtResults').onclick=function(e){var b=e.target.closest('[data-debt-details]');if(!b)return;var r=x.rows.find(function(r){return r.id===b.dataset.debtDetails});modal('<h2>'+esc(r.student)+' · '+esc(r.admission_no)+'</h2><p>'+esc(r.class)+' · '+esc(r.guardian||'')+' · '+esc(r.phone||'')+'</p><div class="notice">Amount owing '+payrollMoney(r.amount_owing)+' · Available credit '+payrollMoney(r.available_credit)+'</div>'+table(r.fees,[{key:'fee',label:'Fee'},{key:'academic_year',label:'Year'},{key:'term',label:'Term'},{key:'billed',label:'Billed',render:function(f){return payrollMoney(f.billed)}},{key:'paid',label:'Paid',render:function(f){return payrollMoney(f.paid)}},{key:'balance',label:'Outstanding',render:function(f){return payrollMoney(f.balance)}}]))}}catch(e){if(seq===requestNo)E('debtResults').innerHTML='<div class="notice">'+esc(e.message)+'</div>'}}
- E('debtYear').onchange=periods;E('debtLoad').onclick=function(){pageNo=1;load()};E('debtSearch').onkeydown=function(e){if(e.key==='Enter'){pageNo=1;load()}};E('debtCsv').onclick=function(){downloadSchoolFile(url('csv'),'students-owing.csv').catch(function(e){toast(e.message,true)})};E('debtPdf').onclick=function(){downloadSchoolFile(url('pdf'),'students-owing.pdf').catch(function(e){toast(e.message,true)})};periods();await load();
+async function renderOutstandingFees(container){
+ var root=document.createElement('div');
+ (container||E('content')).replaceChildren(root);
+ root.innerHTML='<p class="muted">Loading outstanding fees...</p>';
+ var values;
+ try{
+   values=await Promise.all([raw('/api/academic-years'),raw('/api/terms'),raw('/api/classes?includeAllYears=true')]);
+ }catch(error){
+   root.innerHTML='<div class="notice">'+esc(error.message)+'</div>';
+   return;
+ }
+ if(!root.isConnected)return;
+ var years=values[0],terms=values[1],classes=values[2],pageNo=1,requestNo=0,currency=ctx.profile&&ctx.profile.currency;
+ var heading=container?'h2':'h1';
+ root.innerHTML='<'+heading+'>Students Owing</'+heading+'><p class="muted">Current balances for students with unpaid fees, including earlier terms and academic years. Available deposits reduce the amount owing.</p>'+
+   '<div class="panel"><div class="three"><div><label for="debtYear">Academic year</label><select id="debtYear"><option value="">All years</option>'+
+   years.map(function(y){return'<option value="'+esc(y.id)+'">'+esc(y.name)+'</option>'}).join('')+
+   '</select></div><div><label for="debtTerm">Term</label><select id="debtTerm"></select></div><div><label for="debtClass">Class</label><select id="debtClass"></select></div></div>'+
+   '<div class="toolbar"><input id="debtSearch" aria-label="Search students owing" placeholder="Student name, ID, class, guardian or phone"><button class="primary" id="debtLoad">Find students owing</button><button class="ghost" id="debtCsv">Export Excel / CSV</button><button class="ghost" id="debtPdf">Export PDF</button></div></div>'+
+   '<div id="debtResults" style="margin-top:14px"></div>';
+
+ function field(id){return root.querySelector('#'+id)}
+ function money(value){return payrollMoney(value,currency)}
+ var year=field('debtYear'),term=field('debtTerm'),classroom=field('debtClass'),search=field('debtSearch'),results=field('debtResults');
+ function periods(){
+   var selectedYear=year.value;
+   term.innerHTML='<option value="">All terms</option>'+terms.filter(function(t){return !selectedYear||t.academic_year_id===selectedYear}).map(function(t){
+     var academicYear=years.find(function(y){return y.id===t.academic_year_id});
+     return '<option value="'+esc(t.id)+'">'+esc(t.name)+' · '+esc(academicYear&&academicYear.name||'')+'</option>';
+   }).join('');
+   classroom.innerHTML='<option value="">All classes</option>'+classes.filter(function(c){return !selectedYear||c.academic_year_id===selectedYear}).map(function(c){
+     return '<option value="'+esc(c.id)+'">'+esc(c.name)+' · '+esc(c.academic_year_name||'')+'</option>';
+   }).join('');
+ }
+ function url(format){
+   var q=new URLSearchParams({page:String(pageNo),pageSize:'10',format:format||'json'});
+   [['academicYearId',year],['termId',term],['classroomId',classroom],['q',search]].forEach(function(pair){if(pair[1].value)q.set(pair[0],pair[1].value)});
+   return '/api/fees/outstanding?'+q.toString();
+ }
+ async function load(){
+   var seq=++requestNo;
+   results.innerHTML='<p>Loading balances...</p>';
+   try{
+     var report=await raw(url());
+     if(seq!==requestNo||!root.isConnected)return;
+     pageNo=report.page;
+     results.innerHTML='<div class="grid"><div class="panel stat"><span>Students owing</span><b>'+report.summary.students+'</b></div>'+
+       '<div class="panel stat"><span>Total amount owing</span><b>'+money(report.summary.amount_owing)+'</b></div></div>'+
+       '<div class="panel" style="margin-top:12px">'+table(report.rows,[
+         {key:'admission_no',label:'Student ID'},{key:'student',label:'Student'},{key:'class',label:'Class'},{key:'guardian',label:'Guardian'},{key:'phone',label:'Phone'},
+         {key:'unpaid_fees',label:'Unpaid fees',render:function(row){return money(row.unpaid_fees)}},
+         {key:'available_credit',label:'Credit',render:function(row){return money(row.available_credit)}},
+         {key:'amount_owing',label:'Amount owing',render:function(row){return'<b>'+money(row.amount_owing)+'</b>'}}
+       ],function(row){return '<button class="mini" data-debt-details="'+esc(row.id)+'">Fee breakdown</button>'})+
+       '<div class="rx-pagination"><button class="mini" id="debtPrev"'+(report.page<=1?' disabled':'')+'>Previous</button>'+
+       '<span>Page '+report.page+' of '+report.pages+'</span><button class="mini" id="debtNext"'+(report.page>=report.pages?' disabled':'')+'>Next</button></div></div>';
+     field('debtPrev').onclick=function(){pageNo--;load()};
+     field('debtNext').onclick=function(){pageNo++;load()};
+     results.onclick=function(event){
+       var button=event.target.closest('[data-debt-details]');if(!button)return;
+       var row=report.rows.find(function(r){return r.id===button.dataset.debtDetails});
+       modal('<h2>'+esc(row.student)+' · '+esc(row.admission_no)+'</h2><p>'+esc(row.class)+' · '+esc(row.guardian||'')+' · '+esc(row.phone||'')+'</p>'+
+         '<div class="notice">Amount owing '+money(row.amount_owing)+' · Available credit '+money(row.available_credit)+'</div>'+table(row.fees,[
+           {key:'fee',label:'Fee'},{key:'academic_year',label:'Year'},{key:'term',label:'Term'},
+           {key:'billed',label:'Billed',render:function(fee){return money(fee.billed)}},
+           {key:'paid',label:'Paid',render:function(fee){return money(fee.paid)}},
+           {key:'balance',label:'Outstanding',render:function(fee){return money(fee.balance)}}
+         ]));
+     };
+   }catch(error){
+     if(seq===requestNo&&root.isConnected)results.innerHTML='<div class="notice">'+esc(error.message)+'</div>';
+   }
+ }
+ function applyFilters(){pageNo=1;return load()}
+ year.onchange=periods;
+ field('debtLoad').onclick=applyFilters;
+ search.onkeydown=function(e){if(e.key==='Enter')applyFilters()};
+ field('debtCsv').onclick=function(){return downloadSchoolFile(url('csv'),'students-owing.csv').catch(function(e){toast(e.message,true)})};
+ field('debtPdf').onclick=function(){return downloadSchoolFile(url('pdf'),'students-owing.pdf').catch(function(e){toast(e.message,true)})};
+ periods();
+ await load();
 }
 `;
