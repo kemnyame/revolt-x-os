@@ -14,7 +14,7 @@ function client(handler){
   const clock=virtualClock(),calls=[];
   const window={fetch:async(url,options)=>{calls.push({url,options});return handler(url,options,calls.length)}};
   vm.runInNewContext(schoolSignInStartupScript,{window,URL,AbortController,location:{origin:'https://school.example.test'},...clock});
-  return{ready:window.RevoltSchoolSignIn.ensureReady,calls,...clock};
+  return{prepare:window.RevoltSchoolSignIn.prepare,ready:window.RevoltSchoolSignIn.ensureReady,calls,...clock};
 }
 
 test('429 gateway responses do not report a running sign-in service',async()=>{
@@ -32,6 +32,27 @@ test('only valid Core database readiness permits sign-in, while process liveness
 
 test('an already healthy bridge proceeds without any cross-origin startup request',async()=>{
   const c=client(()=>status(true));await c.ready();assert.equal(c.calls.length,1);assert.equal(c.calls[0].url,'/api/system/core-status');
+});
+
+test('opening the form starts a single public wake before a password is submitted',async()=>{
+  let completeWake,available=false;
+  const c=client((url,options)=>{
+    if(url==='/api/system/core-status')return status(available);
+    assert.equal(url,base+'/health/live');assert.equal(options.credentials,'omit');assert.equal(options.body,undefined);
+    return new Promise(resolve=>{completeWake=()=>resolve(response(null))});
+  });
+  c.prepare();c.prepare();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(c.calls.map(call=>call.url),['/api/system/core-status',base+'/health/live']);
+  available=true;completeWake();await c.ready();
+  assert.deepEqual(c.calls.map(call=>call.url),['/api/system/core-status',base+'/health/live','/api/system/core-status']);
+  assert.equal(c.timerCount(),0);
+});
+
+test('submitting while the first readiness request is running shares the check',async()=>{
+  let finish;
+  const c=client(()=>new Promise(resolve=>{finish=()=>resolve(status(true))}));
+  c.prepare();const signIn=c.ready();
+  assert.equal(c.calls.length,1);finish();await signIn;assert.equal(c.timerCount(),0);
 });
 
 test('a sleeping Core is woken by a public opaque GET and verified through the original School bridge',async()=>{

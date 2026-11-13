@@ -232,6 +232,7 @@ async function login(message){
   try{localStorage.setItem('rx_mobile_school',school.id);localStorage.setItem('rx_school_id',school.id)}catch(e){}
   E('mLoginSchool').value=school.id;E('mLoginSchoolName').textContent=school.name;E('mSchoolName').textContent=school.name;
   E('mLoginSubmit').disabled=false;E('mLoginSubmit').textContent='Sign in';
+  if(role==='teacher')window.RevoltSchoolSignIn.prepare();
  }catch(error){showError(error);E('mLoginSubmit').disabled=true;reload.hidden=false;E('mLoginSubmit').textContent='Sign in'}
  }
  reload.onclick=loadLoginSchool;await loadLoginSchool();if(!E('mLoginForm'))return;

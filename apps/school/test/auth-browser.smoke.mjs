@@ -33,10 +33,11 @@ async function browser(html, {path='/s/alpha/admin-login',search='',saved='',sch
 
 async function settled(predicate){for(let i=0;i<100&&!predicate();i++)await new Promise(resolve=>setImmediate(resolve));assert.ok(predicate())}
 
-test('server-rendered staff and administrator pages need no school metadata request before enabling sign-in',async()=>{
+test('server-rendered staff and administrator pages enable sign-in while checking Core in the background',async()=>{
   for(const [html,path] of [[loginFrontend,'/s/alpha/login'],[adminLoginFrontend,'/s/alpha/admin-login']]){
     const b=await browser(html,{path,saved:'beta',tenant:{id:'alpha',name:'Alpha School'},directory:()=>assert.fail('The server already identified this school')});
-    assert.equal(b.element('schoolId').value,'alpha');assert.equal(b.element('schoolName').textContent,'Alpha School');assert.equal(b.element('signin').disabled,false);assert.equal(b.calls.length,0);
+    assert.equal(b.element('schoolId').value,'alpha');assert.equal(b.element('schoolName').textContent,'Alpha School');assert.equal(b.element('signin').disabled,false);
+    assert.deepEqual(b.calls.map(call=>call.url),['/api/system/core-status']);assert.equal(b.calls[0].body,undefined);
   }
 });
 

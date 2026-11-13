@@ -29,14 +29,14 @@ export async function assertCoreSignInAvailable(config:SchoolConfig,fetchCore:ty
   if(!status.healthy)throw Object.assign(new Error(config.CORE_SIGN_IN_OUTAGE_MESSAGE.trim()),{statusCode:503,code:'SCHOOL_SIGN_IN_OUTAGE'});
 }
 
-/** An interactive sign-in wakes the public health endpoint from the user's client.
+/** The sign-in form can wake the public health endpoint while the user types.
  * Some sleeping hosts reject service-origin requests before Core can receive them.
  * The public request contains no staff credentials, cookies, or access tokens.
  * Its response is deliberately opaque: readiness is verified through School.
  * There is no periodic keep-alive or alternate authentication service. */
 export const schoolSignInStartupScript = String.raw`
 (function(){
-  var pending=null;
+  var pending=null,preparation=null,wakeRequest=null,nextWakeAt=0;
   function unavailable(message){var error=Error(message||'Sign-in is unavailable because the authentication service did not recover. Your entries are still here. Contact your school administrator if this continues.');error.status=503;return error}
   function pause(milliseconds){return new Promise(function(resolve){setTimeout(resolve,milliseconds)})}
   async function read(url,timeout,external,providedController){
@@ -61,13 +61,33 @@ export const schoolSignInStartupScript = String.raw`
       url.pathname=url.pathname.replace(/\/$/,'')+'/health/live';return url.href;
     }catch(error){return null}
   }
+  function checkStatus(timeout){return read('/api/system/core-status',timeout,false)}
+  function wake(url,timeout){
+    if(!url||wakeRequest||Date.now()<nextWakeAt)return;
+    var controller=typeof AbortController==='function'?new AbortController():null;
+    var request={controller:controller};
+    wakeRequest=request;
+    nextWakeAt=Date.now()+30000;
+    read(url,timeout,true,controller).then(function(){if(wakeRequest===request)wakeRequest=null});
+  }
+  function prepare(){
+    if(preparation||pending)return;
+    preparation=checkStatus(15000).then(function(status){
+      var core=status.body&&status.body.core;
+      if(status.ok&&status.body.database!=='unavailable'&&core&&core.healthy===false&&core.retryable!==false){
+        wake(publicHealthUrl(core.url),60000);
+      }
+      return status;
+    }).finally(function(){preparation=null});
+  }
   async function start(progress,budget){
-    var deadline=Date.now()+(budget===undefined?90000:Math.max(0,Math.min(90000,budget))),url=null,wakeRequest=null,nextWakeAt=0,announced=false;
+    var deadline=Date.now()+(budget===undefined?90000:Math.max(0,Math.min(90000,budget))),url=null,announced=false;
     try{
       // Fast gateway replies must not exhaust an attempt counter before the host
       // has time to start. A failed first School request is recoverable too.
       while(Date.now()<deadline){
-        var status=await read('/api/system/core-status',Math.max(1,Math.min(15000,deadline-Date.now())),false);
+        var remaining=deadline-Date.now();
+        var status=await (preparation&&remaining>=15000?preparation:checkStatus(Math.min(15000,remaining)));
         var core=status.body&&status.body.core;
         if(status.ok&&status.body.database==='unavailable')throw unavailable('The School data service is unavailable. Your entries are still here. Contact your school administrator.');
         if(status.ok&&core&&core.healthy===true){
@@ -79,16 +99,9 @@ export const schoolSignInStartupScript = String.raw`
         }
         if(!announced){announced=true;if(progress)progress('Connecting to sign-in. Waiting for the service to become ready…')}
         if(Date.now()>=deadline)break;
-        if(url&&!wakeRequest&&Date.now()>=nextWakeAt){
-          var controller=typeof AbortController==='function'?new AbortController():null;
-          // Leave the public request open through a normal cold start. Verify
-          // School concurrently; neither an opaque reply nor public availability
-          // alone permits sending credentials. Retry a failed wake at most every
-          // 30 seconds, only while this interactive sign-in is pending.
-          nextWakeAt=Date.now()+30000;
-          wakeRequest={controller:controller};
-          read(url,Math.max(1,Math.min(60000,deadline-Date.now())),true,controller).then(function(){wakeRequest=null});
-        }
+        // Leave the public request open through a normal cold start while School
+        // independently checks readiness. Share it with any work begun by prepare.
+        wake(url,Math.min(60000,deadline-Date.now()));
         await pause(Math.max(1,Math.min(3000,deadline-Date.now())));
       }
       throw unavailable();
@@ -113,7 +126,7 @@ export const schoolSignInStartupScript = String.raw`
     }
     var error=Error(lastMessage);error.status=503;throw error;
   }
-  window.RevoltSchoolSignIn={loadData:loadData,ensureReady:function(progress,budget){
+  window.RevoltSchoolSignIn={prepare:prepare,loadData:loadData,ensureReady:function(progress,budget){
     if(pending)return pending;
     pending=start(progress,budget).finally(function(){pending=null});return pending;
   }};

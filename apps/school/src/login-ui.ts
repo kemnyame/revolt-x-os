@@ -131,8 +131,11 @@ ${schoolSignInStartupScript}
       show(err.message||'Sign in failed');btn.disabled=false;btn.textContent=old
     }
   }
-  loadSchool();
-  E('retrySignIn').onclick=loadSchool;
+  async function initialize(){
+    if(await loadSchool())window.RevoltSchoolSignIn.prepare();
+  }
+  initialize();
+  E('retrySignIn').onclick=initialize;
   E('signin').onclick=signIn;
   E('staffId').onkeydown=function(e){if(e.key==='Enter')E('password').focus()};
   E('password').onkeydown=function(e){if(e.key==='Enter')signIn()};
@@ -241,7 +244,12 @@ ${schoolSignInStartupScript}
       show(err.message||'Administrator sign in failed');btn.disabled=false;btn.textContent=old
     }
   }
-  async function initialize(){if(await loadSchool()){if(administratorId)await loadAdministrator()}}
+  async function initialize(){
+    if(await loadSchool()){
+      if(administratorId)await loadAdministrator();
+      else window.RevoltSchoolSignIn.prepare();
+    }
+  }
   initialize();
   E('retrySignIn').onclick=initialize;
   E('signin').onclick=signIn;
